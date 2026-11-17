@@ -1,17 +1,51 @@
 name: Feature request
-description: A change that would make the household screen more useful.
+description: A change that would make the family screen more useful.
 title: "[Feature] "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Please leave out real names, calendar links and family photos.
   - type: textarea
     id: need
     attributes:
-      label: What should the house be able to do?
+      label: What should the hub be able to do?
     validations:
       required: true
   - type: textarea
     id: why
     attributes:
       label: Why it matters on a shared family screen
+      description: Who uses it (kids, parents, everyone), and when.
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Today
+        - Calendar
+        - Routines and points
+        - Meals and lists
+        - Reading
+        - Ask the Hub
+        - Photos and screensaver
+        - Setup, PIN and settings
+        - Raspberry Pi and self-hosting
+        - Skills (plugins)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Optional. Any workaround or other app you use for this.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Helping
+      options:
+        - label: I would like to work on this myself.
