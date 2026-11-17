@@ -4,7 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { getDb } from "@/lib/db";
 import { fetchCalendarText, normalizeCalendarUrl, refreshIcs } from "@/lib/ics";
-import { setSetting } from "@/lib/queries";
+import { saveCalendarLink } from "@/lib/household-settings";
+import { getSetting, setSetting } from "@/lib/queries";
 import type { SafeGetOptions, SafeResponse } from "@/lib/safe-fetch";
 
 // ---------- helpers ----------
@@ -291,6 +292,22 @@ describe("a calendar link that is removed", () => {
     await refreshIcs(plainGet);
     expect(rows("avery")).toEqual([{ id: "avery:a1@test", title: "Standup" }]);
     expect(rows("sam")).toEqual([{ id: "shared:swim@test:sam", title: "Swim" }]);
+  });
+
+  it("in Settings drops that calendar's rows at once, without a refresh", async () => {
+    setSetting("ics_url_avery", `${base}/avery.ics`);
+    setSetting("ics_url_kids_shared", `${base}/kids.ics`);
+    routes.set("/avery.ics", { status: 200, body: calendar([{ uid: "a1@test", summary: "Standup" }]) });
+    routes.set("/kids.ics", { status: 200, body: calendar([{ uid: "swim@test", summary: "Swim" }]) });
+    await refreshIcs(plainGet);
+
+    saveCalendarLink("kids_shared", null);
+    expect(["riley", "quinn", "sam"].map(rows)).toEqual([[], [], []]);
+    expect(rows("avery")).toEqual([{ id: "avery:a1@test", title: "Standup" }]);
+
+    saveCalendarLink("avery", null);
+    expect(rows("avery")).toEqual([]);
+    expect(getSetting("ics_url_avery")).toBe("");
   });
 });
 
