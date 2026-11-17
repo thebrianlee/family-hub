@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { attemptPin, type PinAttempt } from "@/lib/pin-attempts";
+import { hashPin } from "@/lib/auth";
+import { setSetting } from "@/lib/queries";
+import { attemptPin, clearPinLocks, type PinAttempt } from "@/lib/pin-attempts";
+import { pinProblem } from "@/lib/weak-pin";
 import {
   DEVICE_COOKIE,
   DEVICE_TTL_S,
@@ -16,6 +19,8 @@ export const dynamic = "force-dynamic";
 // cookie) and parent actions for 15 minutes (parent cookie). The parent-PIN
 // modal calls this right before every parent action.
 // { action: "lock" } ends the parent session on this screen.
+// { action: "change", pin, newPin } changes the PIN. It needs the current PIN
+// (not just a parent cookie) and logs out every other screen.
 function refused(attempt: Exclude<PinAttempt, { ok: true }>, wrongMessage: string): NextResponse {
   if (attempt.locked) {
     const minutes = Math.max(1, Math.ceil((attempt.retryAfterS ?? 60) / 60));
@@ -29,6 +34,23 @@ function refused(attempt: Exclude<PinAttempt, { ok: true }>, wrongMessage: strin
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
+  if (body.action === "change") {
+    const current = attemptPin(req, body.pin);
+    if (!current.ok) return refused(current, "The current PIN is not right.");
+    const newPin = typeof body.newPin === "string" ? body.newPin : "";
+    const problem = pinProblem(newPin);
+    if (problem) return NextResponse.json({ error: problem }, { status: 400 });
+    if (newPin === body.pin) return NextResponse.json({ error: "Pick a different PIN." }, { status: 400 });
+    const hashed = hashPin(newPin);
+    setSetting("parent_pin", `${hashed.salt}:${hashed.hash}`);
+    clearPinLocks();
+    // The stored hash changed, so every cookie issued before is now invalid.
+    // Re-unlock this screen so the parent who changed it stays in.
+    const res = NextResponse.json({ ok: true });
+    res.cookies.set(PARENT_COOKIE, signCookie("parent"), cookieOptions(PARENT_TTL_S));
+    res.cookies.set(DEVICE_COOKIE, signCookie("device"), cookieOptions(DEVICE_TTL_S));
+    return res;
+  }
   if (body.action === "lock") {
     const res = NextResponse.json({ ok: true });
     res.cookies.set(PARENT_COOKIE, "", { ...cookieOptions(0), maxAge: 0 });
