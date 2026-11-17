@@ -1,30 +1,27 @@
 # Code owners for Family Hub. See docs/maintainers/repo-setup.md, section 5.
 #
-# BEFORE ENABLING THE RULESET: replace every @REPLACE_WITH_MAINTAINER below
-# with the maintainer's GitHub handle. The placeholder is deliberately not a
-# valid handle (handles cannot contain underscores), so GitHub shows an error
-# until it is replaced. The maintainer's handle is on the PII check's blocklist
-# (scripts/check-pii.mjs), so adding it also needs that check to skip this file.
-# With "Require review from Code Owners" on, a pull request needs an approval
-# from an owner of every file it changes. Later rules win over earlier ones.
+# @hjunk reviews and approves pull requests. With "Require review from Code
+# Owners" on, a pull request needs an approval from an owner of every file it
+# changes. GitHub never lets authors approve their own pull requests.
+# Later rules win over earlier ones.
 
 # Default owner for everything.
-*                       @REPLACE_WITH_MAINTAINER
+*                       @hjunk
 
 # Sensitive paths: access control, PIN, outbound fetches, the assistant
 # bridge, the container, scripts and repository automation. Keep these owned
 # by core maintainers only, even after skill owners or other maintainers are
 # added to the default rule above.
-/src/app/api/**         @REPLACE_WITH_MAINTAINER
-/src/proxy.ts           @REPLACE_WITH_MAINTAINER
-/src/lib/session.ts     @REPLACE_WITH_MAINTAINER
-/src/lib/guard.ts       @REPLACE_WITH_MAINTAINER
-/src/lib/auth.ts        @REPLACE_WITH_MAINTAINER
-/src/lib/pin-attempts.ts @REPLACE_WITH_MAINTAINER
-/src/lib/safe-fetch.ts  @REPLACE_WITH_MAINTAINER
-/bridge/**              @REPLACE_WITH_MAINTAINER
-/Dockerfile             @REPLACE_WITH_MAINTAINER
-/docker-compose*.yml    @REPLACE_WITH_MAINTAINER
-/docker/**              @REPLACE_WITH_MAINTAINER
-/scripts/**             @REPLACE_WITH_MAINTAINER
-/.github/**             @REPLACE_WITH_MAINTAINER
+/src/app/api/**         @hjunk
+/src/proxy.ts           @hjunk
+/src/lib/session.ts     @hjunk
+/src/lib/guard.ts       @hjunk
+/src/lib/auth.ts        @hjunk
+/src/lib/pin-attempts.ts @hjunk
+/src/lib/safe-fetch.ts  @hjunk
+/bridge/**              @hjunk
+/Dockerfile             @hjunk
+/docker-compose*.yml    @hjunk
+/docker/**              @hjunk
+/scripts/**             @hjunk
+/.github/**             @hjunk

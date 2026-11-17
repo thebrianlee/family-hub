@@ -108,11 +108,7 @@ Rules for future workflows:
 
 `.github/CODEOWNERS` makes the maintainer the owner of everything, and lists the sensitive paths again on their own lines: the access policy and auth code, `src/app/api/`, `bridge/`, Docker files, `scripts/` and `.github/`. With "Require review from Code Owners" on, every pull request needs your approval.
 
-- [ ] **Do this before turning on the ruleset.** The file ships with the placeholder `@REPLACE_WITH_MAINTAINER`, because the PII check (`scripts/check-pii.mjs`) blocks your GitHub handle in any committed file. In one pull request:
-  - make the PII check skip `.github/CODEOWNERS` (add it next to the other skipped file names in `scripts/check-pii.mjs`), or remove your handle from its blocklist;
-  - replace every `@REPLACE_WITH_MAINTAINER` with your handle (with the `@`).
-
-  Until then, GitHub treats the files as having no valid owner, and "Require review from Code Owners" protects nothing.
+- [x] **Owner set.** Every path is owned by `@hjunk`, who approves pull requests. The PII check passes with this handle. Do this before turning on the ruleset if you change the owner.
 - [ ] Open `.github/CODEOWNERS` on GitHub. If GitHub shows an error at the top of the file (for example, an owner without write access), fix it.
 - [ ] When you add a second maintainer or skill owners later, add them to the general rules, but keep the sensitive paths owned by core maintainers only.
 
@@ -343,7 +339,7 @@ Notes:
 - [ ] `node scripts/check-pii.mjs` passes on `main` with the list loaded.
 - [ ] The labels from section 7 exist and the issues from section 8 are filed.
 - [ ] Private vulnerability reporting is on: the **Security** tab shows **Report a vulnerability**. The "Report a security problem" link on the new-issue page explains how to use it.
-- [ ] Every `@REPLACE_WITH_MAINTAINER` in `.github/CODEOWNERS` is replaced with your handle, and the PII check still passes (section 5). Do this **before** turning on the ruleset.
+- [ ] `.github/CODEOWNERS` names a real owner (now `@hjunk`) and the PII check still passes (section 5). Do this **before** turning on the ruleset.
 - [ ] The ruleset shows **Active**, and a test pull request cannot be merged without the `check` status and a code owner approval.
 - [ ] **Backup and restore round trip.** The commands in the README's "Back up and update" section were written without a running Docker engine. On a test install, run the backup, change something (add a list item), run the restore, and check that the hub opens with the original family, data and PIN, and that `docker compose ps` says `healthy`.
 - [ ] **Decide on the prebuilt image** (section 9). If yes: add the workflow, push a version tag, make the GHCR package public, add `image:` to `docker-compose.yml`, and change the README and the Raspberry Pi guide from `docker compose up -d --build` to `docker compose pull && docker compose up -d`. If no: leave the build step as it is.
