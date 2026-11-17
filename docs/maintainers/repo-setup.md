@@ -30,7 +30,7 @@ Open **Settings → Rules → Rulesets → New ruleset → New branch ruleset**.
 
 - [ ] **Ruleset name:** `protect-main`
 - [ ] **Enforcement status:** Active
-- [ ] **Bypass list:** leave it **empty** (see [Break-glass](#break-glass) for emergencies)
+- [ ] **Bypass list:** **Repository admin**, set to **For pull requests only**. Admins can then merge a pull request without its approvals, but can never push straight to `main`. The admin uses it only for [Break-glass](#break-glass).
 - [ ] **Target branches:** Add target → **Include default branch**
 
 Turn on these rules:
@@ -57,23 +57,41 @@ The `check` status shows up in the search box only after CI has run at least onc
 
 GitHub never lets the author of a pull request approve it. With one code owner (you) and "Require review from Code Owners", **a pull request opened from your own account cannot be merged**.
 
-Ways around it, best first:
+**What this repository does** (see [GOVERNANCE.md](../../GOVERNANCE.md)). The human maintainer's AI agents write code and open pull requests from his account (`hjunk`). A second code owner, his agent reviewer account `ari-hjunk` (write access), approves those pull requests and nothing else. It approves only through one fixed script that refuses unless all of these hold:
 
-1. **Let agents open the pull requests through the GitHub App** (section 6). The App is the author, so you can review and approve.
+- the pull request is in this repository, not from a fork;
+- it is open and authored by `hjunk`;
+- it touches nothing under `.github/`;
+- `check` passed on the head commit;
+- an independent agent review (by an agent that didn't write it) passed at that exact commit.
+
+The approval is pinned to that commit, so a later push voids it. The maintainer then merges.
+
+Limit: once `ari-hjunk` has approved, GitHub would let any session holding the `hjunk` token merge. "The maintainer merges" is a project rule, not something GitHub enforces.
+
+Other ways, if this setup changes:
+
+1. **Let agents open the pull requests through a GitHub App** (section 6). The App is the author, so you can review and approve. The squash commit then lists the App as author.
 2. **Add a second trusted human** as a code owner in `.github/CODEOWNERS`. They need write access to the repository.
-3. **Break-glass** (below), only for emergencies.
+3. **Break-glass** (below), only for emergencies. Changes to `.github/` opened from `hjunk` use it, because only `hjunk` owns `.github/`.
 
 "Require approval of the most recent reviewable push" also means: if you push a fix onto someone else's pull request, you can no longer be the approver. Ask the author (or the agent) to push the fix instead.
 
 ### Break-glass
 
-For a real emergency only, such as a security fix while nobody else can review:
+The repository owner (the only admin) merges with the bypass in two cases only:
 
-1. Open an issue titled "Break-glass: YYYY-MM-DD" (today's date) and write down why.
-2. Add **Repository admin** to the ruleset's bypass list.
-3. Merge the fix.
-4. Remove the bypass entry right away.
-5. Add the merged commit to the issue and close it.
+- **A `hjunk` pull request that `ari-hjunk` may not approve**, such as a change to `.github/`. The maintainer names the pull request and its head commit in writing. The owner checks that `check` passed on that exact commit, because a bypass skips required checks. Then:
+
+  ```bash
+  gh pr merge <N> --squash --admin --match-head-commit <SHA>
+  ```
+
+  The maintainer leaves an "Approved <SHA>" comment on the pull request, so his review is public.
+- **A real emergency**, such as a security fix while nobody else can review:
+  1. Open an issue titled "Break-glass: YYYY-MM-DD" (today's date) and write down why.
+  2. Merge the fix the same way.
+  3. Add the merged commit to the issue and close it.
 
 ## 3. Security features
 
@@ -108,7 +126,7 @@ Rules for future workflows:
 
 `.github/CODEOWNERS` makes the maintainer the owner of everything, and lists the sensitive paths again on their own lines: the access policy and auth code, `src/app/api/`, `bridge/`, Docker files, `scripts/` and `.github/`. With "Require review from Code Owners" on, every pull request needs your approval.
 
-- [x] **Owner set.** Every path is owned by `@hjunk`, who approves pull requests. The PII check passes with this handle. Do this before turning on the ruleset if you change the owner.
+- [x] **Owners set.** Every path is owned by `@hjunk` (the human maintainer) and `@ari-hjunk` (his agent reviewer account, which approves only `hjunk`-opened pull requests; see section 2). `.github/` is owned by `@hjunk` alone. The PII check passes with these handles. If you change the owners, do it before turning on the ruleset.
 - [ ] Open `.github/CODEOWNERS` on GitHub. If GitHub shows an error at the top of the file (for example, an owner without write access), fix it.
 - [ ] When you add a second maintainer or skill owners later, add them to the general rules, but keep the sensitive paths owned by core maintainers only.
 
@@ -137,7 +155,7 @@ Open **your profile picture → Settings → Developer settings → GitHub Apps 
 
 What keeps the App inside the rules:
 
-- The ruleset has no bypass, so the App cannot push to `main`. It can only push branches and open pull requests.
+- Only the repository admin can bypass the ruleset, and only for pull requests. The App cannot push to `main`; it can only push branches and open pull requests.
 - Without the Workflows permission, GitHub refuses any push from the App that adds or changes files in `.github/workflows/`.
 - Without Administration, it cannot change settings, rulesets or secrets.
 - The App is not a code owner, so its approval never satisfies the required review.
