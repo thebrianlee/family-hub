@@ -7,11 +7,13 @@
 #
 # @hjunk is the human maintainer. He reviews and approves pull requests from
 # contributors and Dependabot.
-# @ari-hjunk is his AI agent reviewer account. It approves only pull requests
-# opened by @hjunk (written by his AI agents), and only after an independent
-# AI review passed at that exact commit. Its approval means "an agent review
-# passed", not a human review. @hjunk merges.
-# .github/ (workflows, rules and this file) is owned by @hjunk alone.
+# @ari-hjunk is his AI agent reviewer account. By project rule (GitHub does
+# not enforce this), it approves only pull requests opened by @hjunk (written
+# by his AI agents), and only after an independent AI review passed at that
+# exact commit. Its approval means "an agent review passed", not a human
+# review. @hjunk merges.
+# .github/ (workflows, rules and this file) and GOVERNANCE.md are owned by
+# @hjunk alone.
 # Later rules win over earlier ones.
 
 # Default owners for everything.
@@ -36,3 +38,4 @@
 
 # Repository automation and these rules: the human maintainer only.
 /.github/**             @hjunk
+/GOVERNANCE.md          @hjunk
