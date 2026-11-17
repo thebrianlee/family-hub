@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token: CI never needs to write to the repo.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Pinned image so a runner upgrade can't change the build under us.
+    runs-on: ubuntu-24.04
+    steps:
+      # Third-party actions are pinned to full commit SHAs (tag in the comment).
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      # Secret scan with the gitleaks CLI (checksum-verified), before anything
+      # is installed. It needs no extra token permissions and no license key.
+      # A pull request can't switch the scan off from inside the repo: the
+      # rules are gitleaks' defaults; in-repo .gitleaks.toml is not used,
+      # "gitleaks:allow" comments are ignored, and any .gitleaksignore file is
+      # deleted from the checkout first (gitleaks always reads one from the
+      # scanned folder). It scans the new commits (PR range, or the pushed
+      # range on main) and the final tree.
+      - name: Secret scan (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.24.3
+          GITLEAKS_SHA256: 9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          find . -name .gitleaksignore -not -path './.git/*' -delete
+          mkdir -p "$RUNNER_TEMP/gl"
+          cat > "$RUNNER_TEMP/gl/gitleaks.toml" <<'TOML'
+          [extend]
+          useDefault = true
+          TOML
+          GL=("$RUNNER_TEMP/gitleaks" --no-banner --redact --config "$RUNNER_TEMP/gl/gitleaks.toml" --gitleaks-ignore-path "$RUNNER_TEMP/gl" --ignore-gitleaks-allow)
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            "${GL[0]}" git "${GL[@]:1}" --log-opts="-m $BASE_SHA..HEAD" .
+          else
+            "${GL[0]}" git "${GL[@]:1}" .
+          fi
+          "${GL[0]}" dir "${GL[@]:1}" .
+      - run: npm ci
+      - run: npm run lint -- --max-warnings 0
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      # Private word list from the PII_HASHES repository secret (forks don't
+      # get it and fall back to the generic patterns).
+      - run: node scripts/check-pii.mjs
+        env:
+          PII_HASHES: ${{ secrets.PII_HASHES }}
