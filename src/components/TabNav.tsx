@@ -124,6 +124,19 @@ export default function TabNav() {
           </Link>
         );
       })}
+      {/* Parent settings (asks for the PIN). */}
+      <Link
+        href="/settings"
+        aria-label="Parent settings"
+        className={`touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 shadow-tile ${
+          pathname === "/settings" ? "bg-ink text-cream" : "bg-cream-raised text-ink-faint active:bg-cream-sunken"
+        }`}
+      >
+        <svg width={38} height={38} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="3.2" />
+          <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7" />
+        </svg>
+      </Link>
       {/* Instant screensaver — guests over, photos up. */}
       <button
         onClick={() => window.dispatchEvent(new CustomEvent("familyhub:sleep"))}
