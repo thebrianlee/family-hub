@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Kiosk: portrait 1440x2560, one screen per view, never scroll. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+body {
+  @apply bg-cream text-ink font-sans antialiased;
+}
+
+@layer components {
+  /* Minimum 48px hit target on every tappable element. */
+  .touch-target {
+    @apply min-h-[48px] min-w-[48px];
+  }
+  .card {
+    @apply rounded-card bg-cream-raised shadow-card;
+  }
+  .tile {
+    @apply rounded-tile bg-cream-raised shadow-tile;
+  }
+  .well {
+    @apply rounded-tile bg-cream-sunken;
+  }
+  .eyebrow {
+    @apply text-xl font-bold uppercase tracking-[0.14em] text-ink-faint;
+  }
+  .btn-primary {
+    @apply touch-target rounded-card bg-ink text-cream font-bold shadow-tile active:scale-95 transition-transform;
+  }
+  .btn-soft {
+    @apply touch-target rounded-card bg-cream-sunken text-ink-soft font-bold active:bg-cream-line transition-colors;
+  }
+}
+
+/* Member colors. The root layout injects one rule per member,
+   .m-<id>{--member:…;--member-deep:…;--member-soft:…;--member-tint:…}
+   (lib/member-theme.ts), and a member's theme pairs that class with one of
+   these, e.g. "m-riley bg-member". Same cascade layer as the old per-member
+   Tailwind tokens they replace. */
+@layer utilities {
+  .bg-member {
+    background-color: var(--member);
+  }
+  .bg-member-soft {
+    background-color: var(--member-soft);
+  }
+  .bg-member-tint {
+    background-color: var(--member-tint);
+  }
+  .text-member-deep {
+    color: var(--member-deep);
+  }
+  .border-member {
+    border-color: var(--member);
+  }
+}

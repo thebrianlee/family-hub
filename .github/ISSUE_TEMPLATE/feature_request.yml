@@ -1,0 +1,17 @@
+name: Feature request
+description: A change that would make the household screen more useful.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What should the house be able to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters on a shared family screen
+    validations:
+      required: true

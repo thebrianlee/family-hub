@@ -1,0 +1,11 @@
+title = "Family Hub"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholders and dependency locks"
+paths = [
+  '''package-lock\.json''',
+  '''\.next/''',
+]

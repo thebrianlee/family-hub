@@ -1,0 +1,43 @@
+services:
+  family-hub:
+    build: .
+    ports:
+      - "3847:3847"
+    environment:
+      DATA_DIR: /data
+      FAMILY_HUB_DB: /data/family-hub.db
+      PHOTO_DIR: /photos
+      PORT: "3847"
+      BRIDGE_HOST: 127.0.0.1
+      BRIDGE_PORT: "8787"
+      # Optional. Leave unset and the container stores random secrets in the data volume.
+      # SESSION_SECRET:
+      # BRIDGE_TOKEN:
+      # ANTHROPIC_API_KEY:
+      # ANTHROPIC_MODEL: claude-sonnet-5-5
+      # OLLAMA_URL: http://host.docker.internal:11434
+      # OLLAMA_MODEL: llama3.2
+      # GOOGLE_BOOKS_API_KEY:
+      # The hub is published on your home network. Each screen asks for the
+      # parent PIN once, then stays unlocked for 30 days. Set "0" only if
+      # everyone who can reach this port should see the household.
+      REQUIRE_AUTH_FOR_READS: "1"
+    volumes:
+      - familyhub-data:/data
+      - ./photos:/photos
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3847/api/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+volumes:
+  familyhub-data:
