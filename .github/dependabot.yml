@@ -1,0 +1,32 @@
+# Dependabot version updates. GitHub starts using this file once it is on the
+# default branch. See docs/maintainers/repo-setup.md.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The image stays on Node 22 to match CI (.github/workflows/ci.yml) and
+      # package.json engines. Move all three together, by hand.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
