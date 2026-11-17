@@ -9,6 +9,13 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Major versions change APIs and config (for example Tailwind, TypeScript,
+      # ESLint), and a newer @types/node would describe Node APIs that the
+      # Node 22 runtime does not have. Do major upgrades by hand, one per pull
+      # request, and move @types/node together with the Node version.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
