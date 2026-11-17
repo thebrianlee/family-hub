@@ -1,27 +1,41 @@
-# Code owners for Family Hub. See docs/maintainers/repo-setup.md, section 5.
+# Code owners for Family Hub. See GOVERNANCE.md and
+# docs/maintainers/repo-setup.md, section 5.
 #
-# @hjunk reviews and approves pull requests. With "Require review from Code
-# Owners" on, a pull request needs an approval from an owner of every file it
-# changes. GitHub never lets authors approve their own pull requests.
+# With "Require review from Code Owners" on, a pull request needs an approval
+# from an owner of every file it changes, and GitHub never lets authors
+# approve their own pull requests.
+#
+# @hjunk is the human maintainer. He reviews and approves pull requests from
+# contributors and Dependabot.
+# @ari-hjunk is his AI agent reviewer account. By project rule (GitHub does
+# not enforce this), it approves only pull requests opened by @hjunk (written
+# by his AI agents), and only after an independent AI review passed at that
+# exact commit. Its approval means "an agent review passed", not a human
+# review. @hjunk merges.
+# .github/ (workflows, rules and this file) and GOVERNANCE.md are owned by
+# @hjunk alone.
 # Later rules win over earlier ones.
 
-# Default owner for everything.
-*                       @hjunk
+# Default owners for everything.
+*                       @hjunk @ari-hjunk
 
 # Sensitive paths: access control, PIN, outbound fetches, the assistant
-# bridge, the container, scripts and repository automation. Keep these owned
-# by core maintainers only, even after skill owners or other maintainers are
-# added to the default rule above.
-/src/app/api/**         @hjunk
-/src/proxy.ts           @hjunk
-/src/lib/session.ts     @hjunk
-/src/lib/guard.ts       @hjunk
-/src/lib/auth.ts        @hjunk
-/src/lib/pin-attempts.ts @hjunk
-/src/lib/safe-fetch.ts  @hjunk
-/bridge/**              @hjunk
-/Dockerfile             @hjunk
-/docker-compose*.yml    @hjunk
-/docker/**              @hjunk
-/scripts/**             @hjunk
+# bridge, the container and scripts. Keep these owned by the core
+# maintainers only, even after skill owners or other maintainers are added
+# to the default rule above.
+/src/app/api/**         @hjunk @ari-hjunk
+/src/proxy.ts           @hjunk @ari-hjunk
+/src/lib/session.ts     @hjunk @ari-hjunk
+/src/lib/guard.ts       @hjunk @ari-hjunk
+/src/lib/auth.ts        @hjunk @ari-hjunk
+/src/lib/pin-attempts.ts @hjunk @ari-hjunk
+/src/lib/safe-fetch.ts  @hjunk @ari-hjunk
+/bridge/**              @hjunk @ari-hjunk
+/Dockerfile             @hjunk @ari-hjunk
+/docker-compose*.yml    @hjunk @ari-hjunk
+/docker/**              @hjunk @ari-hjunk
+/scripts/**             @hjunk @ari-hjunk
+
+# Repository automation and these rules: the human maintainer only.
 /.github/**             @hjunk
+/GOVERNANCE.md          @hjunk
