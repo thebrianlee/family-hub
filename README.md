@@ -218,7 +218,7 @@ docker compose run --rm -T --entrypoint sh family-hub -c 'rm -f /data/sproutwall
 docker compose start
 ```
 
-The `rm` first removes the hub's current database and its temporary side files, so only the database from the backup is left. This also works with a backup made before the rename to Sproutwall (`family-hub-backup.tgz`, which holds `family-hub.db`).
+The `rm` first removes the hub's current database and its temporary side files, so only the database from the backup is left. This also works with a backup made before the rename to Sproutwall (`family-hub-backup.tgz`, which holds `family-hub.db`). The hub's automatic safety copies (the volume's `backups` folder, made before each database upgrade) are not removed by a restore. After a restore they can still hold the household that was on this computer before; if that household should not stay on this computer, delete that folder once the restored hub works: `docker compose exec family-hub sh -c 'rm -rf /data/backups'`.
 
 ### Update
 
