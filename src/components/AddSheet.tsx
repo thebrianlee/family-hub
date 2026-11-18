@@ -87,6 +87,8 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
   const { isOn } = useModules();
   const canEvent = isOn("calendar");
   const canRoutine = isOn("routines");
+  // With Points & jar off the stars stepper is hidden; rValue keeps its value.
+  const rewardsOn = isOn("rewards");
   const [step, setStep] = useState<Step>(initialStep);
   const [saving, setSaving] = useState(false);
   const [rType, setRType] = useState<"routine" | "job">(initialType);
@@ -429,10 +431,14 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
           )}
 
           <div className="flex items-center gap-3">
-            <div className="eyebrow">Stars</div>
-            <button onClick={() => setRValue((v) => Math.max(1, v - 1))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-3xl font-bold">−</button>
-            <span className="w-14 text-center text-3xl font-extrabold tabular-nums">⭐{rValue}</span>
-            <button onClick={() => setRValue((v) => Math.min(20, v + 1))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-3xl font-bold">+</button>
+            {rewardsOn && (
+              <>
+                <div className="eyebrow">Stars</div>
+                <button onClick={() => setRValue((v) => Math.max(1, v - 1))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-3xl font-bold">−</button>
+                <span className="w-14 text-center text-3xl font-extrabold tabular-nums">⭐{rValue}</span>
+                <button onClick={() => setRValue((v) => Math.min(20, v + 1))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-3xl font-bold">+</button>
+              </>
+            )}
             <div className="flex-1" />
             <button onClick={() => setSaveToBox((v) => !v)} className={`touch-target rounded-tile px-4 py-2.5 text-lg font-bold ${saveToBox ? "bg-ink text-cream" : "bg-cream-raised text-ink-faint shadow-tile"}`}>
               💾 Save to Task Box

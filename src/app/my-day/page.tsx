@@ -697,6 +697,9 @@ function EditRoutine(props: {
   ntracked: boolean; setNtracked: (b: boolean) => void;
 }) {
   const { day, emojiChoices, taskBox, onAddPreset, onRemove, onAdd } = props;
+  // With Points & jar off, point values are hidden here. A new item still
+  // saves the stepper's current value (props.nv), and stored values stay.
+  const rewardsOn = useModules().isOn("rewards");
   const all = useMemo(
     () => (day ? BUCKETS.flatMap((b) => day.buckets[b].map((i) => ({ ...i, bucket: b }))) : []),
     [day]
@@ -745,7 +748,7 @@ function EditRoutine(props: {
                   <span className="text-3xl">{item.emoji}</span>
                   <span className="flex-1 text-2xl font-bold">{item.label}</span>
                   {item.tracked && <span className="text-lg font-bold text-ink-faint uppercase">logs {item.unit}</span>}
-                  <span className="text-xl font-bold text-ink-soft">+{item.points}</span>
+                  {rewardsOn && <span className="text-xl font-bold text-ink-soft">+{item.points}</span>}
                   <button onClick={() => onRemove(item.id)} className="btn-soft px-4 py-2 text-xl">
                     Remove
                   </button>
@@ -766,7 +769,7 @@ function EditRoutine(props: {
                 <span className="text-3xl">{item.emoji}</span>
                 <span className="flex-1 text-2xl font-bold">{item.label}</span>
                 {item.freq && <span className="text-lg font-bold text-ink-faint">{item.freq}</span>}
-                <span className="text-xl font-bold text-ink-soft">+{item.points}</span>
+                {rewardsOn && <span className="text-xl font-bold text-ink-soft">+{item.points}</span>}
                 <button onClick={() => onRemove(item.id)} className="btn-soft px-4 py-2 text-xl">
                   Remove
                 </button>
@@ -808,11 +811,13 @@ function EditRoutine(props: {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-1.5">
-            <button onClick={() => props.setNv(String(Math.max(0, Number(props.nv || "2") - 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">−</button>
-            <span className="w-12 text-center text-2xl font-extrabold tabular-nums">+{props.nv || "2"}</span>
-            <button onClick={() => props.setNv(String(Math.min(20, Number(props.nv || "2") + 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">+</button>
-          </div>
+          {rewardsOn && (
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => props.setNv(String(Math.max(0, Number(props.nv || "2") - 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">−</button>
+              <span className="w-12 text-center text-2xl font-extrabold tabular-nums">+{props.nv || "2"}</span>
+              <button onClick={() => props.setNv(String(Math.min(20, Number(props.nv || "2") + 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">+</button>
+            </div>
+          )}
           <button
             onClick={() => props.setNtracked(!props.ntracked)}
             className={`touch-target rounded-tile px-4 py-3 text-xl font-bold ${props.ntracked ? "bg-ink text-cream" : "bg-cream-raised text-ink-soft shadow-tile"}`}
