@@ -114,10 +114,11 @@ function isFresh(db: Database.Database): boolean {
 /** How many pre-migration backups to keep. Older ones are deleted. */
 export const BACKUPS_KEPT = 5;
 
-// sproutwall-v<from>-to-v<to>-<YYYYMMDD>T<HHMMSS><ms>Z-<nn>.db, in UTC. Fixed
-// widths, so sorting the names sorts them by age. Only files that match this
-// pattern are ever deleted.
-const BACKUP_NAME = /^sproutwall-v\d+-to-v\d+-\d{8}T\d{9}Z-\d{2}\.db$/;
+// sproutwall-v<from>-to-v<to>-<YYYYMMDD>T<HHMMSS><ms>Z-<nn>.db, in UTC. The
+// version numbers have no fixed width, so age comes from the captured
+// "<stamp>-<nn>" part, which does. Only files that match this pattern are ever
+// deleted.
+const BACKUP_NAME = /^sproutwall-v\d+-to-v\d+-(\d{8}T\d{9}Z-\d{2})\.db$/;
 
 function fileSize(f: string): number {
   try {
@@ -144,7 +145,9 @@ export function createBackup(db: Database.Database, file: string, from: number, 
     const st = fs.statfsSync(dir);
     const free = st.bavail * st.bsize;
     if (free < needed) {
-      throw new DbBlockedError("low_disk", "Not enough free space for the pre-upgrade backup.", { free, needed });
+      // Byte counts go to the log only; /api/health needs no PIN.
+      console.error(`[db] pre-upgrade backup needs ${needed} bytes free, ${free} available.`);
+      throw new DbBlockedError("low_disk", "Not enough free space for the pre-upgrade backup.");
     }
   } catch (e) {
     if (isDbBlocked(e)) throw e;
@@ -152,10 +155,25 @@ export function createBackup(db: Database.Database, file: string, from: number, 
   }
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(".", "").slice(0, 18) + "Z";
   const p2 = (n: number) => String(n).padStart(2, "0");
+  // Claim a free name by creating it empty and exclusively ("wx"), so two
+  // processes can't pick the same name. VACUUM INTO accepts an empty file.
+  // From here on the file is ours, so removing it on failure is safe.
   let dest = "";
-  for (let n = 0; n < 100; n++) {
-    dest = path.join(dir, `sproutwall-v${from}-to-v${to}-${stamp}-${p2(n)}.db`);
-    if (!fs.existsSync(dest)) break;
+  for (let n = 0; n < 100 && !dest; n++) {
+    const candidate = path.join(dir, `sproutwall-v${from}-to-v${to}-${stamp}-${p2(n)}.db`);
+    try {
+      fs.closeSync(fs.openSync(candidate, "wx"));
+      dest = candidate;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
+        console.error(`[db] pre-upgrade backup failed: ${(e as Error).message}`);
+        throw new DbBlockedError("backup_failed", "The pre-upgrade backup could not be made or verified.");
+      }
+    }
+  }
+  if (!dest) {
+    console.error("[db] pre-upgrade backup failed: no free backup file name for this timestamp.");
+    throw new DbBlockedError("backup_failed", "The pre-upgrade backup could not be made or verified.");
   }
   try {
     db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
@@ -176,10 +194,11 @@ export function createBackup(db: Database.Database, file: string, from: number, 
 
 /** Delete all but the newest `keep` backups. Only our own file names are touched. */
 export function pruneBackups(dir: string, keep: number): void {
+  const age = (f: string) => BACKUP_NAME.exec(f)![1];
   const names = fs
     .readdirSync(dir)
     .filter((f) => BACKUP_NAME.test(f))
-    .sort();
+    .sort((a, b) => (age(a) < age(b) ? -1 : age(a) > age(b) ? 1 : a < b ? -1 : a > b ? 1 : 0));
   for (const old of names.slice(0, Math.max(0, names.length - keep))) {
     fs.rmSync(path.join(dir, old), { force: true });
   }
@@ -203,9 +222,25 @@ export function applyHouseholdTimezone(db: Database.Database = getDb()): void {
   process.env.TZ = tz;
 }
 
+/**
+ * While the data is blocked, every request would otherwise retry createDb, and
+ * for low_disk or backup_failed that means another statfs and copy attempt per
+ * request. Remember the block for a short while instead. It still clears by
+ * itself (for example once disk space is freed), within BLOCKED_RETRY_MS.
+ */
+export const BLOCKED_RETRY_MS = 60_000;
+let blocked: { error: DbBlockedError; at: number } | null = null;
+
 export function getDb(): Database.Database {
   if (!globalThis.__familyHubDb) {
-    globalThis.__familyHubDb = createDb();
+    if (blocked && Date.now() - blocked.at < BLOCKED_RETRY_MS) throw blocked.error;
+    try {
+      globalThis.__familyHubDb = createDb();
+      blocked = null;
+    } catch (e) {
+      if (isDbBlocked(e)) blocked = { error: e, at: Date.now() };
+      throw e;
+    }
   }
   return globalThis.__familyHubDb;
 }

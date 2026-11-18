@@ -152,6 +152,67 @@ describe("schema versioning", () => {
     expect(backups(file)).toContain(made[made.length - 1]);
     expect(fs.existsSync(path.join(dir, "keep-me.db"))).toBe(true);
   });
+
+  it("ranks backups by time, not by name, once a version number has two digits", async () => {
+    const { pruneBackups } = await import("@/lib/db");
+    const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR!, "mixed-"));
+    fs.writeFileSync(path.join(dir, "keep-me.db"), "not ours");
+    const names = [5, 6, 7, 8, 9, 10].map((v, i) => `sproutwall-v${v}-to-v${v + 1}-2026111${i}T120000000Z-00.db`);
+    for (const n of names) fs.writeFileSync(path.join(dir, n), "");
+    pruneBackups(dir, 5);
+    const left = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f));
+    expect(left.sort()).toEqual(names.slice(1).sort());
+    expect(left).toContain("sproutwall-v10-to-v11-20261115T120000000Z-00.db");
+    expect(fs.existsSync(path.join(dir, "keep-me.db"))).toBe(true);
+  });
+
+  it("fails without touching existing backups when every name for this moment is taken", async () => {
+    const file = useDbFile("full");
+    const { getDb, createBackup, isDbBlocked } = await import("@/lib/db");
+    const db = getDb();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-18T12:00:00.000Z"));
+    try {
+      const dir = path.join(path.dirname(file), "backups");
+      fs.mkdirSync(dir, { recursive: true });
+      for (let n = 0; n < 100; n++) {
+        fs.writeFileSync(path.join(dir, `sproutwall-v1-to-v2-20261118T120000000Z-${String(n).padStart(2, "0")}.db`), `kept ${n}`);
+      }
+      let err: unknown;
+      try {
+        createBackup(db, file, 1, 2);
+      } catch (e) {
+        err = e;
+      }
+      expect(isDbBlocked(err) && err.code).toBe("backup_failed");
+      expect(fs.readdirSync(dir)).toHaveLength(100);
+      expect(fs.readFileSync(path.join(dir, "sproutwall-v1-to-v2-20261118T120000000Z-99.db"), "utf8")).toBe("kept 99");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("remembers a blocked state for a minute, then tries again by itself", async () => {
+    const file = useDbFile("retry");
+    fs.copyFileSync(FIXTURE, file);
+    const obstacle = path.join(path.dirname(file), "backups");
+    fs.writeFileSync(obstacle, "in the way");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-18T12:00:00.000Z"));
+    try {
+      const { GET } = await import("@/app/api/health/route");
+      const { BLOCKED_RETRY_MS } = await import("@/lib/db");
+      expect(GET().status).toBe(503);
+      fs.rmSync(obstacle);
+      expect(GET().status).toBe(503);
+      expect(fs.existsSync(obstacle)).toBe(false);
+      vi.setSystemTime(Date.now() + BLOCKED_RETRY_MS + 1);
+      expect(GET().status).toBe(200);
+      expect(backups(file)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("health check", () => {
