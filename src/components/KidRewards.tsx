@@ -4,12 +4,16 @@
 // opens their full drill-down (streaks, Knowledge/Physical metrics, bookshelf,
 // mood history) with a Rewards menu to set a goal or redeem (PIN-gated). Lifted
 // out of the old standalone Rewards tab when it was folded into Routines.
+// The drill-down is the Progress module, the menu is Points & jar, books are
+// the Reading log; each part is left out while its module is switched off.
+// Without Progress, tapping a kid opens the Rewards menu directly.
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { KidId } from "@/lib/family";
 import { newOpId } from "@/lib/op-id";
 import { useMembers } from "./MembersProvider";
+import { useModules } from "./ModulesProvider";
 import Modal from "./Modal";
 import PinModal from "./PinModal";
 
@@ -34,6 +38,8 @@ export interface Progress {
   goal: Goal | null;
 }
 export interface Reward { id: number; label: string; emoji: string; cost: number; kid: string | null; }
+/** A kid's points and goal, from /api/balance. */
+export interface Wallet { kid: string; balance: number; goal: Goal | null; }
 
 const MOODS = [
   { id: "great", emoji: "😄" }, { id: "good", emoji: "🙂" }, { id: "ok", emoji: "😐" }, { id: "sad", emoji: "😢" }, { id: "mad", emoji: "😠" },
@@ -49,63 +55,76 @@ function dow(iso: string) {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "narrow" });
 }
 
-export default function KidRewards({ drillKid, onClose, all, rewards, reload }: {
+export default function KidRewards({ drillKid, onClose, all, rewards, wallets, reload }: {
   drillKid: KidId | null;
   onClose: () => void;
   all: Progress[] | null;
   rewards: Reward[];
+  wallets: Wallet[];
   reload: () => void;
 }) {
   const router = useRouter();
   const { memberOf } = useMembers();
+  const { isOn } = useModules();
+  const progressOn = isOn("progress");
+  const rewardsOn = isOn("rewards");
+  const readingOn = isOn("reading");
   const [menuKid, setMenuKid] = useState<KidId | null>(null);
   // opId: one key per redemption (see app/balance/page.tsx).
   const [redeemFor, setRedeemFor] = useState<{ kid: KidId; reward: Reward; opId: string } | null>(null);
 
   const byKid = (k: KidId) => all?.find((p) => p.kid === k) ?? null;
+  const walletOf = (k: KidId) => wallets.find((w) => w.kid === k) ?? null;
+  // Opened from the drill-down, or straight from the kid's header without Progress.
+  const menuFor = !rewardsOn ? null : menuKid ?? (progressOn ? null : drillKid);
+  const closeMenu = () => {
+    if (menuKid === null) onClose();
+    setMenuKid(null);
+  };
   const pickGoal = async (kid: KidId, rewardId: number) => {
     await fetch("/api/balance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "select_goal", kid, rewardId }) });
-    reload(); setMenuKid(null);
+    reload(); closeMenu();
   };
   const redeem = async (pin: string) => {
     if (!redeemFor) return;
     const { kid, reward, opId } = redeemFor;
     setRedeemFor(null);
     await fetch("/api/balance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "redeem", kid, rewardId: reward.id, pin, opId }) });
-    reload(); setMenuKid(null);
+    reload(); closeMenu();
   };
 
-  const drill = drillKid ? byKid(drillKid) : null;
+  const drill = drillKid && progressOn ? byKid(drillKid) : null;
 
   return (
     <>
       {/* Drill-down: full progress for one kid */}
-      <Modal open={drillKid !== null} onClose={onClose} title={drillKid ? `${memberOf(drillKid).name}'s Progress` : ""} wide>
+      <Modal open={progressOn && drillKid !== null} onClose={onClose} title={drillKid ? `${memberOf(drillKid).name}'s Progress` : ""} wide>
         {drill && drillKid && (
           <DrillDown
             p={drill}
             theme={memberOf(drillKid).theme}
+            reading={readingOn}
             onBooks={() => { onClose(); router.push("/reading"); }}
-            onMenu={() => setMenuKid(drillKid)}
+            onMenu={rewardsOn ? () => setMenuKid(drillKid) : null}
           />
         )}
       </Modal>
 
       {/* Rewards menu — set a goal or redeem */}
-      <Modal open={menuKid !== null} onClose={() => setMenuKid(null)} title={menuKid ? `${memberOf(menuKid).name}'s Rewards · ⭐${byKid(menuKid)?.balance ?? 0}` : ""} wide>
-        {menuKid && (
+      <Modal open={menuFor !== null} onClose={closeMenu} title={menuFor ? `${memberOf(menuFor).name}'s Rewards · ⭐${walletOf(menuFor)?.balance ?? 0}` : ""} wide>
+        {menuFor && (
           <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
-            {rewards.filter((r) => r.kid === null || r.kid === menuKid).sort((a, b) => a.cost - b.cost).map((r) => {
-              const bal = byKid(menuKid)?.balance ?? 0;
+            {rewards.filter((r) => r.kid === null || r.kid === menuFor).sort((a, b) => a.cost - b.cost).map((r) => {
+              const bal = walletOf(menuFor)?.balance ?? 0;
               const affordable = bal >= r.cost;
-              const isGoal = byKid(menuKid)?.goal?.label === r.label;
+              const isGoal = walletOf(menuFor)?.goal?.label === r.label;
               return (
                 <div key={r.id} className="tile px-6 py-4 flex items-center gap-5">
                   <span className="text-4xl shrink-0">{r.emoji}</span>
                   <span className="flex-1 text-3xl font-extrabold">{r.label}</span>
                   <span className={`text-2xl font-extrabold tabular-nums shrink-0 ${affordable ? "text-sage-deep" : "text-ink-faint"}`}>{r.cost}</span>
-                  {isGoal ? <span className="shrink-0 text-xl font-bold text-ember-deep px-3">🎯 goal</span> : <button onClick={() => pickGoal(menuKid, r.id)} className="btn-soft shrink-0 px-5 py-3 text-xl">Set goal</button>}
-                  <button onClick={() => affordable && setRedeemFor({ kid: menuKid, reward: r, opId: newOpId() })} disabled={!affordable} className={`shrink-0 rounded-tile px-6 py-3 text-xl font-extrabold ${affordable ? "bg-ink text-cream" : "bg-cream-sunken text-ink-faint"}`}>Redeem</button>
+                  {isGoal ? <span className="shrink-0 text-xl font-bold text-ember-deep px-3">🎯 goal</span> : <button onClick={() => pickGoal(menuFor, r.id)} className="btn-soft shrink-0 px-5 py-3 text-xl">Set goal</button>}
+                  <button onClick={() => affordable && setRedeemFor({ kid: menuFor, reward: r, opId: newOpId() })} disabled={!affordable} className={`shrink-0 rounded-tile px-6 py-3 text-xl font-extrabold ${affordable ? "bg-ink text-cream" : "bg-cream-sunken text-ink-faint"}`}>Redeem</button>
                 </div>
               );
             })}
@@ -117,16 +136,18 @@ export default function KidRewards({ drillKid, onClose, all, rewards, reload }: 
   );
 }
 
-function DrillDown({ p, theme, onBooks, onMenu }: { p: Progress; theme: { text: string; bg: string }; onBooks: () => void; onMenu: () => void }) {
+// reading: the Reading log is on (books, reading streak, shelf). onMenu: null
+// while Points & jar is off.
+function DrillDown({ p, theme, reading, onBooks, onMenu }: { p: Progress; theme: { text: string; bg: string }; reading: boolean; onBooks: () => void; onMenu: (() => void) | null }) {
   return (
     <div className="flex flex-col gap-4 min-h-0 overflow-y-auto pr-1">
       <div className="flex items-center gap-4 flex-wrap">
         <div className="well px-5 py-3"><span className={`text-3xl font-extrabold ${theme.text}`}>🔥{p.routineStreak}</span><div className="text-sm font-bold text-ink-soft">routine</div></div>
-        <div className="well px-5 py-3"><span className={`text-3xl font-extrabold ${theme.text}`}>📖{p.readingStreak}</span><div className="text-sm font-bold text-ink-soft">reading</div></div>
-        <div className="well px-5 py-3"><span className={`text-3xl font-extrabold ${theme.text}`}>🏆{p.booksThisYear}</span><div className="text-sm font-bold text-ink-soft">books/yr</div></div>
+        {reading && <div className="well px-5 py-3"><span className={`text-3xl font-extrabold ${theme.text}`}>📖{p.readingStreak}</span><div className="text-sm font-bold text-ink-soft">reading</div></div>}
+        {reading && <div className="well px-5 py-3"><span className={`text-3xl font-extrabold ${theme.text}`}>🏆{p.booksThisYear}</span><div className="text-sm font-bold text-ink-soft">books/yr</div></div>}
         <div className="flex-1" />
-        <button onClick={onBooks} className="btn-soft px-5 py-3 text-xl">📚 Books</button>
-        <button onClick={onMenu} className={`shrink-0 rounded-tile px-6 py-3 text-xl font-extrabold ${theme.bg} text-white active:opacity-90`}>🎁 Rewards</button>
+        {reading && <button onClick={onBooks} className="btn-soft px-5 py-3 text-xl">📚 Books</button>}
+        {onMenu && <button onClick={onMenu} className={`shrink-0 rounded-tile px-6 py-3 text-xl font-extrabold ${theme.bg} text-white active:opacity-90`}>🎁 Rewards</button>}
       </div>
       <div className="card px-5 py-3 flex items-center gap-4">
         <span className="eyebrow shrink-0">Mood</span>
@@ -151,7 +172,7 @@ function DrillDown({ p, theme, onBooks, onMenu }: { p: Progress; theme: { text: 
           </div>
         );
       })}
-      {p.shelf.length > 0 && (
+      {reading && p.shelf.length > 0 && (
         <div>
           <div className="eyebrow mb-2">🏆 Bookshelf — {p.booksAllTime}</div>
           <div className="flex gap-3 overflow-x-auto pb-1">

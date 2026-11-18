@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KidId } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
+import { useModules } from "@/components/ModulesProvider";
 import KidPicker from "@/components/KidPicker";
 import Confetti from "@/components/Confetti";
 import Modal from "@/components/Modal";
@@ -63,6 +64,8 @@ function fmtDate(iso: string): string {
 
 export default function ReadingPage() {
   const { kids, memberOf } = useMembers();
+  // Finishing a book still earns points with Points & jar off; the line just isn't shown.
+  const rewardsOn = useModules().isOn("rewards");
   const [kid, setKid] = useState<KidId | null>(kids[0]?.id ?? null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [celebrate, setCelebrate] = useState<string | null>(null);
@@ -100,7 +103,7 @@ export default function ReadingPage() {
     const body = await res.json();
     load(kid);
     const daysBit = body.readDays > 1 ? ` Read in ${body.readDays} days!` : " Read in a single day!";
-    setCelebrate(`"${book.title}" goes on the shelf!${daysBit} +${body.earned} Family Bucks`);
+    setCelebrate(`"${book.title}" goes on the shelf!${daysBit}${rewardsOn ? ` +${body.earned} Family Bucks` : ""}`);
     setTimeout(() => setCelebrate(null), 4200);
     setNoteFor({ bookId: book.id, title: book.title, prompt: PROMPTS[book.id % PROMPTS.length] });
     setAnswer("");

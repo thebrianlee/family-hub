@@ -5,10 +5,12 @@ import TabNav from "@/components/TabNav";
 import Ambient from "@/components/Ambient";
 import SetupScreen from "@/components/SetupScreen";
 import MembersProvider from "@/components/MembersProvider";
+import ModulesProvider from "@/components/ModulesProvider";
 import BlockedScreen from "@/components/BlockedScreen";
 import { isDbBlocked } from "@/lib/db";
 import { getSetting } from "@/lib/queries";
 import { getMembers } from "@/lib/household";
+import { enabledModules, enabledTabs } from "@/lib/modules";
 import { memberThemeCss } from "@/lib/member-theme";
 
 // Bundled in the repo (SIL Open Font License, see fonts/OFL.txt) so builds work
@@ -42,19 +44,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     );
   }
   const members = ready ? getMembers() : [];
+  const modules = ready ? enabledModules() : [];
   return (
     <html lang="en" className={jakarta.variable}>
       <body>
         {ready ? (
           <MembersProvider members={members}>
-            {/* One rule per member: .m-<id>{--member:…}. Ids are validated slugs. */}
-            <style id="member-colors" dangerouslySetInnerHTML={{ __html: memberThemeCss(members) }} />
-            <Ambient>
-              <div className="h-screen w-screen flex flex-col">
-                <main className="flex-1 min-h-0 px-8 pt-6">{children}</main>
-                <TabNav />
-              </div>
-            </Ambient>
+            <ModulesProvider enabled={modules} tabs={enabledTabs(modules)}>
+              {/* One rule per member: .m-<id>{--member:…}. Ids are validated slugs. */}
+              <style id="member-colors" dangerouslySetInnerHTML={{ __html: memberThemeCss(members) }} />
+              <Ambient>
+                <div className="h-screen w-screen flex flex-col">
+                  <main className="flex-1 min-h-0 px-8 pt-6">{children}</main>
+                  <TabNav />
+                </div>
+              </Ambient>
+            </ModulesProvider>
           </MembersProvider>
         ) : (
           <SetupScreen />

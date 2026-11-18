@@ -1,16 +1,19 @@
 "use client";
 
-// Parent settings: household, location and timezone, calendar links, Ask the
-// Hub privacy, and the PIN. Everything here is parent-only; the page asks for
-// the PIN first and locks again when the parent leaves.
+// Parent settings: household, location and timezone, calendar links, which
+// modules are on, Ask the Hub privacy, and the PIN. Everything here is
+// parent-only; the page asks for the PIN first and locks again when the parent
+// leaves.
 
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
+import ModuleToggles from "@/components/ModuleToggles";
 import PersonEditor, { type PersonRow } from "@/components/PersonEditor";
 import PinModal from "@/components/PinModal";
 import { MEMBER_PALETTE, PARENT_COLOR_ORDER, nextUnusedColor } from "@/lib/member-theme";
 import { PIN_MAX_LENGTH, PIN_MIN_LENGTH } from "@/lib/weak-pin";
+import { applyModuleChanges, getModule, type ModuleState } from "@/modules/registry";
 
 type Household = {
   familyName: string;
@@ -122,6 +125,7 @@ export default function SettingsPage() {
               }}
             />
             <CalendarsCard calendars={snap.calendars} onSaved={setSnap} />
+            <ModulesCard />
             <PrivacyCard share={snap.privacy.askShareFirstName} onSaved={setSnap} />
             <PinCard />
             <AboutCard />
@@ -322,6 +326,105 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
         Include the child&apos;s first name so answers can be personal
       </label>
       <Status error={error} saved="" />
+    </Card>
+  );
+}
+
+/**
+ * Settings → Modules: switch built-in features on or off. Off only hides a
+ * module from the wall; its data stays. Turning one off that others need asks
+ * first. After a change the layout re-renders, so the tab bar follows.
+ */
+function ModulesCard() {
+  const router = useRouter();
+  const expired = useContext(SessionExpired);
+  const [state, setState] = useState<ModuleState | null>(null);
+  const [confirm, setConfirm] = useState<{ id: string; alsoOff: string[] } | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const toState = (data: { modules?: { id: string; enabled: boolean }[] }): ModuleState =>
+    Object.fromEntries((data.modules ?? []).map((m) => [m.id, m.enabled]));
+
+  useEffect(() => {
+    let live = true;
+    void fetch("/api/settings/modules", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (live && d) setState(toState(d));
+      })
+      .catch(() => null);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const name = (id: string) => getModule(id)?.name ?? id;
+
+  const save = async (id: string, on: boolean) => {
+    if (!state) return;
+    setConfirm(null);
+    setBusy(true);
+    setError("");
+    setSaved("");
+    const res = await fetch("/api/settings/modules", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modules: { [id]: on } }),
+    }).catch(() => null);
+    setBusy(false);
+    if (!res) return setError("The hub didn't answer. Check the connection.");
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403 && data.error === "Parent PIN required") {
+      expired();
+      return setError(EXPIRED);
+    }
+    if (!res.ok) return setError(typeof data.error === "string" ? data.error : "That didn't save.");
+    const next = toState(data);
+    const alsoOn = Object.keys(next).filter((m) => m !== id && next[m] && !state[m]);
+    setState(next);
+    setSaved(
+      on
+        ? `${name(id)} is on.${alsoOn.length ? ` ${alsoOn.map(name).join(" and ")} turned on too, because ${name(id)} needs it.` : ""}`
+        : "Hidden from the wall. Nothing is deleted; turn it back on any time."
+    );
+    // The layout passes the module state to every screen; re-render it.
+    router.refresh();
+  };
+
+  const toggle = (id: string, on: boolean) => {
+    if (!state) return;
+    if (!on) {
+      const next = applyModuleChanges(state, { [id]: false });
+      const alsoOff = Object.keys(next).filter((m) => m !== id && state[m] && !next[m]);
+      if (alsoOff.length) return setConfirm({ id, alsoOff });
+    }
+    void save(id, on);
+  };
+
+  return (
+    <Card
+      title="Modules"
+      note="Choose what the wall shows. Turning a module off hides it from the wall; nothing is deleted, and turning it back on brings everything back."
+    >
+      {state ? <ModuleToggles state={state} onToggle={toggle} busy={busy} /> : <p className="text-xl text-ink-soft">Loading…</p>}
+      {confirm ? (
+        <div className="grid gap-4 rounded-card border-2 border-ember p-6">
+          <p className="text-2xl font-bold">
+            Turning off {name(confirm.id)} also turns off {confirm.alsoOff.map(name).join(" and ")}. Nothing is deleted.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={() => void save(confirm.id, false)} className="btn-primary h-16 flex-1 text-2xl">
+              Turn them off
+            </button>
+            <button onClick={() => setConfirm(null)} className="btn-soft h-16 px-8 text-2xl">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <Status error={error} saved={saved} />
     </Card>
   );
 }

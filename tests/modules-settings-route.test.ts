@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GET as listsGet, POST as listsPost } from "@/app/api/lists/route";
+import { POST as mealsPost } from "@/app/api/meals/route";
 import { GET, PUT } from "@/app/api/settings/modules/route";
 import { hashPin } from "@/lib/auth";
 import { getDb } from "@/lib/db";
@@ -132,5 +133,23 @@ describe("data is kept (AC 4)", () => {
     expect(tableCounts()).toEqual(before.counts);
     expect(items()).toEqual(before.items);
     expect((await (await listsGet()).json()).lists).toEqual(before.lists);
+  });
+});
+
+describe("cross-module writes", () => {
+  it("Meals' Add to List is refused while Lists is off, and works again when it is on", async () => {
+    const slot = { date: "2026-11-18", slot: "dinner" };
+    await mealsPost(req("/api/meals", { body: { action: "set", ...slot, name: "Tacos", ingredients: ["Tortillas", "Limes"] } }));
+    const items = () => (getDb().prepare("SELECT COUNT(*) c FROM list_items").get() as { c: number }).c;
+    const before = items();
+    await PUT(put({ modules: { lists: false } }, "parent"));
+    const refused = await mealsPost(req("/api/meals", { body: { action: "addToList", ...slot } }));
+    expect(refused.status).toBe(404);
+    expect(await refused.json()).toEqual({ error: "module_off" });
+    expect(items()).toBe(before);
+    await PUT(put({ modules: { lists: true } }, "parent"));
+    const ok = await mealsPost(req("/api/meals", { body: { action: "addToList", ...slot } }));
+    expect(ok.status).toBe(200);
+    expect(items()).toBe(before + 2);
   });
 });

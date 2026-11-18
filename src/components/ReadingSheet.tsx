@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KidId } from "@/lib/family";
 import { useMembers } from "./MembersProvider";
+import { useModules } from "./ModulesProvider";
 import Modal from "./Modal";
 import Keypad from "./Keypad";
 import SoftKeyboard from "./SoftKeyboard";
@@ -46,6 +47,9 @@ export default function ReadingSheet({
   onLogged: (msg: string, close: boolean) => void;
 }) {
   const { memberOf } = useMembers();
+  // Points are still earned with Points & jar off; the "+N" is just not shown.
+  const { isOn } = useModules();
+  const plus = (n: number) => (isOn("rewards") ? ` +${n}` : "");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [minutes, setMinutes] = useState("");
   const [mode, setMode] = useState<"main" | "search">("main");
@@ -72,7 +76,7 @@ export default function ReadingSheet({
       const body = await res.json().catch(() => ({}));
       window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       load();
-      if (res.ok) onLogged(`📚 "${b.title}" goes on the shelf! +${body.earned ?? 15}`, false);
+      if (res.ok) onLogged(`📚 "${b.title}" goes on the shelf!${plus(body.earned ?? 15)}`, false);
     } finally { setBusy(false); }
   };
 
@@ -110,7 +114,7 @@ export default function ReadingSheet({
       window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       if (res.ok && !body.alreadyDone) {
         const name = memberOf(kid).name;
-        onLogged(body.bucketDone ? `🎉 ${name} finished the evening! +${body.earned}` : `📖 ${m} ${unit} logged · +${body.earned}`, true);
+        onLogged(body.bucketDone ? `🎉 ${name} finished the evening!${plus(body.earned)}` : `📖 ${m} ${unit} logged${isOn("rewards") ? ` · +${body.earned}` : ""}`, true);
       } else {
         onClose();
       }

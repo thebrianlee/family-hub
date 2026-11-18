@@ -4,17 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import AddSheet from "./AddSheet";
+import { useModules } from "./ModulesProvider";
 
-// Rewards folded into Routines (tap a kid's header for the drill-down).
-// Today is the dashboard the wall wakes to.
-const TABS = [
-  { href: "/today", label: "Today", icon: SunIcon },
-  { href: "/calendar", label: "Calendar", icon: CalendarIcon },
-  { href: "/my-day", label: "Routines", icon: CheckIcon },
-  { href: "/meals", label: "Meals", icon: MealIcon },
-  { href: "/lists", label: "Lists", icon: ListIcon },
-  { href: "/ask", label: "Ask", icon: BulbIcon },
-];
+// The tabs are the modules that are switched on (Settings → Modules), in the
+// order src/modules/registry.ts gives them. Rewards folded into Routines (tap a
+// kid's header for the drill-down). Today is the dashboard the wall wakes to.
 
 // One consistent rounded icon set (stroke style, 2.5 weight).
 function iconProps(active: boolean) {
@@ -79,6 +73,16 @@ function BulbIcon({ active }: { active: boolean }) {
     </svg>
   );
 }
+// One icon per module that has a tab.
+const ICONS: Record<string, (props: { active: boolean }) => React.ReactElement> = {
+  core: SunIcon,
+  calendar: CalendarIcon,
+  routines: CheckIcon,
+  meals: MealIcon,
+  lists: ListIcon,
+  ask: BulbIcon,
+};
+
 function MoonIcon() {
   return (
     <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
@@ -89,6 +93,10 @@ function MoonIcon() {
 
 export default function TabNav() {
   const pathname = usePathname();
+  const { tabs, isOn } = useModules();
+  // The Add button makes events (Calendar) and routines or jobs (Routines).
+  const canEvent = isOn("calendar");
+  const canRoutine = isOn("routines");
   const [addOpen, setAddOpen] = useState(false);
   const [addStep, setAddStep] = useState<"choose" | "event" | "routine">("choose");
   const [addType, setAddType] = useState<"routine" | "job">("routine");
@@ -105,10 +113,12 @@ export default function TabNav() {
   }, []);
   return (
     <nav className="flex gap-4 px-8 pb-7 pt-3 shrink-0">
-      <AddSheet open={addOpen} onClose={() => setAddOpen(false)} initialStep={addStep} initialType={addType} />
-      {TABS.map((tab) => {
+      {(canEvent || canRoutine) && (
+        <AddSheet open={addOpen} onClose={() => setAddOpen(false)} initialStep={addStep} initialType={addType} />
+      )}
+      {tabs.map((tab) => {
         const active = pathname === tab.href;
-        const Icon = tab.icon;
+        const Icon = ICONS[tab.id] ?? CheckIcon;
         return (
           <Link
             key={tab.href}
@@ -146,6 +156,7 @@ export default function TabNav() {
         <MoonIcon />
       </button>
       {/* Universal input — create an event or routine by touch */}
+      {(canEvent || canRoutine) && (
       <button
         onClick={() => {
           // Context-aware: open straight to the type that fits the current tab.
@@ -162,6 +173,7 @@ export default function TabNav() {
         </svg>
         Add
       </button>
+      )}
     </nav>
   );
 }

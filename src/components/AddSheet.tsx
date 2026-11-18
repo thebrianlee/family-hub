@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { useMembers } from "./MembersProvider";
+import { useModules } from "./ModulesProvider";
 import Modal from "./Modal";
 import SoftKeyboard from "./SoftKeyboard";
 import MonthCalendar, { isoOf, todayIso } from "./MonthCalendar";
@@ -20,6 +21,14 @@ const BUCKETS: { id: string; label: string; emoji: string }[] = [
   { id: "evening", label: "Evening", emoji: "🌙" },
 ];
 const ITEM_EMOJI = ["🪥", "🛏️", "📖", "⚽", "🥍", "🎹", "🏊", "✏️", "🧸", "👕", "🧹", "💻", "🀄", "🚿", "🎨", "🧺"];
+
+/** The step to open on when Calendar or Routines may be switched off. */
+function allowedStep(step: Step, canEvent: boolean, canRoutine: boolean): Step {
+  if (canEvent && canRoutine) return step;
+  if (canEvent) return "event";
+  if (canRoutine) return "routine";
+  return "choose";
+}
 
 function to24(h: number, m: number, pm: boolean): string {
   let hh = h % 12;
@@ -73,15 +82,20 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
   // Everyone can be on an event: kids in their color, parents in the parent slate.
   const MEMBERS = rowOrder.map((m) => ({ id: m.id, name: m.name, color: m.theme.fill }));
   const firstKid = kids[0]?.id;
+  // Events belong to Calendar, routines and jobs to Routines. A module that is
+  // switched off has no option here; with one left, open straight to it.
+  const { isOn } = useModules();
+  const canEvent = isOn("calendar");
+  const canRoutine = isOn("routines");
   const [step, setStep] = useState<Step>(initialStep);
   const [saving, setSaving] = useState(false);
   const [rType, setRType] = useState<"routine" | "job">(initialType);
   useEffect(() => {
     if (open) {
-      setStep(initialStep);
+      setStep(allowedStep(initialStep, canEvent, canRoutine));
       setRType(initialType);
     }
-  }, [open, initialStep, initialType]);
+  }, [open, initialStep, initialType, canEvent, canRoutine]);
 
   // event
   const [evMembers, setEvMembers] = useState<string[]>([]);
@@ -111,11 +125,12 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [saveToBox, setSaveToBox] = useState(false);
   useEffect(() => {
+    if (!canRoutine) return;
     fetch("/api/taskbox").then((r) => r.json()).then((d) => setTaskBox(d.items ?? [])).catch(() => {});
-  }, []);
+  }, [canRoutine]);
 
   const reset = () => {
-    setStep("choose");
+    setStep(allowedStep("choose", canEvent, canRoutine));
     setEvMembers([]); setEvTitle(""); setEvDate(todayIso()); setPmY(nowD.getFullYear()); setPmM(nowD.getMonth()); setAllDay(false); setEvCountdown(false);
     setSh(9); setSm(0); setSpm(false); setEh(10); setEm(0); setEpm(false);
     setRKids(firstKid ? [firstKid] : []); setRType("routine"); setRTitle(""); setREmoji("⚽"); setRBucket("afternoon");
@@ -198,20 +213,24 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
     <Modal open={open} onClose={close} title={title} wide>
       {step === "choose" && (
         <div className="grid grid-cols-2 gap-5">
+          {canEvent && (
           <button onClick={() => setStep("event")} className="touch-target card flex flex-col items-center gap-3 py-12 active:bg-cream-sunken">
             <span className="text-7xl">📅</span>
             <span className="text-3xl font-extrabold">Event</span>
             <span className="text-xl font-bold text-ink-faint">a game, appointment, dinner</span>
           </button>
+          )}
+          {canRoutine && (
           <button onClick={() => setStep("routine")} className="touch-target card flex flex-col items-center gap-3 py-12 active:bg-cream-sunken">
             <span className="text-7xl">✅</span>
             <span className="text-3xl font-extrabold">Routine or Job</span>
             <span className="text-xl font-bold text-ink-faint">a habit or a helping task</span>
           </button>
+          )}
         </div>
       )}
 
-      {step === "event" && (
+      {step === "event" && canEvent && (
         <div className="flex flex-col gap-5 min-h-0 overflow-y-auto pr-1">
           <div>
             <div className="eyebrow mb-2">Who&apos;s it for?</div>
@@ -282,7 +301,7 @@ export default function AddSheet({ open, onClose, initialStep = "choose", initia
         </div>
       )}
 
-      {step === "routine" && (
+      {step === "routine" && canRoutine && (
         <div className="flex flex-col gap-4 min-h-0 overflow-y-auto pr-1">
           {/* Routine vs Job */}
           <div className="flex rounded-card overflow-hidden shadow-tile">

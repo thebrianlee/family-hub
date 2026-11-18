@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMealWeek, getMealDays, setMealSlot, clearMealSlot, addMealSlotToList } from "@/lib/queries";
 import { MEAL_TYPES, MEAL_TYPE_KEYS } from "@/lib/meals";
+import { isEnabled } from "@/lib/modules";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, week: getMealWeek() });
   }
   if (b.action === "addToList") {
+    // Writes into Lists: refused like any Lists write while it is switched off.
+    if (!isEnabled("lists")) return NextResponse.json({ error: "module_off" }, { status: 404 });
     const added = addMealSlotToList(date, slot);
     return NextResponse.json({ ok: true, added });
   }
