@@ -8,7 +8,7 @@
 // the layout. Every state carries its revision (src/lib/modules.ts
 // modulesRev) and the newest one is shown, wherever it came from, so an
 // answer that arrives late never puts back an older state. A screen that keeps
-// data from such an answer checks it against `rev` too (isCurrentRev). The
+// data from such an answer checks it against `rev` too (todayAnswerAction). The
 // real gate is on the server (src/proxy.ts): this only keeps the screen from
 // showing links to what is switched off.
 
@@ -38,6 +38,24 @@ export function newerModuleState(current: ModuleSnapshot, next: ModuleSnapshot):
  */
 export function isCurrentRev(shownRev: number, rev: unknown): rev is number {
   return typeof rev === "number" && Number.isFinite(rev) && rev >= shownRev;
+}
+
+/**
+ * What the Today page does with an answer read at module revision `rev`:
+ * - "take" it when `rev` is at least the revision shown now;
+ * - "drop" it when it is lower than the one shown now but not lower than the
+ *   one shown when the request started: a newer save landed while the answer
+ *   was on its way, so it can still carry a module that is now off;
+ * - "reload" the screen when it is lower than the revision shown when the
+ *   request started: the server's revision went backwards, which means its
+ *   database was replaced (a restore from a backup). Only a full reload
+ *   brings every part of the screen back in line with it;
+ * - "drop" an answer without a revision.
+ */
+export function todayAnswerAction(revAtStart: number, shownRev: number, rev: unknown): "take" | "drop" | "reload" {
+  if (typeof rev !== "number" || !Number.isFinite(rev)) return "drop";
+  if (rev < revAtStart) return "reload";
+  return rev >= shownRev ? "take" : "drop";
 }
 
 /**

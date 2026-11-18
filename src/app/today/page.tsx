@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATUS_EMOJI, PARENT_STATUSES, ParentId, ParentStatus } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
-import { isCurrentRev, useModules, type TabInfo } from "@/components/ModulesProvider";
+import { todayAnswerAction, useModules, type TabInfo } from "@/components/ModulesProvider";
 import Avatar from "@/components/Avatar";
 import Modal from "@/components/Modal";
 import PinModal from "@/components/PinModal";
@@ -162,9 +162,12 @@ export default function TodayPage() {
     revShown.current = Math.max(revShown.current, rev);
   }, [rev]);
   const show = useCallback(
-    (d: Today) => {
+    (d: Today, revAtStart: number) => {
+      const action = todayAnswerAction(revAtStart, revShown.current, d.modulesRev);
+      // The database was replaced (restore): start over from the server.
+      if (action === "reload") return window.location.reload();
       // Read before a newer module state: keep what is shown, take nothing.
-      if (!isCurrentRev(revShown.current, d.modulesRev)) return;
+      if (action === "drop" || typeof d.modulesRev !== "number") return;
       revShown.current = d.modulesRev;
       setT(d);
       if (Array.isArray(d.tabs) && Array.isArray(d.modules)) {
@@ -174,7 +177,13 @@ export default function TodayPage() {
     [syncModules]
   );
   useEffect(() => {
-    const f = () => fetch("/api/today").then((r) => r.json()).then(show).catch(() => {});
+    const f = () => {
+      const revAtStart = revShown.current;
+      return fetch("/api/today")
+        .then((r) => r.json())
+        .then((d: Today) => show(d, revAtStart))
+        .catch(() => {});
+    };
     f();
     const iv = setInterval(f, 5 * 60_000);
     window.addEventListener("sproutwall:datachanged", f);
@@ -189,7 +198,11 @@ export default function TodayPage() {
     });
     setStatusFor(null);
     setPin("");
-    fetch("/api/today").then((r) => r.json()).then(show).catch(() => {});
+    const revAtStart = revShown.current;
+    fetch("/api/today")
+      .then((r) => r.json())
+      .then((d: Today) => show(d, revAtStart))
+      .catch(() => {});
   };
 
   const [rulesOpen, setRulesOpen] = useState(false);

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { deckQuotes } from "@/components/Ambient";
-import { isCurrentRev, isNewerRev, newerModuleState, type ModuleSnapshot } from "@/components/ModulesProvider";
+import { isCurrentRev, isNewerRev, newerModuleState, todayAnswerAction, type ModuleSnapshot } from "@/components/ModulesProvider";
 import { getDb } from "@/lib/db";
 import { enabledModules, enabledTabs, modulesRev, setEnabled } from "@/lib/modules";
 
@@ -126,3 +126,25 @@ describe("modules_rev", () => {
     expect(enabledModules()).toContain("meals");
   });
 });
+
+describe("todayAnswerAction (late answers versus a restored database)", () => {
+  it("drops an answer that a newer save overtook while it was on its way", () => {
+    // Shown rev 2 when the poll started; a save to rev 3 landed meanwhile.
+    expect(todayAnswerAction(2, 3, 2)).toBe("drop");
+  });
+
+  it("takes an answer at or above the revision shown now", () => {
+    expect(todayAnswerAction(2, 3, 3)).toBe("take");
+    expect(todayAnswerAction(3, 3, 4)).toBe("take");
+  });
+
+  it("reloads when the server's revision went backwards since the request started (a restore)", () => {
+    // Shown rev 7 at the start; the restored database is at rev 2.
+    expect(todayAnswerAction(7, 7, 2)).toBe("reload");
+  });
+
+  it("drops an answer without a revision", () => {
+    for (const rev of [undefined, null, "3", Number.NaN]) expect(todayAnswerAction(0, 0, rev)).toBe("drop");
+  });
+});
+
