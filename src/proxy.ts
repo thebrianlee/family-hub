@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { isDbBlocked } from "@/lib/db";
 import { DEVICE_COOKIE, PARENT_COOKIE, readsLocked, setupComplete, verifyCookie } from "@/lib/session";
 
 // Access policy for every request. Routes repeat the parent checks themselves
@@ -61,7 +62,19 @@ export function proxy(req: NextRequest): NextResponse {
     }
   }
 
-  if (!setupComplete() || BOOTSTRAP.has(pathname)) return NextResponse.next();
+  if (BOOTSTRAP.has(pathname)) return NextResponse.next();
+  let ready: boolean;
+  try {
+    ready = setupComplete();
+  } catch (e) {
+    if (!isDbBlocked(e)) throw e;
+    // The database must not be used (lib/db.ts DbBlockedError). Pages render
+    // the explanation screen (app/layout.tsx); API calls get a 503 with the
+    // same code /api/health reports. Nothing reaches the data.
+    if (!isApi) return NextResponse.next();
+    return NextResponse.json({ error: "The hub can't use its data right now", code: e.code }, { status: 503 });
+  }
+  if (!ready) return NextResponse.next();
 
   const parent = verifyCookie(req.cookies.get(PARENT_COOKIE)?.value, "parent");
   const device = parent || !readsLocked() || verifyCookie(req.cookies.get(DEVICE_COOKIE)?.value, "device");

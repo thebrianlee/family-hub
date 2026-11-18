@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { dataDir } from "./paths";
+import { LATEST_SCHEMA, MIGRATIONS } from "./migrations";
 
 // Singleton SQLite handle. Survives Next.js dev-server hot reloads via globalThis.
 const DB_PATH = process.env.FAMILY_HUB_DB
@@ -12,15 +13,235 @@ declare global {
   var __familyHubDb: Database.Database | undefined;
 }
 
+export type DbBlockedCode = "db_newer_than_app" | "backup_failed" | "low_disk";
+
+/**
+ * The app must not use the database right now. Every route that opens it fails
+ * with this; the screen shows a message instead of the app and /api/health
+ * answers 503 with the code. Nothing writes household data in this state.
+ * - db_newer_than_app: the data was written by a newer build (user_version is
+ *   higher than any migration this build knows). Update or restore a backup.
+ * - low_disk / backup_failed: an upgrade is pending but the safety copy could
+ *   not be made, so the schema is left as it was.
+ */
+export class DbBlockedError extends Error {
+  constructor(
+    readonly code: DbBlockedCode,
+    message: string,
+    readonly details: Record<string, number> = {}
+  ) {
+    super(message);
+    this.name = "DbBlockedError";
+  }
+}
+
+export function isDbBlocked(e: unknown): e is DbBlockedError {
+  return e instanceof DbBlockedError || (e instanceof Error && e.name === "DbBlockedError");
+}
+
+/** user_version of an existing database file, read through a read-only handle. */
+function readSchemaVersion(file: string): number | null {
+  if (!fs.existsSync(file)) return null;
+  const ro = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    return ro.pragma("user_version", { simple: true }) as number;
+  } finally {
+    ro.close();
+  }
+}
+
 function createDb(): Database.Database {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  // Check the version through a read-only handle first, so a database written
+  // by a newer build is never opened for writing (not even the WAL switch).
+  const version = readSchemaVersion(DB_PATH);
+  if (version !== null && version > LATEST_SCHEMA) {
+    console.error(
+      `[db] ${DB_PATH} has schema ${version}, newer than this app's ${LATEST_SCHEMA}. ` +
+        "Not opening it. Update the app, or restore a backup."
+    );
+    throw new DbBlockedError(
+      "db_newer_than_app",
+      `The database (schema ${version}) was written by a newer version of this app (schema ${LATEST_SCHEMA}).`,
+      { db: version, app: LATEST_SCHEMA }
+    );
+  }
   const db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  migrate(db);
-  ensureColumns(db);
-  seed(db);
-  applyHouseholdTimezone(db);
+  try {
+    initializeDb(db, DB_PATH);
+  } catch (e) {
+    db.close();
+    throw e;
+  }
   return db;
+}
+
+/**
+ * Everything after the file is open for writing. Exported for tests only.
+ *
+ * Another process (a newer build) may upgrade the file between the read-only
+ * check above and this point. So the version is checked again on this handle
+ * before the first write, inside every migration step, and inside the write
+ * transaction that seeds the defaults, so a newer database is never written.
+ */
+export function initializeDb(db: Database.Database, file: string): void {
+  assertNotNewer(db, file);
+  // WAL is a persistent property of the file, and every Sproutwall build uses
+  // it. So switch only a file that is not in WAL yet: a database that a newer
+  // build has upgraded is already WAL, and this build issues no write to it at
+  // all. (Changing the journal mode can't share a transaction with the version
+  // check; SQLite forbids it.) The version is checked again right after.
+  const mode = String(db.pragma("journal_mode", { simple: true })).toLowerCase();
+  if (mode !== "wal") db.pragma("journal_mode = WAL");
+  assertNotNewer(db, file);
+  runMigrations(db, file);
+  db.transaction(() => {
+    assertNotNewer(db, file);
+    seedDefaults(db);
+    seed(db);
+  }).immediate();
+  applyHouseholdTimezone(db);
+}
+
+/** Refuse a database whose schema is newer than this build (see createDb). */
+function assertNotNewer(db: Database.Database, file: string): void {
+  const version = db.pragma("user_version", { simple: true }) as number;
+  if (version <= LATEST_SCHEMA) return;
+  console.error(
+    `[db] ${file} has schema ${version}, newer than this app's ${LATEST_SCHEMA}. ` +
+      "Not using it. Update the app, or restore a backup."
+  );
+  throw new DbBlockedError(
+    "db_newer_than_app",
+    `The database (schema ${version}) was written by a newer version of this app (schema ${LATEST_SCHEMA}).`,
+    { db: version, app: LATEST_SCHEMA }
+  );
+}
+
+/**
+ * Bring the schema up to LATEST_SCHEMA. Before changing a database that already
+ * holds data, make a verified copy in backups/ next to the database file; if
+ * that isn't possible, leave the schema alone and block (DbBlockedError).
+ * Old copies are pruned only after every migration has succeeded.
+ */
+function runMigrations(db: Database.Database, file: string) {
+  assertNotNewer(db, file);
+  const current = db.pragma("user_version", { simple: true }) as number;
+  if (!MIGRATIONS.some((m) => m.id > current)) return;
+  const backup = isFresh(db) ? null : createBackup(db, file, current, LATEST_SCHEMA);
+  for (const m of MIGRATIONS) {
+    // BEGIN IMMEDIATE takes the write lock first; re-reading the version
+    // inside it means a second process that got here too can't run it twice.
+    db.transaction(() => {
+      assertNotNewer(db, file);
+      const now = db.pragma("user_version", { simple: true }) as number;
+      if (now >= m.id) return;
+      m.up(db);
+      db.pragma(`user_version = ${m.id}`);
+    }).immediate();
+  }
+  if (backup) pruneBackups(path.dirname(backup), BACKUPS_KEPT);
+}
+
+/** A brand-new file: no tables yet, so there is nothing to back up. */
+function isFresh(db: Database.Database): boolean {
+  const row = db
+    .prepare("SELECT COUNT(*) c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    .get() as { c: number };
+  return row.c === 0;
+}
+
+/** How many pre-migration backups to keep. Older ones are deleted. */
+export const BACKUPS_KEPT = 5;
+
+// sproutwall-v<from>-to-v<to>-<YYYYMMDD>T<HHMMSS><ms>Z-<nn>.db, in UTC. The
+// version numbers have no fixed width, so age comes from the captured
+// "<stamp>-<nn>" part, which does. Only files that match this pattern are ever
+// deleted.
+const BACKUP_NAME = /^sproutwall-v\d+-to-v\d+-(\d{8}T\d{9}Z-\d{2})\.db$/;
+
+function fileSize(f: string): number {
+  try {
+    return fs.statSync(f).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Copy the database to backups/ and check the copy. Uses VACUUM INTO, which
+ * writes a complete, consistent snapshot (WAL included) synchronously.
+ * Throws DbBlockedError if there isn't room or the copy doesn't verify.
+ */
+export function createBackup(db: Database.Database, file: string, from: number, to: number): string {
+  const dir = path.join(path.dirname(file), "backups");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    throw new DbBlockedError("backup_failed", `Could not create ${dir} for the pre-upgrade backup.`);
+  }
+  const needed = 2 * (fileSize(file) + fileSize(`${file}-wal`));
+  try {
+    const st = fs.statfsSync(dir);
+    const free = st.bavail * st.bsize;
+    if (free < needed) {
+      // Byte counts go to the log only; /api/health needs no PIN.
+      console.error(`[db] pre-upgrade backup needs ${needed} bytes free, ${free} available.`);
+      throw new DbBlockedError("low_disk", "Not enough free space for the pre-upgrade backup.");
+    }
+  } catch (e) {
+    if (isDbBlocked(e)) throw e;
+    // statfs unavailable: fall through and let the copy itself fail if it must.
+  }
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(".", "").slice(0, 18) + "Z";
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  // Claim a free name by creating it empty and exclusively ("wx"), so two
+  // processes can't pick the same name. VACUUM INTO accepts an empty file.
+  // From here on the file is ours, so removing it on failure is safe.
+  let dest = "";
+  for (let n = 0; n < 100 && !dest; n++) {
+    const candidate = path.join(dir, `sproutwall-v${from}-to-v${to}-${stamp}-${p2(n)}.db`);
+    try {
+      fs.closeSync(fs.openSync(candidate, "wx"));
+      dest = candidate;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
+        console.error(`[db] pre-upgrade backup failed: ${(e as Error).message}`);
+        throw new DbBlockedError("backup_failed", "The pre-upgrade backup could not be made or verified.");
+      }
+    }
+  }
+  if (!dest) {
+    console.error("[db] pre-upgrade backup failed: no free backup file name for this timestamp.");
+    throw new DbBlockedError("backup_failed", "The pre-upgrade backup could not be made or verified.");
+  }
+  try {
+    db.exec(`VACUUM INTO '${dest.replace(/'/g, "''")}'`);
+    const check = new Database(dest, { readonly: true, fileMustExist: true });
+    try {
+      const result = check.pragma("quick_check", { simple: true });
+      if (result !== "ok") throw new Error(`quick_check: ${String(result)}`);
+    } finally {
+      check.close();
+    }
+  } catch (e) {
+    fs.rmSync(dest, { force: true });
+    console.error(`[db] pre-upgrade backup failed: ${(e as Error).message}`);
+    throw new DbBlockedError("backup_failed", "The pre-upgrade backup could not be made or verified.");
+  }
+  return dest;
+}
+
+/** Delete all but the newest `keep` backups. Only our own file names are touched. */
+export function pruneBackups(dir: string, keep: number): void {
+  const age = (f: string) => BACKUP_NAME.exec(f)![1];
+  const names = fs
+    .readdirSync(dir)
+    .filter((f) => BACKUP_NAME.test(f))
+    .sort((a, b) => (age(a) < age(b) ? -1 : age(a) > age(b) ? 1 : a < b ? -1 : a > b ? 1 : 0));
+  for (const old of names.slice(0, Math.max(0, names.length - keep))) {
+    fs.rmSync(path.join(dir, old), { force: true });
+  }
 }
 
 /**
@@ -41,277 +262,27 @@ export function applyHouseholdTimezone(db: Database.Database = getDb()): void {
   process.env.TZ = tz;
 }
 
+/**
+ * While the data is blocked, every request would otherwise retry createDb, and
+ * for low_disk or backup_failed that means another statfs and copy attempt per
+ * request. Remember the block for a short while instead. It still clears by
+ * itself (for example once disk space is freed), within BLOCKED_RETRY_MS.
+ */
+export const BLOCKED_RETRY_MS = 60_000;
+let blocked: { error: DbBlockedError; at: number } | null = null;
+
 export function getDb(): Database.Database {
   if (!globalThis.__familyHubDb) {
-    globalThis.__familyHubDb = createDb();
+    if (blocked && Date.now() - blocked.at < BLOCKED_RETRY_MS) throw blocked.error;
+    try {
+      globalThis.__familyHubDb = createDb();
+      blocked = null;
+    } catch (e) {
+      if (isDbBlocked(e)) blocked = { error: e, at: Date.now() };
+      throw e;
+    }
   }
   return globalThis.__familyHubDb;
-}
-
-function migrate(db: Database.Database) {
-  db.exec(`
-    -- The household. id is a CSS-safe slug derived from the name (see
-    -- lib/household.ts); every other table refers to people by this id.
-    CREATE TABLE IF NOT EXISTS members (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('kid','parent')),
-      age INTEGER NULL,
-      pre_reader INTEGER NOT NULL DEFAULT 0,
-      color TEXT NOT NULL,                     -- #RRGGBB from the member palette
-      sort INTEGER NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1
-    );
-
-    -- Placeholder calendar events. The Google Calendar integration replaces
-    -- the PROVIDER (lib/calendar.ts), not the consumers; this table only backs
-    -- the placeholder provider. day_offset keeps seed data relative to today.
-    CREATE TABLE IF NOT EXISTS events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      member TEXT NOT NULL,
-      title TEXT NOT NULL,
-      day_offset INTEGER NOT NULL DEFAULT 0,   -- 0=today, 1=tomorrow…
-      start TEXT,                              -- "HH:MM", NULL = all-day
-      end TEXT,
-      location TEXT
-    );
-
-    -- Events pulled from each member's iCal link by src/lib/ics.ts. Once any
-    -- link is set, the calendar shows these instead of the sample events.
-    CREATE TABLE IF NOT EXISTS synced_events (
-      id TEXT PRIMARY KEY,                     -- source-prefixed event id
-      member TEXT NOT NULL,
-      title TEXT NOT NULL,
-      date TEXT NOT NULL,                      -- YYYY-MM-DD local (America/New_York)
-      start TEXT,                              -- "HH:MM", NULL = all-day
-      end TEXT,
-      location TEXT,
-      fetched_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      source TEXT                              -- 'own' | 'shared'; NULL = written before this column
-    );
-
-    -- Events created on the wall itself (the ＋ Add flow). Kept separate from
-    -- synced_events so the ICS refresh (per-member replace) never wipes them;
-    -- the calendar provider unions both. One row per member on the event.
-    CREATE TABLE IF NOT EXISTS wall_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      group_id TEXT NOT NULL,                  -- shared id across a multi-member event
-      member TEXT NOT NULL,
-      title TEXT NOT NULL,
-      date TEXT NOT NULL,                       -- YYYY-MM-DD local
-      start TEXT,                               -- "HH:MM", NULL = all-day
-      end TEXT,
-      location TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    CREATE TABLE IF NOT EXISTS checklist_templates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL,
-      points INTEGER NOT NULL DEFAULT 2,
-      detail_kind TEXT,                        -- NULL | 'reading' | 'levelup'
-      sort INTEGER NOT NULL DEFAULT 0,
-      active INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS checklist_completions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      template_id INTEGER NOT NULL REFERENCES checklist_templates(id),
-      kid TEXT NOT NULL,
-      date TEXT NOT NULL,                      -- YYYY-MM-DD local
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      UNIQUE(template_id, date)
-    );
-
-    -- Task Box: reusable routine/job presets you can tap-add to any kid.
-    CREATE TABLE IF NOT EXISTS task_box (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '✅',
-      bucket TEXT NOT NULL DEFAULT 'morning',
-      tracked INTEGER NOT NULL DEFAULT 0,
-      type TEXT NOT NULL DEFAULT 'routine'
-    );
-
-    -- One-tap daily mood per kid. Feeds the quiet week-over-week strip.
-    CREATE TABLE IF NOT EXISTS mood_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      date TEXT NOT NULL,                      -- YYYY-MM-DD local
-      mood TEXT NOT NULL,                      -- great|good|ok|sad|mad
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      UNIQUE(kid, date)
-    );
-
-    CREATE TABLE IF NOT EXISTS levelup_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      activity TEXT NOT NULL,                  -- soccer|lacrosse|juggling|shooting|workout
-      duration_min REAL,
-      count REAL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    CREATE TABLE IF NOT EXISTS books (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      title TEXT NOT NULL,
-      author TEXT,
-      status TEXT NOT NULL DEFAULT 'reading',  -- reading | finished
-      started_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
-      finished_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS book_notes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      book_id INTEGER NOT NULL REFERENCES books(id),
-      kid TEXT NOT NULL,
-      prompt TEXT,
-      answer TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    -- Family Bucks ledger. Positive = earned, negative = spent (future).
-    CREATE TABLE IF NOT EXISTS ledger (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      amount INTEGER NOT NULL,
-      source TEXT NOT NULL,                    -- myday | levelup | book | streak_bonus | redeem
-      label TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    -- Global task values (checklist items carry their own value per-row).
-    CREATE TABLE IF NOT EXISTS task_values (
-      key TEXT PRIMARY KEY,
-      value INTEGER NOT NULL,
-      label TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS meal_defaults (
-      weekday INTEGER PRIMARY KEY,             -- 0=Sunday … 6=Saturday
-      meal TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🍽️'
-    );
-
-    CREATE TABLE IF NOT EXISTS meal_overrides (
-      date TEXT PRIMARY KEY,                   -- YYYY-MM-DD
-      meal TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🍽️'
-    );
-
-    -- Full meal grid: one row per (date, slot). slot = breakfast|lunch|dinner|snack.
-    CREATE TABLE IF NOT EXISTS meal_slots (
-      date TEXT NOT NULL,                      -- YYYY-MM-DD
-      slot TEXT NOT NULL,
-      name TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🍽️',
-      ingredients TEXT,                        -- newline-separated, for Add-to-List
-      PRIMARY KEY (date, slot)
-    );
-
-    CREATE TABLE IF NOT EXISTS grocery (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT NOT NULL,
-      checked INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    -- Named lists (Groceries, Packing, To-Do…), each with collapsible sections.
-    CREATE TABLE IF NOT EXISTS lists (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      color TEXT NOT NULL DEFAULT '#6E9BBD',
-      sort INTEGER NOT NULL DEFAULT 0,
-      active INTEGER NOT NULL DEFAULT 1
-    );
-    CREATE TABLE IF NOT EXISTS list_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      list_id INTEGER NOT NULL REFERENCES lists(id),
-      section TEXT NOT NULL DEFAULT 'General',
-      label TEXT NOT NULL,
-      checked INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    CREATE TABLE IF NOT EXISTS family_rules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      text TEXT NOT NULL,
-      sort INTEGER NOT NULL DEFAULT 0,
-      active INTEGER NOT NULL DEFAULT 1
-    );
-
-    CREATE TABLE IF NOT EXISTS parent_status (
-      member TEXT PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'Home'
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    -- Daily Spark cache: a nightly Anthropic API job can INSERT fresh rows;
-    -- lib/spark.ts prefers cache rows over the hardcoded lists.
-    CREATE TABLE IF NOT EXISTS spark_cache (
-      date TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      content TEXT NOT NULL,
-      PRIMARY KEY (date, kind)
-    );
-
-    -- Rewards menu ("legend"): what things cost. kid NULL = family-wide item.
-    CREATE TABLE IF NOT EXISTS rewards (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🎁',
-      cost INTEGER NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1
-    );
-
-    -- Level Up activities: seeded five per kid, kids can add their own.
-    CREATE TABLE IF NOT EXISTS activities (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      slug TEXT NOT NULL,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🏅',
-      metric TEXT NOT NULL DEFAULT 'count',   -- count | duration
-      unit TEXT NOT NULL DEFAULT 'reps',
-      sort INTEGER NOT NULL DEFAULT 0,
-      active INTEGER NOT NULL DEFAULT 1,
-      UNIQUE(kid, slug)
-    );
-
-    -- Kid-proposed rewards awaiting a parent-set price.
-    CREATE TABLE IF NOT EXISTS reward_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🎁',
-      status TEXT NOT NULL DEFAULT 'pending', -- pending | priced | declined
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    -- A kid's chosen goal: shows a progress bar on their Balance card.
-    CREATE TABLE IF NOT EXISTS selected_goals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      label TEXT NOT NULL,
-      emoji TEXT NOT NULL DEFAULT '🎯',
-      cost INTEGER NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_completions ON checklist_completions(kid, date);
-    CREATE INDEX IF NOT EXISTS idx_levelup ON levelup_logs(kid, activity, created_at);
-    CREATE INDEX IF NOT EXISTS idx_ledger ON ledger(kid, created_at);
-    CREATE INDEX IF NOT EXISTS idx_books ON books(kid, status);
-  `);
-  seedMembers(db);
 }
 
 /**
@@ -347,131 +318,13 @@ function activeKidIds(db: Database.Database): string[] {
   ).map((r) => r.id);
 }
 
-/** Idempotent post-create migrations for DBs seeded before these columns existed. */
-function ensureColumns(db: Database.Database) {
-  const cols = (db.prepare("PRAGMA table_info(books)").all() as { name: string }[]).map((c) => c.name);
-  if (!cols.includes("isbn")) db.exec("ALTER TABLE books ADD COLUMN isbn TEXT");
-  if (!cols.includes("cover_path")) db.exec("ALTER TABLE books ADD COLUMN cover_path TEXT");
-  if (!cols.includes("author_full")) {
-    /* placeholder for future migrations */
-  }
-
-  // Routine buckets + inline tracking (added for the July restructure).
-  // bucket: morning|afternoon|evening. tracked items carry ONE inline number
-  // (amount on the completion) that accumulates into Progress under metric_label.
-  const tcols = (db.prepare("PRAGMA table_info(checklist_templates)").all() as { name: string }[]).map((c) => c.name);
-  if (!tcols.includes("bucket")) db.exec("ALTER TABLE checklist_templates ADD COLUMN bucket TEXT NOT NULL DEFAULT 'morning'");
-  if (!tcols.includes("tracked")) db.exec("ALTER TABLE checklist_templates ADD COLUMN tracked INTEGER NOT NULL DEFAULT 0");
-  if (!tcols.includes("unit")) db.exec("ALTER TABLE checklist_templates ADD COLUMN unit TEXT");
-  if (!tcols.includes("metric_label")) db.exec("ALTER TABLE checklist_templates ADD COLUMN metric_label TEXT");
-  if (!tcols.includes("contribution")) db.exec("ALTER TABLE checklist_templates ADD COLUMN contribution INTEGER NOT NULL DEFAULT 0");
-  const ccols = (db.prepare("PRAGMA table_info(checklist_completions)").all() as { name: string }[]).map((c) => c.name);
-  if (!ccols.includes("amount")) db.exec("ALTER TABLE checklist_completions ADD COLUMN amount REAL");
-  // Countdown flag on wall events — shows a "in N sleeps" badge (kids love it).
-  const wcols = (db.prepare("PRAGMA table_info(wall_events)").all() as { name: string }[]).map((c) => c.name);
-  if (!wcols.includes("countdown")) db.exec("ALTER TABLE wall_events ADD COLUMN countdown INTEGER NOT NULL DEFAULT 0");
-  // Which feed a synced event came from: 'own' (the member's link) or 'shared'
-  // (the kids' shared link). Rows from before this column keep NULL; the next
-  // refresh replaces them (lib/ics.ts).
-  const scols = (db.prepare("PRAGMA table_info(synced_events)").all() as { name: string }[]).map((c) => c.name);
-  if (!scols.includes("source")) db.exec("ALTER TABLE synced_events ADD COLUMN source TEXT");
-  // Emoji per family rule (shown instead of a number in the Family Rules view).
-  const frcols = (db.prepare("PRAGMA table_info(family_rules)").all() as { name: string }[]).map((c) => c.name);
-  if (!frcols.includes("emoji")) db.exec("ALTER TABLE family_rules ADD COLUMN emoji TEXT NOT NULL DEFAULT '📜'");
-
-  // Ask the Hub — every kid question + answer, parent-reviewable.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kid TEXT NOT NULL,
-      question TEXT NOT NULL,
-      answer TEXT NOT NULL,
-      source TEXT NOT NULL,                    -- claude | ollama
-      model TEXT NOT NULL,
-      latency_ms INTEGER,
-      created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_questions_created ON questions(created_at DESC);
-
-    -- Ask the Hub cost ceiling: one row per question sent to the model,
-    -- written before the call, so a question whose answer never gets logged
-    -- (timeout, bridge error) still counts. created_at is UTC.
-    CREATE TABLE IF NOT EXISTS ask_usage (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_ask_usage_created ON ask_usage(created_at);
-
-    -- Operation keys of ledger writes the screen may send twice (a double tap
-    -- or a retried request on redeem). A key seen before is not charged again.
-    -- created_at is UTC.
-    CREATE TABLE IF NOT EXISTS ledger_ops (
-      op_id TEXT PRIMARY KEY,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-  // days: which weekdays this routine shows on. String of digits 0=Sun..6=Sat;
-  // default all days. Lets a routine be Mon/Wed/Fri instead of every day.
-  if (!tcols.includes("days")) db.exec("ALTER TABLE checklist_templates ADD COLUMN days TEXT NOT NULL DEFAULT '0123456'");
-  // type: 'routine' (recurring, time-bucketed) | 'job' (a helping task, dated or
-  // recurring, shown in its own Jobs section — the warmer name for "chore").
-  if (!tcols.includes("type")) db.exec("ALTER TABLE checklist_templates ADD COLUMN type TEXT NOT NULL DEFAULT 'routine'");
-  // due_date: for one-off jobs (YYYY-MM-DD). NULL = recurring (uses `days`).
-  if (!tcols.includes("due_date")) db.exec("ALTER TABLE checklist_templates ADD COLUMN due_date TEXT");
-
-  // One-time: bucket the originally-seeded items, split brush-teeth into a
-  // morning + evening pair, and flag the tracked ones. Guarded so it runs once
-  // and never fights hand-edits the parents make later.
-  const migrated = db.prepare("SELECT value FROM settings WHERE key='buckets_migrated'").get() as
-    | { value: string }
-    | undefined;
-  if (!migrated && (db.prepare("SELECT COUNT(*) c FROM checklist_templates").get() as { c: number }).c > 0) {
-    const tx = db.transaction(() => {
-      const put = db.prepare(
-        "UPDATE checklist_templates SET bucket=?, tracked=?, unit=?, metric_label=?, contribution=? WHERE kid=? AND label=? AND active=1"
-      );
-      // label -> [bucket, tracked, unit, metric_label, contribution]
-      const plan: Record<string, [string, number, string | null, string | null, number]> = {
-        "Brush Teeth": ["morning", 0, null, null, 0],
-        "Get Dressed": ["morning", 0, null, null, 0],
-        "Make Bed": ["morning", 0, null, null, 1],
-        "Journal": ["evening", 0, null, null, 0],
-        "Pick Up Toys": ["evening", 0, null, null, 1],
-        "Read 20 Minutes": ["evening", 1, "min", "Reading", 0],
-        "Read 30 Minutes": ["evening", 1, "min", "Reading", 0],
-        "Practice": ["afternoon", 1, "min", "Practice", 0],
-      };
-      // Every kid that has routine items (on these old installs: the sample kids).
-      const routineKids = (
-        db.prepare("SELECT DISTINCT kid FROM checklist_templates").all() as { kid: string }[]
-      ).map((r) => r.kid);
-      for (const kid of routineKids) {
-        for (const [label, [bucket, tracked, unit, metric, contrib]] of Object.entries(plan)) {
-          put.run(bucket, tracked, unit, metric, contrib, kid, label);
-        }
-      }
-      // Evening tooth-brushing: a second item so it shows in both buckets.
-      const maxSort = db.prepare(
-        "SELECT kid, COALESCE(MAX(sort),0) m FROM checklist_templates GROUP BY kid"
-      ).all() as { kid: string; m: number }[];
-      const sortByKid = Object.fromEntries(maxSort.map((r) => [r.kid, r.m]));
-      const insBrush = db.prepare(
-        "INSERT INTO checklist_templates (kid, label, emoji, points, detail_kind, sort, bucket) VALUES (?, 'Brush Teeth', '🪥', 2, NULL, ?, 'evening')"
-      );
-      for (const kid of routineKids) {
-        const already = db
-          .prepare("SELECT COUNT(*) c FROM checklist_templates WHERE kid=? AND label='Brush Teeth' AND bucket='evening' AND active=1")
-          .get(kid) as { c: number };
-        if (already.c === 0) insBrush.run(kid, (sortByKid[kid] ?? 0) + 1);
-      }
-      db.prepare("INSERT INTO settings (key, value) VALUES ('buckets_migrated','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
-    });
-    tx();
-  }
-  // rewards.kid: NULL = family-wide menu item; set = that kid's own item.
-  const rcols = (db.prepare("PRAGMA table_info(rewards)").all() as { name: string }[]).map((c) => c.name);
-  if (!rcols.includes("kid")) db.exec("ALTER TABLE rewards ADD COLUMN kid TEXT");
-
+/**
+ * Default data that every start makes sure exists: the sample members on an
+ * empty household, the starter activities, the Task Box presets and the
+ * rewards menu. Each part checks first, so this is safe to run every time.
+ */
+function seedDefaults(db: Database.Database) {
+  seedMembers(db);
   // Seed per-kid activities once (from the original hardcoded five). The flag
   // keeps a household that set up its own family (and so has no activities
   // yet) from getting the sample sports on the next start.
@@ -491,22 +344,6 @@ function ensureColumns(db: Database.Database) {
   }
   if (!activitiesSeeded) {
     db.prepare("INSERT INTO settings (key, value) VALUES ('activities_seeded','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
-  }
-
-  // Named lists: create defaults + migrate existing grocery items once.
-  const listsMig = db.prepare("SELECT value FROM settings WHERE key='lists_migrated'").get();
-  if (!listsMig) {
-    const tx = db.transaction(() => {
-      const insL = db.prepare("INSERT INTO lists (name, color, sort) VALUES (?, ?, ?)");
-      const groId = insL.run("Groceries", "#7FA576", 1).lastInsertRowid;
-      insL.run("Packing", "#6E9BBD", 2);
-      insL.run("To-Do", "#D9A254", 3);
-      const items = db.prepare("SELECT label, checked FROM grocery").all() as { label: string; checked: number }[];
-      const insI = db.prepare("INSERT INTO list_items (list_id, section, label, checked) VALUES (?, 'General', ?, ?)");
-      for (const it of items) insI.run(groId, it.label, it.checked);
-      db.prepare("INSERT INTO settings (key, value) VALUES ('lists_migrated','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
-    });
-    tx();
   }
 
   // Seed the Task Box preset library once.

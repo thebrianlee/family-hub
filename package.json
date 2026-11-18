@@ -1,6 +1,6 @@
 {
   "name": "family-hub",
-  "version": "1.0.0",
+  "version": "0.1.0-preview.0",
   "private": true,
   "license": "MIT",
   "engines": {

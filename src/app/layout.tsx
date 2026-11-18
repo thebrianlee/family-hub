@@ -5,6 +5,8 @@ import TabNav from "@/components/TabNav";
 import Ambient from "@/components/Ambient";
 import SetupScreen from "@/components/SetupScreen";
 import MembersProvider from "@/components/MembersProvider";
+import BlockedScreen from "@/components/BlockedScreen";
+import { isDbBlocked } from "@/lib/db";
 import { getSetting } from "@/lib/queries";
 import { getMembers } from "@/lib/household";
 import { memberThemeCss } from "@/lib/member-theme";
@@ -26,7 +28,19 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const ready = getSetting("setup_complete", "0") === "1";
+  let ready: boolean;
+  try {
+    ready = getSetting("setup_complete", "0") === "1";
+  } catch (e) {
+    if (!isDbBlocked(e)) throw e;
+    return (
+      <html lang="en" className={jakarta.variable}>
+        <body>
+          <BlockedScreen code={e.code} />
+        </body>
+      </html>
+    );
+  }
   const members = ready ? getMembers() : [];
   return (
     <html lang="en" className={jakarta.variable}>
