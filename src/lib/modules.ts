@@ -52,6 +52,19 @@ export function moduleStates(): ModuleState {
   return effectiveState();
 }
 
+// Bumped by every setEnabled, in the same transaction. A screen that hears
+// the state from more than one place (the layout, /api/today, a Settings
+// save) keeps the one with the highest revision, so a late answer can't put
+// back an older state. An integer stored as text, like every settings value.
+const REV_KEY = "modules_rev";
+
+/** The module state's revision: 0 until the first save. */
+export function modulesRev(): number {
+  const row = getDb().prepare("SELECT value FROM settings WHERE key=?").get(REV_KEY) as { value: string } | undefined;
+  const rev = Number(row?.value);
+  return Number.isSafeInteger(rev) && rev > 0 ? rev : 0;
+}
+
 export type ModuleTab = { id: string; href: string; label: string };
 
 /** The tab bar, in order: Today plus each enabled module that has a tab. */
@@ -68,7 +81,8 @@ export function enabledTabs(on: readonly string[] = enabledModules()): ModuleTab
  * setup claim) this is a savepoint, so it commits or rolls back with it.
  * Writes a row for every toggleable module, so a fresh install stores its
  * choices and keeps them even if a later version changes a default. First-run
- * setup starts from the defaults; Settings starts from what is stored.
+ * setup starts from the defaults; Settings starts from what is stored. Every
+ * call bumps modulesRev(), even one that changes nothing.
  */
 export function setEnabled(changes: ModuleChanges, { actor }: { actor: "setup" | "parent" }): ModuleState {
   const db = getDb();
@@ -81,6 +95,10 @@ export function setEnabled(changes: ModuleChanges, { actor }: { actor: "setup" |
        WHERE module_state.enabled <> excluded.enabled`
     );
     for (const m of TOGGLEABLE_MODULES) write.run(m.id, next[m.id] ? 1 : 0);
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
+      REV_KEY,
+      String(modulesRev() + 1)
+    );
     const on = TOGGLEABLE_MODULES.filter((m) => next[m.id] && !before[m.id]).map((m) => m.id);
     const off = TOGGLEABLE_MODULES.filter((m) => !next[m.id] && before[m.id]).map((m) => m.id);
     if (on.length || off.length) {

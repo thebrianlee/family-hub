@@ -25,6 +25,7 @@ import {
   validateHousehold,
 } from "@/lib/household";
 import { refreshIcsNow } from "@/lib/ics";
+import { isEnabled } from "@/lib/modules";
 import { getSetting, setSetting } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -77,6 +78,13 @@ async function apply(req: NextRequest, body: Record<string, unknown>): Promise<N
       }
       const normalized = parseCalendarLink(body.url);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
+      // Calendar switched off contacts no feed, not even to check the link.
+      // The link is still saved, and the next refresh after Calendar is back
+      // on pulls it in.
+      if (!isEnabled("calendar")) {
+        saveCalendarLink(owner, normalized.value);
+        break;
+      }
       const reachable = await checkCalendarLink(normalized.value);
       if (!reachable.ok) return NextResponse.json({ error: reachable.error }, { status: 400 });
       saveCalendarLink(owner, reachable.value);

@@ -28,7 +28,7 @@ vi.mock("@/lib/ics", async (importOriginal) => {
 import { GET as ambientGet } from "@/app/api/ambient/route";
 import { GET as todayGet } from "@/app/api/today/route";
 import { refreshIcsIfStale } from "@/lib/ics";
-import { setEnabled } from "@/lib/modules";
+import { modulesRev, setEnabled } from "@/lib/modules";
 import { getDb } from "@/lib/db";
 import { setSetting } from "@/lib/queries";
 import { refreshSparkIfStale } from "@/lib/spark";
@@ -37,13 +37,13 @@ import { MODULES, TOGGLEABLE_MODULES } from "@/modules/registry";
 const ALL = (on: boolean) => Object.fromEntries(TOGGLEABLE_MODULES.map((m) => [m.id, on]));
 // The keys /api/today returned before modules existed.
 const PREVIOUS_KEYS = ["balances", "currency", "dinner", "events", "greeting", "kids", "meals", "rhythm", "rules", "spark", "statuses", "weather"];
-const CORE_KEYS = ["currency", "greeting", "kids", "modules", "rules", "statuses", "tabs", "weather"];
+const CORE_KEYS = ["currency", "greeting", "kids", "modules", "modulesRev", "rules", "statuses", "tabs", "weather"];
 
 const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 500 }));
 const bridgeCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).includes("127.0.0.1"));
 
 async function today() {
-  return (await todayGet()).json() as Promise<Record<string, unknown> & { kids: Record<string, unknown>[]; tabs: { id: string; label: string }[]; modules: string[] }>;
+  return (await todayGet()).json() as Promise<Record<string, unknown> & { kids: Record<string, unknown>[]; tabs: { id: string; label: string }[]; modules: string[]; modulesRev: number }>;
 }
 
 beforeEach(() => {
@@ -60,9 +60,9 @@ beforeEach(() => {
 });
 
 describe("/api/today with modules", () => {
-  it("an upgraded household has every module on: the previous keys plus tabs and modules (AC 3)", async () => {
+  it("an upgraded household has every module on: the previous keys plus tabs, modules and modulesRev (AC 3)", async () => {
     const t = await today();
-    expect(Object.keys(t).sort()).toEqual([...PREVIOUS_KEYS, "modules", "tabs"].sort());
+    expect(Object.keys(t).sort()).toEqual([...PREVIOUS_KEYS, "modules", "modulesRev", "tabs"].sort());
     expect(t.tabs.map((x) => x.label)).toEqual(["Today", "Calendar", "Routines", "Meals", "Lists", "Ask"]);
     expect(t.modules).toEqual(MODULES.map((m) => m.id));
     expect(Object.keys(t.kids[0]).sort()).toEqual(["done", "earnedToday", "kid", "mood", "total"]);
@@ -149,6 +149,19 @@ describe("/api/today with modules", () => {
     await today();
     expect(refreshIcsIfStale).not.toHaveBeenCalled();
     setEnabled(ALL(true), { actor: "parent" });
+  });
+});
+
+describe("/api/today modulesRev", () => {
+  it("is the stored revision, and moves on with each save", async () => {
+    const first = await today();
+    expect(first.modulesRev).toBe(modulesRev());
+    setEnabled({ lists: false }, { actor: "parent" });
+    const second = await today();
+    expect(second.modulesRev).toBe(first.modulesRev + 1);
+    expect(second.modules).not.toContain("lists");
+    setEnabled({ lists: true }, { actor: "parent" });
+    expect((await today()).modulesRev).toBe(first.modulesRev + 2);
   });
 });
 

@@ -39,6 +39,7 @@ interface Today {
   greeting?: string;
   tabs?: TabInfo[];
   modules?: string[];
+  modulesRev?: number;
 }
 
 const MOOD_EMOJI: Record<string, string> = { great: "😄", good: "🙂", ok: "😐", sad: "😢", mad: "😠" };
@@ -155,7 +156,9 @@ export default function TodayPage() {
   const show = useCallback(
     (d: Today) => {
       setT(d);
-      if (Array.isArray(d.tabs) && Array.isArray(d.modules)) syncModules({ modules: d.modules, tabs: d.tabs });
+      if (Array.isArray(d.tabs) && Array.isArray(d.modules) && typeof d.modulesRev === "number") {
+        syncModules({ rev: d.modulesRev, modules: d.modules, tabs: d.tabs });
+      }
     },
     [syncModules]
   );

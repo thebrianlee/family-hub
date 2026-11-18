@@ -6,7 +6,7 @@ import { POST as mealsPost } from "@/app/api/meals/route";
 import { GET, PUT } from "@/app/api/settings/modules/route";
 import { hashPin } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { setEnabled } from "@/lib/modules";
+import { enabledTabs, modulesRev, setEnabled } from "@/lib/modules";
 import { _resetPinAttemptsForTests, clearPinLocks } from "@/lib/pin-attempts";
 import { setSetting } from "@/lib/queries";
 import { DEVICE_COOKIE, PARENT_COOKIE, signCookie } from "@/lib/session";
@@ -93,6 +93,24 @@ describe("parent-only (AC 5)", () => {
     const res = await PUT(put({ modules: { chores: true } }, "parent"));
     expect(res.status).toBe(400);
     expect((await PUT(put({}, "parent"))).status).toBe(400);
+  });
+});
+
+describe("the wall follows a save", () => {
+  it("PUT answers with the new revision, the ids that are on (core included) and the tab bar", async () => {
+    const before = modulesRev();
+    const res = await PUT(put({ modules: { meals: false } }, "parent"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Snapshot & { rev: number; enabled: string[]; tabs: { id: string }[] };
+    expect(body.rev).toBe(before + 1);
+    expect(body.rev).toBe(modulesRev());
+    expect(body.enabled[0]).toBe("core");
+    expect(body.enabled).not.toContain("meals");
+    expect(body.enabled).toContain("lists");
+    expect(body.tabs).toEqual(enabledTabs(body.enabled));
+    expect(body.tabs.map((t) => t.id)).not.toContain("meals");
+    // The snapshot is still there, next to them.
+    expect(states(body)).toMatchObject({ meals: false, lists: true });
   });
 });
 

@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 import ModuleToggles from "@/components/ModuleToggles";
+import { useModules } from "@/components/ModulesProvider";
 import PersonEditor, { type PersonRow } from "@/components/PersonEditor";
 import PinModal from "@/components/PinModal";
 import { MEMBER_PALETTE, PARENT_COLOR_ORDER, nextUnusedColor } from "@/lib/member-theme";
@@ -337,6 +338,7 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
  */
 function ModulesCard() {
   const router = useRouter();
+  const { syncModules } = useModules();
   const expired = useContext(SessionExpired);
   const [state, setState] = useState<ModuleState | null>(null);
   const [confirm, setConfirm] = useState<{ id: string; alsoOff: string[] } | null>(null);
@@ -389,7 +391,9 @@ function ModulesCard() {
         ? `${name(id)} is on.${alsoOn.length ? ` ${alsoOn.map(name).join(" and ")} turned on too, because ${name(id)} needs it.` : ""}`
         : "Hidden from the wall. Nothing is deleted; turn it back on any time."
     );
-    // The layout passes the module state to every screen; re-render it.
+    // Show the saved state at once (newest revision wins, so a Today poll
+    // already in flight can't undo it), then re-render the layout too.
+    syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs });
     router.refresh();
   };
 

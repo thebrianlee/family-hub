@@ -10,7 +10,7 @@ import BlockedScreen from "@/components/BlockedScreen";
 import { isDbBlocked } from "@/lib/db";
 import { getSetting } from "@/lib/queries";
 import { getMembers } from "@/lib/household";
-import { enabledModules, enabledTabs } from "@/lib/modules";
+import { enabledModules, enabledTabs, modulesRev } from "@/lib/modules";
 import { memberThemeCss } from "@/lib/member-theme";
 
 // Bundled in the repo (SIL Open Font License, see fonts/OFL.txt) so builds work
@@ -45,12 +45,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }
   const members = ready ? getMembers() : [];
   const modules = ready ? enabledModules() : [];
+  const rev = ready ? modulesRev() : 0;
   return (
     <html lang="en" className={jakarta.variable}>
       <body>
         {ready ? (
           <MembersProvider members={members}>
-            <ModulesProvider enabled={modules} tabs={enabledTabs(modules)}>
+            <ModulesProvider rev={rev} enabled={modules} tabs={enabledTabs(modules)}>
               {/* One rule per member: .m-<id>{--member:…}. Ids are validated slugs. */}
               <style id="member-colors" dangerouslySetInnerHTML={{ __html: memberThemeCss(members) }} />
               <Ambient>

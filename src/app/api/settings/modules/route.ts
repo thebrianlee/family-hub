@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { hasParentCookie, parentRequired } from "@/lib/guard";
-import { moduleStates, parseModuleChanges, setEnabled } from "@/lib/modules";
+import { enabledModules, enabledTabs, moduleStates, modulesRev, parseModuleChanges, setEnabled } from "@/lib/modules";
 import { TOGGLEABLE_MODULES } from "@/modules/registry";
 
 export const dynamic = "force-dynamic";
@@ -33,11 +33,15 @@ export async function GET(req: NextRequest) {
 }
 
 // { modules: { [id]: boolean } }
+// Answers with the snapshot, plus what the wall needs to follow the change
+// at once: the new revision, the ids that are on (core included; `enabled`,
+// because `modules` is the snapshot's list) and the tab bar.
 export async function PUT(req: NextRequest) {
   if (!hasParentCookie(req)) return parentRequired();
   const body = await req.json().catch(() => ({}));
   const checked = parseModuleChanges(body?.modules);
   if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
   setEnabled(checked.changes, { actor: "parent" });
-  return NextResponse.json({ ok: true, ...snapshot() });
+  const enabled = enabledModules();
+  return NextResponse.json({ ok: true, ...snapshot(), rev: modulesRev(), enabled, tabs: enabledTabs(enabled) });
 }

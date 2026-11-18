@@ -5,7 +5,7 @@ import {
   getFamilyRhythm, getKidDay, getMealDays, getMood, getRules,
 } from "@/lib/queries";
 import { getKids } from "@/lib/household";
-import { enabledModules, enabledTabs } from "@/lib/modules";
+import { enabledModules, enabledTabs, modulesRev } from "@/lib/modules";
 import { getSparkTile, refreshSparkIfStale } from "@/lib/spark";
 import { refreshIcsIfStale } from "@/lib/ics";
 import { getWeather } from "@/lib/weather";
@@ -15,9 +15,11 @@ export const dynamic = "force-dynamic";
 // A module that is switched off leaves its fields out (the page then skips
 // that slot), and its background refresh doesn't run. `tabs` is the tab bar,
 // `modules` the ids of the modules that are on (core included), so an open
-// wall also learns about modules without a tab.
+// wall also learns about modules without a tab. `modulesRev` is that state's
+// revision, read together with it, so the wall keeps whichever state is newest.
 export async function GET() {
   const on = enabledModules();
+  const rev = modulesRev();
   const calendar = on.includes("calendar");
   const routines = on.includes("routines");
   const rewards = on.includes("rewards");
@@ -59,5 +61,6 @@ export async function GET() {
     ...(meals ? { meals: getMealDays(isoToday(today), 1)[0] ?? null } : {}),
     tabs: enabledTabs(on),
     modules: on,
+    modulesRev: rev,
   });
 }
