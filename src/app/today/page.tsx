@@ -5,13 +5,15 @@
 // dinner) and gives parents a Hearth-style Family Rhythm pulse. Everything taps
 // through to its own tab; nothing is editable here. A module that is switched
 // off (Settings → Modules) leaves its fields out of /api/today, and its slot
-// isn't shown.
+// isn't shown. An answer read at an older module revision than the one shown
+// is dropped whole, and every module's slot also needs isOn(), so a late
+// answer can't bring back a module that has been switched off.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATUS_EMOJI, PARENT_STATUSES, ParentId, ParentStatus } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
-import { useModules, type TabInfo } from "@/components/ModulesProvider";
+import { isCurrentRev, useModules, type TabInfo } from "@/components/ModulesProvider";
 import Avatar from "@/components/Avatar";
 import Modal from "@/components/Modal";
 import PinModal from "@/components/PinModal";
@@ -147,16 +149,25 @@ function RhythmGauge({ score, label }: { score: number; label: string }) {
 export default function TodayPage() {
   const router = useRouter();
   const { kids, parents, memberOf } = useMembers();
-  const { isOn, syncModules } = useModules();
+  const { isOn, rev, syncModules } = useModules();
   const [t, setT] = useState<Today | null>(null);
   // Parent status editing: PIN, then picker (carried over from the old root view).
   const [pinFor, setPinFor] = useState<ParentId | null>(null);
   const [statusFor, setStatusFor] = useState<ParentId | null>(null);
   const [pin, setPin] = useState("");
+  // The newest module revision this page knows: the provider's, or that of an
+  // answer it has just taken (the provider catches up on the next render).
+  const revShown = useRef(rev);
+  useEffect(() => {
+    revShown.current = Math.max(revShown.current, rev);
+  }, [rev]);
   const show = useCallback(
     (d: Today) => {
+      // Read before a newer module state: keep what is shown, take nothing.
+      if (!isCurrentRev(revShown.current, d.modulesRev)) return;
+      revShown.current = d.modulesRev;
       setT(d);
-      if (Array.isArray(d.tabs) && Array.isArray(d.modules) && typeof d.modulesRev === "number") {
+      if (Array.isArray(d.tabs) && Array.isArray(d.modules)) {
         syncModules({ rev: d.modulesRev, modules: d.modules, tabs: d.tabs });
       }
     },
@@ -193,11 +204,16 @@ export default function TodayPage() {
     fetch("/api/ask").then((r) => r.json()).then((d) => setQuestions(d.questions ?? [])).catch(() => {});
   }, [askOn]);
 
-  // Until the first answer arrives, lay the page out from the module state.
+  // A module's slots, cards and links show only while it is on and the answer
+  // carries its field, so neither an older answer nor an older module state
+  // alone can show a module that is off.
   const routinesOn = isOn("routines");
-  const showPlan = t ? t.events !== undefined : isOn("calendar");
-  const showMeals = t ? t.meals !== undefined : isOn("meals");
-  const showRings = t ? t.rhythm !== undefined : routinesOn;
+  const showPlan = isOn("calendar") && t?.events !== undefined;
+  const showMeals = isOn("meals") && t?.meals !== undefined;
+  const showRings = routinesOn && t?.rhythm !== undefined;
+  const rhythm = routinesOn ? t?.rhythm : undefined;
+  const balances = isOn("rewards") ? t?.balances : undefined;
+  const spark = askOn ? t?.spark : undefined;
 
   const today = new Date();
   const merged = t?.events ? mergeToday(t.events) : [];
@@ -239,11 +255,11 @@ export default function TodayPage() {
         )}
 
         {/* Family Rhythm — the weekly pulse (Hearth's four dimensions), up top */}
-        {t?.rhythm && (
+        {rhythm && (
           <div className="card px-8 py-6 flex items-center gap-8 shrink-0">
-            <RhythmGauge score={t.rhythm.score} label={t.rhythm.label} />
+            <RhythmGauge score={rhythm.score} label={rhythm.label} />
             <div className="flex-1 grid grid-cols-2 gap-x-10 gap-y-4">
-              {t.rhythm.dims.map((d) => (
+              {rhythm.dims.map((d) => (
                 <div key={d.key}>
                   <div className="flex items-center justify-between text-xl font-bold text-ink-soft mb-1.5">
                     <span>{d.emoji} {d.label}</span>
@@ -267,13 +283,13 @@ export default function TodayPage() {
             const pct = total > 0 ? done / total : 0;
             const line = [
               showRings ? (snap?.total !== undefined ? `${done}/${total}` : "…") : null,
-              t?.balances ? `⭐${t.balances[k.id] ?? 0}` : null,
+              balances ? `⭐${balances[k.id] ?? 0}` : null,
             ].filter(Boolean);
             return (
               <button
                 key={k.id}
-                onClick={routinesOn ? () => router.push("/my-day") : undefined}
-                disabled={!routinesOn}
+                onClick={showRings ? () => router.push("/my-day") : undefined}
+                disabled={!showRings}
                 className="card p-6 flex flex-col items-center gap-2.5 active:bg-cream-sunken"
               >
                 <div className="relative">
@@ -363,13 +379,13 @@ export default function TodayPage() {
 
         {/* Spark + where the parents are */}
         <div className="flex gap-4 shrink-0 pb-1">
-          {t?.spark && (
+          {spark && (
             <div className="card flex-1 px-8 py-6">
-              <div className="eyebrow mb-2">✨ {t.spark.label}</div>
+              <div className="eyebrow mb-2">✨ {spark.label}</div>
               <div className="text-3xl font-extrabold leading-snug">
-                {t.spark.kind === "quote" ? `“${t.spark.text}”` : t.spark.text}
+                {spark.kind === "quote" ? `“${spark.text}”` : spark.text}
               </div>
-              {t.spark.attribution && <div className="mt-2 text-xl font-bold text-ink-soft">— {t.spark.attribution}</div>}
+              {spark.attribution && <div className="mt-2 text-xl font-bold text-ink-soft">— {spark.attribution}</div>}
             </div>
           )}
           <div className="card px-6 py-5 flex flex-col justify-center gap-3 shrink-0">

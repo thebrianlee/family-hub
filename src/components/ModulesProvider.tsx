@@ -7,9 +7,10 @@
 // Settings → Modules hands over the state its save returned, then re-renders
 // the layout. Every state carries its revision (src/lib/modules.ts
 // modulesRev) and the newest one is shown, wherever it came from, so an
-// answer that arrives late never puts back an older state. The real gate is
-// on the server (src/proxy.ts): this only keeps the screen from showing links
-// to what is switched off.
+// answer that arrives late never puts back an older state. A screen that keeps
+// data from such an answer checks it against `rev` too (isCurrentRev). The
+// real gate is on the server (src/proxy.ts): this only keeps the screen from
+// showing links to what is switched off.
 
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { getModule } from "@/modules/registry";
@@ -28,15 +29,37 @@ export function newerModuleState(current: ModuleSnapshot, next: ModuleSnapshot):
   return next.rev > current.rev ? next : current;
 }
 
+/**
+ * Whether an answer read at module revision `rev` may be used while the screen
+ * shows revision `shownRev`: yes at the same or a higher revision, no at a
+ * lower one (it was read before a newer save, so it can still carry a module
+ * that has since been switched off) or without a revision. The Today page
+ * drops such an answer whole and keeps what it shows.
+ */
+export function isCurrentRev(shownRev: number, rev: unknown): rev is number {
+  return typeof rev === "number" && Number.isFinite(rev) && rev >= shownRev;
+}
+
+/**
+ * Whether a saved state at revision `rev` replaces one shown at `shownRev`:
+ * only when it is newer, as in newerModuleState. Settings → Modules uses it
+ * for its own switch positions.
+ */
+export function isNewerRev(shownRev: number, rev: unknown): rev is number {
+  return typeof rev === "number" && Number.isFinite(rev) && rev > shownRev;
+}
+
 type Modules = {
   isOn: (id: string) => boolean;
+  /** The revision of the module state shown. */
+  rev: number;
   tabs: TabInfo[];
   /** A module state from /api/today or a Settings save; shown only if it is newer. */
   syncModules: (state: ModuleSnapshot) => void;
 };
 
 // Outside the provider (only the setup screen, which doesn't ask) nothing is hidden.
-const ModulesContext = createContext<Modules>({ isOn: () => true, tabs: [], syncModules: () => {} });
+const ModulesContext = createContext<Modules>({ isOn: () => true, rev: 0, tabs: [], syncModules: () => {} });
 
 export default function ModulesProvider({
   rev,
@@ -70,7 +93,7 @@ export default function ModulesProvider({
       if (m.core) return true;
       return shown.modules.includes(id) && (m.dependsOn ?? []).every(isOn);
     };
-    return { isOn, tabs: shown.tabs, syncModules };
+    return { isOn, rev: shown.rev, tabs: shown.tabs, syncModules };
   }, [shown, syncModules]);
 
   return <ModulesContext.Provider value={value}>{children}</ModulesContext.Provider>;

@@ -124,7 +124,18 @@ export const MODULES = [
     version: "0.1.0",
     author: "core",
     permissions: {
-      network: ["openlibrary.org", "covers.openlibrary.org", "www.googleapis.com"],
+      // Book search (Open Library, then Google Books), and the cover
+      // downloads allowed by COVER_HOSTS in src/lib/books.ts: Open Library
+      // covers redirect to archive.org storage, on any of its subdomains.
+      network: [
+        "openlibrary.org",
+        "covers.openlibrary.org",
+        "archive.org",
+        "*.archive.org",
+        "www.googleapis.com",
+        "books.google.com",
+        "books.googleusercontent.com",
+      ],
       data: ["members:read", "ledger:award"],
     },
     slots: ["kid-tab"],

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { newerModuleState, type ModuleSnapshot } from "@/components/ModulesProvider";
+import { deckQuotes } from "@/components/Ambient";
+import { isCurrentRev, isNewerRev, newerModuleState, type ModuleSnapshot } from "@/components/ModulesProvider";
 import { getDb } from "@/lib/db";
 import { enabledModules, enabledTabs, modulesRev, setEnabled } from "@/lib/modules";
 
@@ -38,6 +39,58 @@ describe("newerModuleState (the provider's merge rule)", () => {
     const shown = A(4);
     expect(newerModuleState(shown, B(4))).toBe(shown);
     expect(newerModuleState(shown, A(4))).toBe(shown);
+  });
+});
+
+describe("isCurrentRev (the Today page keeps an answer's data or drops it)", () => {
+  it("meals switched off at rev 3, then a poll read at rev 2 lands: its data is dropped", () => {
+    let shownRev = 2; // the page shows an answer with today's meals
+    shownRev = 3; // Settings saves meals off; the provider shows rev 3
+    expect(isCurrentRev(shownRev, 2)).toBe(false); // the late poll still carries meals
+    expect(isCurrentRev(shownRev, 3)).toBe(true); // the next poll, read after the save
+  });
+
+  it("takes an answer at the same or a higher revision", () => {
+    expect(isCurrentRev(5, 5)).toBe(true);
+    expect(isCurrentRev(5, 6)).toBe(true);
+    expect(isCurrentRev(0, 0)).toBe(true);
+  });
+
+  it("drops an answer without a usable revision", () => {
+    for (const rev of [undefined, null, "5", Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isCurrentRev(0, rev)).toBe(false);
+    }
+  });
+});
+
+describe("isNewerRev (Settings → Modules applies a snapshot or keeps its switches)", () => {
+  it("a save answer older than the switches shown is not applied", () => {
+    let shownRev = -1; // nothing read yet
+    expect(isNewerRev(shownRev, 4)).toBe(true); // the first read, at rev 4
+    shownRev = 4;
+    expect(isNewerRev(shownRev, 6)).toBe(true); // a save answered at rev 6
+    shownRev = 6;
+    expect(isNewerRev(shownRev, 5)).toBe(false); // an earlier save's answer, landing last
+    expect(isNewerRev(shownRev, 6)).toBe(false); // the same revision again
+  });
+
+  it("never applies an answer without a usable revision", () => {
+    for (const rev of [undefined, null, "7", Number.NaN]) expect(isNewerRev(-1, rev)).toBe(false);
+  });
+});
+
+describe("deckQuotes (the screensaver's quotes)", () => {
+  const quotes = [
+    { kind: "quote", text: "The secret of getting ahead is getting started.", attribution: "Mark Twain" },
+    { kind: "rule", text: "We tell the truth." },
+  ];
+
+  it("leaves out Ask's quotes while Ask is off, even from a config read while it was on", () => {
+    expect(deckQuotes(quotes, false)).toEqual([{ kind: "rule", text: "We tell the truth." }]);
+  });
+
+  it("keeps everything while Ask is on", () => {
+    expect(deckQuotes(quotes, true)).toEqual(quotes);
   });
 });
 

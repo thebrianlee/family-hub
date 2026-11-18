@@ -112,6 +112,16 @@ describe("the wall follows a save", () => {
     // The snapshot is still there, next to them.
     expect(states(body)).toMatchObject({ meals: false, lists: true });
   });
+
+  it("GET answers with the revision its snapshot was read at, so Settings can tell it from a newer save", async () => {
+    const first = (await (await GET(req("/api/settings/modules", { who: "parent" }))).json()) as Snapshot & { rev: number };
+    expect(first.rev).toBe(modulesRev());
+    const saved = (await (await PUT(put({ modules: { lists: false } }, "parent"))).json()) as { rev: number };
+    const second = (await (await GET(req("/api/settings/modules", { who: "parent" }))).json()) as Snapshot & { rev: number };
+    expect(saved.rev).toBeGreaterThan(first.rev);
+    expect(second.rev).toBe(saved.rev);
+    expect(states(second)).toMatchObject({ lists: false });
+  });
 });
 
 describe("dependsOn (AC 7)", () => {

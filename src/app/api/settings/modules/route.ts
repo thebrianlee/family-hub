@@ -27,9 +27,10 @@ function snapshot() {
   };
 }
 
+// The snapshot with its revision, so Settings can tell it from a newer save.
 export async function GET(req: NextRequest) {
   if (!hasParentCookie(req)) return parentRequired();
-  return NextResponse.json(snapshot());
+  return NextResponse.json({ ...snapshot(), rev: modulesRev() });
 }
 
 // { modules: { [id]: boolean } }

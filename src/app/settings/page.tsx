@@ -6,10 +6,10 @@
 // leaves.
 
 import { useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import ModuleToggles from "@/components/ModuleToggles";
-import { useModules } from "@/components/ModulesProvider";
+import { isNewerRev, useModules } from "@/components/ModulesProvider";
 import PersonEditor, { type PersonRow } from "@/components/PersonEditor";
 import PinModal from "@/components/PinModal";
 import { MEMBER_PALETTE, PARENT_COLOR_ORDER, nextUnusedColor } from "@/lib/member-theme";
@@ -341,6 +341,9 @@ function ModulesCard() {
   const { syncModules } = useModules();
   const expired = useContext(SessionExpired);
   const [state, setState] = useState<ModuleState | null>(null);
+  // The module revision `state` was read at. A snapshot replaces it only when
+  // it is newer, so an answer that lands late can't put back older switches.
+  const stateRev = useRef(-1);
   const [confirm, setConfirm] = useState<{ id: string; alsoOff: string[] } | null>(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
@@ -354,7 +357,10 @@ function ModulesCard() {
     void fetch("/api/settings/modules", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (live && d) setState(toState(d));
+        if (live && d && isNewerRev(stateRev.current, d.rev)) {
+          stateRev.current = d.rev;
+          setState(toState(d));
+        }
       })
       .catch(() => null);
     return () => {
@@ -364,37 +370,45 @@ function ModulesCard() {
 
   const name = (id: string) => getModule(id)?.name ?? id;
 
+  // The switches stay locked (busy) until the answer is read and applied, or
+  // the save has failed.
   const save = async (id: string, on: boolean) => {
-    if (!state) return;
+    if (!state || busy) return;
     setConfirm(null);
     setBusy(true);
     setError("");
     setSaved("");
-    const res = await fetch("/api/settings/modules", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ modules: { [id]: on } }),
-    }).catch(() => null);
-    setBusy(false);
-    if (!res) return setError("The hub didn't answer. Check the connection.");
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 403 && data.error === "Parent PIN required") {
-      expired();
-      return setError(EXPIRED);
+    try {
+      const res = await fetch("/api/settings/modules", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modules: { [id]: on } }),
+      }).catch(() => null);
+      if (!res) return setError("The hub didn't answer. Check the connection.");
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403 && data.error === "Parent PIN required") {
+        expired();
+        return setError(EXPIRED);
+      }
+      if (!res.ok) return setError(typeof data.error === "string" ? data.error : "That didn't save.");
+      // Older than the switches shown: keep them, here and on the wall.
+      if (!isNewerRev(stateRev.current, data.rev)) return;
+      const next = toState(data);
+      const alsoOn = Object.keys(next).filter((m) => m !== id && next[m] && !state[m]);
+      stateRev.current = data.rev;
+      setState(next);
+      setSaved(
+        on
+          ? `${name(id)} is on.${alsoOn.length ? ` ${alsoOn.map(name).join(" and ")} turned on too, because ${name(id)} needs it.` : ""}`
+          : "Hidden from the wall. Nothing is deleted; turn it back on any time."
+      );
+      // Show the saved state at once (newest revision wins, so a Today poll
+      // already in flight can't undo it), then re-render the layout too.
+      syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs });
+      router.refresh();
+    } finally {
+      setBusy(false);
     }
-    if (!res.ok) return setError(typeof data.error === "string" ? data.error : "That didn't save.");
-    const next = toState(data);
-    const alsoOn = Object.keys(next).filter((m) => m !== id && next[m] && !state[m]);
-    setState(next);
-    setSaved(
-      on
-        ? `${name(id)} is on.${alsoOn.length ? ` ${alsoOn.map(name).join(" and ")} turned on too, because ${name(id)} needs it.` : ""}`
-        : "Hidden from the wall. Nothing is deleted; turn it back on any time."
-    );
-    // Show the saved state at once (newest revision wins, so a Today poll
-    // already in flight can't undo it), then re-render the layout too.
-    syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs });
-    router.refresh();
   };
 
   const toggle = (id: string, on: boolean) => {
