@@ -4,10 +4,23 @@ import { applyHouseholdTimezone, getDb } from "@/lib/db";
 import { getSetting, setSetting } from "@/lib/queries";
 import { HouseholdPlan, MemberError, replaceHousehold, validateHousehold } from "@/lib/household";
 import { pinProblem } from "@/lib/weak-pin";
+import { blockedResponse } from "@/lib/blocked-response";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (e) {
+    // The proxy lets this route through before it reads the database, so a
+    // blocked database (lib/db.ts) surfaces here: answer 503, not a crash.
+    const blocked = blockedResponse(e);
+    if (blocked) return blocked;
+    throw e;
+  }
+}
+
+async function handlePost(req: NextRequest): Promise<NextResponse> {
   if (getSetting("setup_complete", "0") === "1") {
     return NextResponse.json({ error: "This hub is already set up." }, { status: 409 });
   }

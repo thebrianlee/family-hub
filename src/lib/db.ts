@@ -68,16 +68,47 @@ function createDb(): Database.Database {
   }
   const db = new Database(DB_PATH);
   try {
-    db.pragma("journal_mode = WAL");
-    runMigrations(db, DB_PATH);
-    seedDefaults(db);
-    seed(db);
-    applyHouseholdTimezone(db);
+    initializeDb(db, DB_PATH);
   } catch (e) {
     db.close();
     throw e;
   }
   return db;
+}
+
+/**
+ * Everything after the file is open for writing. Exported for tests only.
+ *
+ * Another process (a newer build) may upgrade the file between the read-only
+ * check above and this point. So the version is checked again on this handle
+ * before the first write, inside every migration step, and inside the write
+ * transaction that seeds the defaults, so a newer database is never written.
+ */
+export function initializeDb(db: Database.Database, file: string): void {
+  assertNotNewer(db, file);
+  db.pragma("journal_mode = WAL");
+  runMigrations(db, file);
+  db.transaction(() => {
+    assertNotNewer(db, file);
+    seedDefaults(db);
+    seed(db);
+  }).immediate();
+  applyHouseholdTimezone(db);
+}
+
+/** Refuse a database whose schema is newer than this build (see createDb). */
+function assertNotNewer(db: Database.Database, file: string): void {
+  const version = db.pragma("user_version", { simple: true }) as number;
+  if (version <= LATEST_SCHEMA) return;
+  console.error(
+    `[db] ${file} has schema ${version}, newer than this app's ${LATEST_SCHEMA}. ` +
+      "Not using it. Update the app, or restore a backup."
+  );
+  throw new DbBlockedError(
+    "db_newer_than_app",
+    `The database (schema ${version}) was written by a newer version of this app (schema ${LATEST_SCHEMA}).`,
+    { db: version, app: LATEST_SCHEMA }
+  );
 }
 
 /**
@@ -87,6 +118,7 @@ function createDb(): Database.Database {
  * Old copies are pruned only after every migration has succeeded.
  */
 function runMigrations(db: Database.Database, file: string) {
+  assertNotNewer(db, file);
   const current = db.pragma("user_version", { simple: true }) as number;
   if (!MIGRATIONS.some((m) => m.id > current)) return;
   const backup = isFresh(db) ? null : createBackup(db, file, current, LATEST_SCHEMA);
@@ -94,6 +126,7 @@ function runMigrations(db: Database.Database, file: string) {
     // BEGIN IMMEDIATE takes the write lock first; re-reading the version
     // inside it means a second process that got here too can't run it twice.
     db.transaction(() => {
+      assertNotNewer(db, file);
       const now = db.pragma("user_version", { simple: true }) as number;
       if (now >= m.id) return;
       m.up(db);

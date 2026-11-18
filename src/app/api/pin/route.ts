@@ -12,6 +12,7 @@ import {
   cookieOptions,
   signCookie,
 } from "@/lib/session";
+import { blockedResponse } from "@/lib/blocked-response";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,18 @@ function refused(attempt: Exclude<PinAttempt, { ok: true }>, wrongMessage: strin
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    return await handlePost(req);
+  } catch (e) {
+    // The proxy lets this route through before it reads the database, so a
+    // blocked database (lib/db.ts) surfaces here: answer 503, not a crash.
+    const blocked = blockedResponse(e);
+    if (blocked) return blocked;
+    throw e;
+  }
+}
+
+async function handlePost(req: NextRequest): Promise<NextResponse> {
   const body = await req.json().catch(() => ({}));
   if (body.action === "change") {
     const current = attemptPin(req, body.pin);

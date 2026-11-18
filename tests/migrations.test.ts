@@ -215,6 +215,56 @@ describe("schema versioning", () => {
   });
 });
 
+describe("a database that becomes newer while this build opens it", () => {
+  it("is refused before any write, even after the read-only check passed", async () => {
+    const file = useDbFile("race");
+    fs.copyFileSync(FIXTURE, file);
+    const { initializeDb, isDbBlocked } = await import("@/lib/db");
+    // The read-only check in createDb saw version 0. Now a newer build
+    // upgrades the file before this build writes anything.
+    const other = new Database(file);
+    other.pragma("user_version = 999");
+    other.close();
+    const before = fingerprint(file);
+    const db = new Database(file);
+    let err: unknown;
+    try {
+      initializeDb(db, file);
+    } catch (e) {
+      err = e;
+    } finally {
+      db.close();
+    }
+    expect(isDbBlocked(err) && err.code).toBe("db_newer_than_app");
+    expect(fingerprint(file)).toBe(before);
+    expect(backups(file)).toEqual([]);
+  });
+
+  it("setup and PIN answer 503 with the code instead of failing", async () => {
+    const file = useDbFile("blocked-bootstrap");
+    fs.copyFileSync(FIXTURE, file);
+    const raw = new Database(file);
+    raw.pragma("user_version = 999");
+    raw.close();
+    const { NextRequest } = await import("next/server");
+    const post = (url: string, body: unknown) =>
+      new NextRequest(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://hub.home", host: "hub.home" },
+        body: JSON.stringify(body),
+      });
+    const setup = await import("@/app/api/setup/route");
+    const pin = await import("@/app/api/pin/route");
+    for (const res of [
+      await setup.POST(post("http://hub.home/api/setup", { pin: "7319" })),
+      await pin.POST(post("http://hub.home/api/pin", { pin: "7319" })),
+    ]) {
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: "db_newer_than_app" });
+    }
+  });
+});
+
 describe("health check", () => {
   it("reports only ok, the app version and the schema", async () => {
     useDbFile("health");
