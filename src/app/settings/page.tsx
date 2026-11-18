@@ -124,6 +124,7 @@ export default function SettingsPage() {
             <CalendarsCard calendars={snap.calendars} onSaved={setSnap} />
             <PrivacyCard share={snap.privacy.askShareFirstName} onSaved={setSnap} />
             <PinCard />
+            <AboutCard />
           </div>
         ) : null}
       </div>
@@ -321,6 +322,32 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
         Include the child&apos;s first name so answers can be personal
       </label>
       <Status error={error} saved="" />
+    </Card>
+  );
+}
+
+/** App version and data format, read from the public health check. */
+function AboutCard() {
+  const [info, setInfo] = useState<{ version: string; schema: number } | null>(null);
+  useEffect(() => {
+    let live = true;
+    void fetch("/api/health", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (live && typeof d.version === "string" && typeof d.schema === "number") {
+          setInfo({ version: d.version, schema: d.schema });
+        }
+      })
+      .catch(() => null);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return (
+    <Card title="About">
+      <p className="text-xl text-ink-soft">
+        {info ? `Version ${info.version} · data format ${info.schema}` : "Checking the version…"}
+      </p>
     </Card>
   );
 }
