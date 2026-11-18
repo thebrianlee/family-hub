@@ -104,6 +104,34 @@ describe("module gate", () => {
     expect(proxy(req("/level-up", { who: "device" })).status).toBe(307);
     expect(proxy(req("/api/m%79day", { who: "device" })).status).toBe(404);
   });
+
+  it("a double-encoded path to a module that is off reaches no route", async () => {
+    setEnabled({ lists: false }, { actor: "parent" });
+    const p = "/api/l%2569sts";
+    // decodedPath() decodes once: "/api/l%69sts", which no module owns, so the
+    // gate lets it through, and the router answers 404: there is no route at
+    // either spelling, and only a second decode would give /api/lists.
+    // Checked against a production build (next build, standalone server):
+    // with lists off, /api/l%2569sts → the router's 404 not-found page, and
+    // /api/lists and /api/l%69sts → the gate's 404 module_off. With lists on,
+    // /api/l%69sts and /api/l%2569sts both get the router's 404 too.
+    const once = decodeURIComponent(p);
+    expect(once).toBe("/api/l%69sts");
+    expect(moduleForPath(once)).toBeUndefined();
+    expect(moduleForPath(decodeURIComponent(once))?.id).toBe("lists");
+    const routes = appPaths();
+    expect(routes).toContain("/api/lists");
+    expect(routes).not.toContain(p);
+    expect(routes).not.toContain(once);
+    // What the proxy returns: the lock first, then a pass for reads, and the
+    // kid-write allowlist still refuses a write.
+    expect(proxy(req(p)).status).toBe(401);
+    expect(passed(proxy(req(p, { who: "device" })))).toBe(true);
+    expect(passed(proxy(req(p, { who: "parent" })))).toBe(true);
+    const write = proxy(req(p, { method: "POST", who: "device", body: { action: "add" } }));
+    expect(write.status).toBe(403);
+    expect(await write.json()).toEqual({ error: "Parent PIN required" });
+  });
 });
 
 /** Every page and API route under src/app, with a sample value for [params]. */
