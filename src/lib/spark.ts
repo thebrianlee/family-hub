@@ -7,6 +7,7 @@
 // getDailySpark()/getSparkTile() will prefer them — zero UI changes needed.
 
 import { getDb } from "./db";
+import { ModuleOffError, moduleFetch } from "./module-fetch";
 
 export type SparkKind = "quote" | "fact" | "mindset" | "dinner" | "rule";
 
@@ -124,7 +125,8 @@ export function refreshSparkIfStale(): void {
   }
 
   (async () => {
-    const res = await fetch(`${bridge}/generate`, {
+    // Ask switched off since /api/today checked: the bridge is not called.
+    const res = await moduleFetch("ask", `${bridge}/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       cache: "no-store",
@@ -156,7 +158,9 @@ export function refreshSparkIfStale(): void {
     db.prepare("DELETE FROM spark_cache WHERE date < date('now', '-30 days')").run();
     console.log(`[spark] refreshed ${n} items for ${missing.join(", ")}`);
   })()
-    .catch((e) => console.error("[spark] refresh failed:", String(e)))
+    .catch((e) => {
+      if (!(e instanceof ModuleOffError)) console.error("[spark] refresh failed:", String(e));
+    })
     .finally(() => {
       sparkRefreshInFlight = false;
     });

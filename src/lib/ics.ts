@@ -9,6 +9,7 @@
 
 import ical from "node-ical";
 import { getDb } from "./db";
+import { ModuleOffError, moduleGet } from "./module-fetch";
 import { safeGet, type SafeGetter } from "./safe-fetch";
 import { getSetting, setSetting } from "./queries";
 import { getMembers } from "./household";
@@ -230,14 +231,20 @@ export function normalizeCalendarUrl(raw: string): string {
  * Fetch a calendar feed and return its text. Follows up to MAX_REDIRECTS
  * redirects (iCloud sends published calendars to another partition host).
  * Every hop is a fresh safeGet, so the public-address check runs at connect
- * time on each one, and an https link is never followed down to http.
- * Anything but a 200 whose body is a calendar throws, so the caller keeps the
- * rows it already has. `get` is injectable for tests.
+ * time on each one, and an https link is never followed down to http. Every
+ * hop goes through moduleGet, so no hop starts once Calendar is off
+ * (ModuleOffError). Anything but a 200 whose body is a calendar throws, so the
+ * caller keeps the rows it already has. `get` is injectable for tests.
  */
 export async function fetchCalendarText(rawUrl: string, get: SafeGetter = safeGet): Promise<string> {
   let current = normalizeCalendarUrl(rawUrl);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const res = await get(current, { maxBytes: MAX_ICS_BYTES, timeoutMs: 30_000, allowHttp: true, accept: "text/calendar" });
+    const res = await moduleGet(
+      "calendar",
+      current,
+      { maxBytes: MAX_ICS_BYTES, timeoutMs: 30_000, allowHttp: true, accept: "text/calendar" },
+      get
+    );
     if (REDIRECT_STATUSES.has(res.status)) {
       if (!res.location) throw new Error(`HTTP ${res.status} without a Location`);
       let next: URL;
@@ -266,6 +273,7 @@ async function fetchMember(member: string, url: string, from: Date, to: Date, ge
   try {
     text = await fetchCalendarText(url, get);
   } catch (err) {
+    if (err instanceof ModuleOffError) throw err; // the refresh stops; see refreshIcs
     // The link itself is not added to the message: calendar addresses are secrets.
     throw new Error(`ICS fetch ${member}: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -369,6 +377,11 @@ export function dropUnconfiguredSources(db: Db = getDb()): void {
  * sources that fetched and parsed; a failed source keeps what it had. Sources
  * that are no longer configured lose their rows. Callers go through
  * startRefresh(); `get` is injectable for tests.
+ *
+ * Calendar switched off during a refresh: the next feed (or redirect hop) is
+ * refused before it starts (moduleGet), and the refresh stops there. It
+ * writes nothing and leaves ics_last_refresh alone, so the first refresh
+ * after Calendar is back on runs at once.
  */
 export async function refreshIcs(get: SafeGetter = safeGet): Promise<void> {
   const household = getMembers();
@@ -393,6 +406,8 @@ export async function refreshIcs(get: SafeGetter = safeGet): Promise<void> {
     }))
   );
 
+  if (results.some((r) => r.status === "rejected" && r.reason instanceof ModuleOffError)) return;
+
   // Shared kids calendar: "<Kid> - X" routes to that kid only; unprefixed
   // events go to every kid's row.
   const sharedByKid = new Map<string, Row[]>(kids.map((k) => [k.id, []]));
@@ -406,6 +421,7 @@ export async function refreshIcs(get: SafeGetter = safeGet): Promise<void> {
         }
       }
     } catch (err) {
+      if (err instanceof ModuleOffError) return;
       sharedFailed = true;
       console.error("[ics] shared kids feed failed:", String(err));
     }

@@ -48,6 +48,7 @@ export const MODULES = [
     pages: ["/", "/today", "/settings", "/unlock"],
     api: [
       "/api/today",
+      "/api/modules",
       "/api/settings",
       "/api/setup",
       "/api/pin",

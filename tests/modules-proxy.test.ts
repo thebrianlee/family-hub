@@ -99,6 +99,9 @@ describe("module gate", () => {
     expect(passed(proxy(req("/today", { who: "device" })))).toBe(true);
     expect(passed(proxy(req("/api/today", { who: "device" })))).toBe(true);
     expect(passed(proxy(req("/api/settings/modules", { who: "parent" })))).toBe(true);
+    // The module watcher's route: never gated, but behind the read lock like any other.
+    expect(passed(proxy(req("/api/modules", { who: "device" })))).toBe(true);
+    expect(proxy(req("/api/modules")).status).toBe(401);
     // Routines off takes rewards and progress with it.
     expect(proxy(req("/api/balance", { who: "device" })).status).toBe(404);
     expect(proxy(req("/level-up", { who: "device" })).status).toBe(307);

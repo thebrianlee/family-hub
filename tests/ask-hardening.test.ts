@@ -1,9 +1,10 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { NextRequest } from "next/server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getDb } from "@/lib/db";
+import { setEnabled } from "@/lib/modules";
 
 // A stand-in for the local bridge (bridge/ask-bridge.mjs), reached by the
 // route's plain fetch to 127.0.0.1. It records what the hub sent.
@@ -42,6 +43,9 @@ beforeAll(async () => {
   process.env.ASK_MAX_PER_DAY = "100";
   process.env.ASK_TIMEOUT_MS = String(TIMEOUT_MS);
   ({ POST } = await import("@/app/api/ask/route"));
+  // Ask is off on a fresh install, and the route checks it as the bridge call starts.
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  setEnabled({ ask: true }, { actor: "parent" });
 });
 
 afterAll(async () => {

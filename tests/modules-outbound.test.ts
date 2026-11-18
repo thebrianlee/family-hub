@@ -19,6 +19,7 @@ import { POST as parentPost } from "@/app/api/settings/parent/route";
 import { hashPin } from "@/lib/auth";
 import { checkCalendarLink } from "@/lib/household-settings";
 import { refreshIcsNow } from "@/lib/ics";
+import { ModuleOffError } from "@/lib/module-fetch";
 import { setEnabled } from "@/lib/modules";
 import { getSetting, setSetting } from "@/lib/queries";
 import { PARENT_COOKIE, signCookie } from "@/lib/session";
@@ -68,6 +69,29 @@ describe("saving a calendar link in parent settings", () => {
     // A bad address is still refused without contacting anything.
     expect((await saveLink("not a link")).status).toBe(400);
     expect(checkCalendarLink).not.toHaveBeenCalled();
+  });
+
+  it("with Calendar switched off while the link is checked: the link is saved, and no refresh starts", async () => {
+    vi.mocked(checkCalendarLink).mockImplementationOnce(async (url: string) => {
+      setEnabled({ calendar: false }, { actor: "parent" }); // another screen switches Calendar off meanwhile
+      return { ok: true as const, value: url };
+    });
+    const res = await saveLink(LINK);
+    expect(res.status).toBe(200);
+    expect(getSetting("ics_url_kids_shared")).toBe(LINK);
+    expect(checkCalendarLink).toHaveBeenCalledTimes(1);
+    expect(refreshIcsNow).not.toHaveBeenCalled();
+  });
+
+  it("with the check stopped because Calendar went off before its next request: saved, no refresh", async () => {
+    vi.mocked(checkCalendarLink).mockImplementationOnce(async () => {
+      setEnabled({ calendar: false }, { actor: "parent" });
+      throw new ModuleOffError("calendar");
+    });
+    const res = await saveLink(LINK);
+    expect(res.status).toBe(200);
+    expect(getSetting("ics_url_kids_shared")).toBe(LINK);
+    expect(refreshIcsNow).not.toHaveBeenCalled();
   });
 
   it("with Calendar on: the link is checked, saved and refreshed as before", async () => {

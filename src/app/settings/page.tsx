@@ -338,7 +338,7 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
  */
 function ModulesCard() {
   const router = useRouter();
-  const { syncModules } = useModules();
+  const { syncModules, holdWatcher } = useModules();
   const expired = useContext(SessionExpired);
   const [state, setState] = useState<ModuleState | null>(null);
   // The module revision `state` was read at. A snapshot replaces it only when
@@ -371,13 +371,15 @@ function ModulesCard() {
   const name = (id: string) => getModule(id)?.name ?? id;
 
   // The switches stay locked (busy) until the answer is read and applied, or
-  // the save has failed.
+  // the save has failed. Until then the module watcher waits too, so this
+  // screen shows its own answer instead of reloading (ModulesProvider).
   const save = async (id: string, on: boolean) => {
     if (!state || busy) return;
     setConfirm(null);
     setBusy(true);
     setError("");
     setSaved("");
+    const release = holdWatcher();
     try {
       const res = await fetch("/api/settings/modules", {
         method: "PUT",
@@ -407,6 +409,7 @@ function ModulesCard() {
       syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs });
       router.refresh();
     } finally {
+      release();
       setBusy(false);
     }
   };

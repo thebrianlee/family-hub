@@ -2,6 +2,7 @@ import { applyHouseholdTimezone, getDb } from "./db";
 import { getMembers } from "./household";
 import { getSetting, setSetting } from "./queries";
 import { dropUnconfiguredSources, fetchCalendarText } from "./ics";
+import { ModuleOffError } from "./module-fetch";
 import { SafeFetchError, type SafeGetOptions, type SafeResponse, safeGet } from "./safe-fetch";
 
 // Parent settings: household basics, location, privacy and calendar links.
@@ -131,6 +132,8 @@ export function parseCalendarLink(raw: unknown): Result<string> {
  * Fetch the link once exactly as the sync will (src/lib/ics.ts: safe-fetch
  * guard on every hop, up to 3 redirects, never https -> http) and check that
  * it is a calendar. Turns the reasons into words a parent can act on.
+ * Calendar switched off before a hop starts is not a reason: ModuleOffError
+ * is thrown on to the caller, which stops.
  */
 export async function checkCalendarLink(
   url: string,
@@ -140,6 +143,7 @@ export async function checkCalendarLink(
     await fetchCalendarText(url, get);
     return { ok: true, value: url };
   } catch (err) {
+    if (err instanceof ModuleOffError) throw err;
     if (err instanceof SafeFetchError) {
       // Private-network targets, oversized feeds and timeouts land here.
       return { ok: false, error: `Couldn't use that link: ${err.message}.` };

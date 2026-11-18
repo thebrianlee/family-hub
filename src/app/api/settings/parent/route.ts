@@ -25,6 +25,7 @@ import {
   validateHousehold,
 } from "@/lib/household";
 import { refreshIcsNow } from "@/lib/ics";
+import { ModuleOffError } from "@/lib/module-fetch";
 import { isEnabled } from "@/lib/modules";
 import { getSetting, setSetting } from "@/lib/queries";
 
@@ -85,11 +86,22 @@ async function apply(req: NextRequest, body: Record<string, unknown>): Promise<N
         saveCalendarLink(owner, normalized.value);
         break;
       }
-      const reachable = await checkCalendarLink(normalized.value);
+      let reachable: Awaited<ReturnType<typeof checkCalendarLink>>;
+      try {
+        reachable = await checkCalendarLink(normalized.value);
+      } catch (err) {
+        // Calendar was switched off before the check's next request started:
+        // saved as in the off case above, and nothing more is contacted.
+        if (!(err instanceof ModuleOffError)) throw err;
+        saveCalendarLink(owner, normalized.value);
+        break;
+      }
       if (!reachable.ok) return NextResponse.json({ error: reachable.error }, { status: 400 });
       saveCalendarLink(owner, reachable.value);
       // Pull the new events in the background; the response doesn't wait.
-      void refreshIcsNow().catch(() => {});
+      // Checked again: Calendar can have been switched off during the check.
+      // (Each feed request inside the refresh checks once more, moduleGet.)
+      if (isEnabled("calendar")) void refreshIcsNow().catch(() => {});
       break;
     }
     case "privacy": {

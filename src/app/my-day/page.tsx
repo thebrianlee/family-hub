@@ -564,7 +564,7 @@ export default function MyDayPage() {
 
       {/* Reading drill-down: current book, log minutes, start/finish */}
       <ReadingSheet
-        open={readingFor !== null}
+        open={readingOn && readingFor !== null}
         kid={readingFor?.kid ?? null}
         templateId={readingFor?.item.id ?? null}
         unit={readingFor?.item.unit ?? "min"}

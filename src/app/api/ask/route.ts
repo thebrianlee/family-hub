@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addQuestion, getRecentQuestions, getSetting, reserveAskSlot } from "@/lib/queries";
 import { getMember } from "@/lib/household";
+import { ModuleOffError, moduleFetch } from "@/lib/module-fetch";
 
 export const dynamic = "force-dynamic";
 
@@ -73,7 +74,9 @@ export async function POST(req: NextRequest) {
   const ctrl = new AbortController();
   const deadline = setTimeout(() => ctrl.abort(), BRIDGE_TIMEOUT_MS);
   try {
-    const res = await fetch(`${bridgeUrl}/ask`, {
+    // Checked again as the request starts: Ask can have been switched off
+    // while the question was read.
+    const res = await moduleFetch("ask", `${bridgeUrl}/ask`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -95,7 +98,8 @@ export async function POST(req: NextRequest) {
     const source = data.source || data.provider || "offline";
     addQuestion(kid, question, data.answer, source, data.model || model, data.latency_ms ?? 0);
     return NextResponse.json({ answer: data.answer, source: data.source });
-  } catch {
+  } catch (err) {
+    if (err instanceof ModuleOffError) return NextResponse.json({ error: "module_off" }, { status: 404 });
     return NextResponse.json(
       { error: "My brain helper isn't answering right now. Try again in a little bit!" },
       { status: 503 }

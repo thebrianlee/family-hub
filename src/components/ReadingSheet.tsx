@@ -5,7 +5,7 @@
 // them finish a book, or start a new one by search. Book-level detail lives on
 // the routine, not hidden under Rewards.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { KidId } from "@/lib/family";
 import { useMembers } from "./MembersProvider";
 import { useModules } from "./ModulesProvider";
@@ -50,6 +50,9 @@ export default function ReadingSheet({
   // Points are still earned with Points & jar off; the "+N" is just not shown.
   const { isOn } = useModules();
   const plus = (n: number) => (isOn("rewards") ? ` +${n}` : "");
+  // Shown, and fetching, only while Reading is on, whatever the parent passes.
+  const active = open && isOn("reading");
+  const activeRef = useRef(active);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [minutes, setMinutes] = useState("");
   const [mode, setMode] = useState<"main" | "search">("main");
@@ -57,13 +60,22 @@ export default function ReadingSheet({
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // An answer that lands after the sheet closed or Reading went off is dropped.
   const load = useCallback(() => {
-    if (!kid) return;
-    fetch(`/api/reading?kid=${kid}`).then((r) => r.json()).then((d) => setSummary(d.summary)).catch(() => {});
+    if (!kid || !activeRef.current) return;
+    fetch(`/api/reading?kid=${kid}`)
+      .then((r) => r.json())
+      .then((d) => { if (activeRef.current) setSummary(d.summary); })
+      .catch(() => {});
   }, [kid]);
+  // Fresh on every open; the book, minutes and search go as soon as the sheet
+  // closes or Reading is switched off.
   useEffect(() => {
-    if (open) { load(); setMode("main"); setMinutes(""); setQuery(""); setResults(null); }
-  }, [open, load]);
+    activeRef.current = active;
+    setMode("main"); setMinutes(""); setQuery(""); setResults(null);
+    if (active) load();
+    else setSummary(null);
+  }, [active, load]);
 
   const post = (body: Record<string, unknown>) =>
     fetch("/api/reading", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kid, ...body }) });
@@ -92,12 +104,13 @@ export default function ReadingSheet({
   };
 
   const runSearch = async () => {
-    if (query.trim().length < 2) return;
+    if (!activeRef.current || query.trim().length < 2) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);
-      setResults((await res.json()).results ?? []);
-    } catch { setResults([]); } finally { setBusy(false); }
+      const found = (await res.json()).results ?? [];
+      if (activeRef.current) setResults(found);
+    } catch { if (activeRef.current) setResults([]); } finally { setBusy(false); }
   };
 
   // Log tonight's minutes → ticks the Reading routine.
@@ -124,7 +137,7 @@ export default function ReadingSheet({
   const name = kid ? memberOf(kid).name : "";
 
   return (
-    <Modal open={open} onClose={onClose} title={`📖 ${name}'s Reading`} wide>
+    <Modal open={active} onClose={onClose} title={`📖 ${name}'s Reading`} wide>
       {mode === "main" ? (
         <div className="flex flex-col gap-5 min-h-0 overflow-y-auto pr-1">
           {/* current books */}
