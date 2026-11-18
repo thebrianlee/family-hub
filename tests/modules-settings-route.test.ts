@@ -68,13 +68,16 @@ describe("parent-only (AC 5)", () => {
     expect(states(await after.json())).toMatchObject({ lists: true });
   });
 
-  it("PUT works with the parent cookie or the PIN", async () => {
-    const withCookie = await PUT(put({ modules: { lists: false } }, "parent"));
-    expect(withCookie.status).toBe(200);
-    expect(states(await withCookie.json())).toMatchObject({ lists: false });
-    const withPin = await PUT(put({ modules: { lists: true }, pin: PIN }));
-    expect(withPin.status).toBe(200);
-    expect(states(await withPin.json())).toMatchObject({ lists: true });
+  it("PUT works with the parent cookie; the PIN alone is not a way in, at the proxy or the route", async () => {
+    // What a request really meets: the proxy first, then the route.
+    const pinOnly = put({ modules: { lists: false }, pin: PIN }, "device");
+    expect(proxy(pinOnly).status).toBe(403);
+    expect((await PUT(put({ modules: { lists: false }, pin: PIN }, "device"))).status).toBe(403);
+    const withCookie = put({ modules: { lists: false } }, "parent");
+    expect(proxy(withCookie).headers.get("x-middleware-next")).toBe("1");
+    const res = await PUT(put({ modules: { lists: false } }, "parent"));
+    expect(res.status).toBe(200);
+    expect(states(await res.json())).toMatchObject({ lists: false });
   });
 
   it("the proxy refuses a kid on an unlocked screen and a cross-site request", () => {

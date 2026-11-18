@@ -115,6 +115,19 @@ describe("/api/today with modules", () => {
     expect((await today()).modules).toEqual(MODULES.map((m) => m.id));
   });
 
+  it("a parent reading the calendar API while Calendar is off does not refresh the feeds", async () => {
+    const { GET: calendarGet } = await import("@/app/api/calendar/route");
+    const { NextRequest } = await import("next/server");
+    const calendarReq = () => new NextRequest("http://hub.home:3847/api/calendar?from=2026-11-01&to=2026-11-30");
+    setEnabled({ ...ALL(true), calendar: false }, { actor: "parent" });
+    vi.mocked(refreshIcsIfStale).mockClear();
+    expect((await calendarGet(calendarReq())).status).toBe(200);
+    expect(refreshIcsIfStale).not.toHaveBeenCalled();
+    setEnabled(ALL(true), { actor: "parent" });
+    expect((await calendarGet(calendarReq())).status).toBe(200);
+    expect(refreshIcsIfStale).toHaveBeenCalledTimes(1);
+  });
+
   it("each module leaves out its own fields and tab", async () => {
     const owned: Record<string, string[]> = {
       calendar: ["events"],

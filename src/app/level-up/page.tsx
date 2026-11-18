@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KidId } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
+import { useModules } from "@/components/ModulesProvider";
 import KidPicker from "@/components/KidPicker";
 import Sparkline from "@/components/Sparkline";
 import Confetti from "@/components/Confetti";
@@ -48,6 +49,8 @@ interface Summary {
 }
 
 export default function LevelUpPage() {
+  // Points are still awarded with Points & jar off; only the "+N" is hidden.
+  const rewardsOn = useModules().isOn("rewards");
   const { kids, memberOf } = useMembers();
   const [kid, setKid] = useState<KidId | null>(kids[0]?.id ?? null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -89,7 +92,7 @@ export default function LevelUpPage() {
       setCelebrate(`NEW PERSONAL BEST! ${num} ${entry.unit} ${entry.label}!`);
       setTimeout(() => setCelebrate(null), 4200);
     } else if (res.ok) {
-      setCelebrate(`Session logged! +${body.earned} Family Bucks`);
+      setCelebrate(rewardsOn ? `Session logged! +${body.earned} Family Bucks` : "Session logged!");
       setTimeout(() => setCelebrate(null), 2400);
     }
   };
