@@ -38,6 +38,7 @@ interface Today {
   meals?: { slots: Record<string, MealCell | null> } | null;
   greeting?: string;
   tabs?: TabInfo[];
+  modules?: string[];
 }
 
 const MOOD_EMOJI: Record<string, string> = { great: "😄", good: "🙂", ok: "😐", sad: "😢", mad: "😠" };
@@ -145,7 +146,7 @@ function RhythmGauge({ score, label }: { score: number; label: string }) {
 export default function TodayPage() {
   const router = useRouter();
   const { kids, parents, memberOf } = useMembers();
-  const { isOn, syncTabs } = useModules();
+  const { isOn, syncModules } = useModules();
   const [t, setT] = useState<Today | null>(null);
   // Parent status editing: PIN, then picker (carried over from the old root view).
   const [pinFor, setPinFor] = useState<ParentId | null>(null);
@@ -154,9 +155,9 @@ export default function TodayPage() {
   const show = useCallback(
     (d: Today) => {
       setT(d);
-      if (Array.isArray(d.tabs)) syncTabs(d.tabs);
+      if (Array.isArray(d.tabs) && Array.isArray(d.modules)) syncModules({ modules: d.modules, tabs: d.tabs });
     },
-    [syncTabs]
+    [syncModules]
   );
   useEffect(() => {
     const f = () => fetch("/api/today").then((r) => r.json()).then(show).catch(() => {});

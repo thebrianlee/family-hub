@@ -13,7 +13,9 @@ import { getWeather } from "@/lib/weather";
 export const dynamic = "force-dynamic";
 
 // A module that is switched off leaves its fields out (the page then skips
-// that slot), and its background refresh doesn't run. `tabs` is the tab bar.
+// that slot), and its background refresh doesn't run. `tabs` is the tab bar,
+// `modules` the ids of the modules that are on (core included), so an open
+// wall also learns about modules without a tab.
 export async function GET() {
   const on = enabledModules();
   const calendar = on.includes("calendar");
@@ -56,5 +58,6 @@ export async function GET() {
     kids,
     ...(meals ? { meals: getMealDays(isoToday(today), 1)[0] ?? null } : {}),
     tabs: enabledTabs(on),
+    modules: on,
   });
 }
