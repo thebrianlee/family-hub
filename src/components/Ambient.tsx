@@ -101,8 +101,8 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
       fetch("/api/ambient").then((r) => r.json()).then(setCfg).catch(() => {});
       setSaver(true);
     };
-    window.addEventListener("familyhub:sleep", onSleep);
-    return () => window.removeEventListener("familyhub:sleep", onSleep);
+    window.addEventListener("sproutwall:sleep", onSleep);
+    return () => window.removeEventListener("sproutwall:sleep", onSleep);
   }, []);
 
   // Track activity.
@@ -130,12 +130,12 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
       setSleeping(asleep);
       const idleMs = Date.now() - lastActivity.current;
       if (!asleep && idleMs > cfg.idleMinutes * 60_000) setSaver(true);
-      // Kiosk freshness: pages fetch on mount + familyhub:datachanged, but the
+      // Kiosk freshness: pages fetch on mount + sproutwall:datachanged, but the
       // wall stays mounted for days. Rebroadcast so whatever tab is showing
       // refetches (moved/added Google events appear within 5 min)...
       if (Date.now() - lastRefetch.current > 5 * 60_000) {
         lastRefetch.current = Date.now();
-        window.dispatchEvent(new CustomEvent("familyhub:datachanged"));
+        window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       }
       // ...and a nightly reload resets mount-time state (calendar anchor,
       // "today" highlights) before the family wakes.

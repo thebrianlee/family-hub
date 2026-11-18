@@ -38,7 +38,7 @@ async function searchOpenLibrary(query: string): Promise<BookSearchResult[]> {
   const res = await fetch(url, {
     cache: "no-store",
     signal: AbortSignal.timeout(8000),
-    headers: { "User-Agent": "FamilyHub/1.0 (family wall display)" },
+    headers: { "User-Agent": "Sproutwall (+https://github.com/thebrianlee/sproutwall)" },
   });
   if (!res.ok) throw new Error(`Open Library HTTP ${res.status}`);
   const data = await res.json();

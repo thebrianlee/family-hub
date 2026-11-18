@@ -20,7 +20,7 @@ function calendar(events: { uid: string; summary: string }[]): string {
   start.setUTCDate(start.getUTCDate() + 1);
   start.setUTCHours(15, 0, 0, 0);
   const end = new Date(start.getTime() + 3_600_000);
-  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Family Hub tests//EN"];
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Sproutwall tests//EN"];
   for (const e of events) {
     lines.push(
       "BEGIN:VEVENT",

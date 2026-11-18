@@ -10,14 +10,14 @@ const BACKUP_NAME = /^sproutwall-v\d+-to-v\d+-\d{8}T\d{9}Z-\d{2}\.db$/;
 // Each test gets its own folder, so backups from one test never show up in another.
 function useDbFile(name: string): string {
   const dir = fs.mkdtempSync(path.join(process.env.DATA_DIR!, `${name}-`));
-  const file = path.join(dir, "family-hub.db");
-  process.env.FAMILY_HUB_DB = file;
+  const file = path.join(dir, "sproutwall.db");
+  process.env.SPROUTWALL_DB = file;
   return file;
 }
 
 function closeCachedDb() {
-  globalThis.__familyHubDb?.close();
-  globalThis.__familyHubDb = undefined;
+  globalThis.__sproutwallDb?.close();
+  globalThis.__sproutwallDb = undefined;
 }
 
 function backups(file: string): string[] {

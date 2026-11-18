@@ -205,7 +205,7 @@ describe("routes after setup check member ids against the database", () => {
 
   it("a restart keeps the new family and does not bring back sample data", () => {
     getDb().close();
-    globalThis.__familyHubDb = undefined;
+    globalThis.__sproutwallDb = undefined;
     expect(getMembers().map((m) => m.id)).toEqual(["mila", "theo", "dana"]);
     expect(count("SELECT COUNT(*) c FROM activities")).toBe(0);
     expect(count("SELECT COUNT(*) c FROM events")).toBe(0);

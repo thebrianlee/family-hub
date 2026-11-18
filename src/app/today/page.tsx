@@ -148,8 +148,8 @@ export default function TodayPage() {
     const f = () => fetch("/api/today").then((r) => r.json()).then(setT).catch(() => {});
     f();
     const iv = setInterval(f, 5 * 60_000);
-    window.addEventListener("familyhub:datachanged", f);
-    return () => { clearInterval(iv); window.removeEventListener("familyhub:datachanged", f); };
+    window.addEventListener("sproutwall:datachanged", f);
+    return () => { clearInterval(iv); window.removeEventListener("sproutwall:datachanged", f); };
   }, []);
   const setStatus = async (status: ParentStatus) => {
     if (!statusFor) return;

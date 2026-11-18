@@ -41,7 +41,7 @@ export function sessionSecret(): string {
   if (fromEnv) {
     if (!isValidSecret(fromEnv, MIN_SECRET)) {
       throw new Error(
-        `SESSION_SECRET must be at least ${MIN_SECRET} characters with no spaces, using only printable ASCII. Set a longer value, or remove it to let Family Hub generate one.`,
+        `SESSION_SECRET must be at least ${MIN_SECRET} characters with no spaces, using only printable ASCII. Set a longer value, or remove it to let Sproutwall generate one.`,
       );
     }
     return fromEnv;

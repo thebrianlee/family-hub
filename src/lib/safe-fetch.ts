@@ -131,7 +131,7 @@ export function safeGet(rawUrl: string, opts: SafeGetOptions): Promise<SafeRespo
       {
         method: "GET",
         lookup: guardedLookup as unknown as net.LookupFunction,
-        headers: { "User-Agent": "FamilyHub/1.0", Accept: opts.accept ?? "*/*" },
+        headers: { "User-Agent": "Sproutwall (+https://github.com/thebrianlee/sproutwall)", Accept: opts.accept ?? "*/*" },
         timeout: opts.timeoutMs,
       },
       (res) => {

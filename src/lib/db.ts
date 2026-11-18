@@ -3,14 +3,17 @@ import path from "path";
 import fs from "fs";
 import { dataDir } from "./paths";
 import { LATEST_SCHEMA, MIGRATIONS } from "./migrations";
+import { resolveDbPath } from "../../scripts/lib/db-path.mjs";
+
+// Which file: SPROUTWALL_DB, then FAMILY_HUB_DB, then sproutwall.db or (from
+// before the rename) family-hub.db in the data folder. The host scripts use the
+// same resolver, so the app and `reset-pin` always open the same file.
+const RESOLVED = resolveDbPath({ dataDir: dataDir() });
+const DB_PATH = RESOLVED.file;
 
 // Singleton SQLite handle. Survives Next.js dev-server hot reloads via globalThis.
-const DB_PATH = process.env.FAMILY_HUB_DB
-  ? path.resolve(process.env.FAMILY_HUB_DB)
-  : path.join(dataDir(), "family-hub.db");
-
 declare global {
-  var __familyHubDb: Database.Database | undefined;
+  var __sproutwallDb: Database.Database | undefined;
 }
 
 export type DbBlockedCode = "db_newer_than_app" | "backup_failed" | "low_disk";
@@ -51,6 +54,7 @@ function readSchemaVersion(file: string): number | null {
 }
 
 function createDb(): Database.Database {
+  for (const warning of RESOLVED.warnings) console.warn(`[db] ${warning}`);
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   // Check the version through a read-only handle first, so a database written
   // by a newer build is never opened for writing (not even the WAL switch).
@@ -272,17 +276,17 @@ export const BLOCKED_RETRY_MS = 60_000;
 let blocked: { error: DbBlockedError; at: number } | null = null;
 
 export function getDb(): Database.Database {
-  if (!globalThis.__familyHubDb) {
+  if (!globalThis.__sproutwallDb) {
     if (blocked && Date.now() - blocked.at < BLOCKED_RETRY_MS) throw blocked.error;
     try {
-      globalThis.__familyHubDb = createDb();
+      globalThis.__sproutwallDb = createDb();
       blocked = null;
     } catch (e) {
       if (isDbBlocked(e)) blocked = { error: e, at: Date.now() };
       throw e;
     }
   }
-  return globalThis.__familyHubDb;
+  return globalThis.__sproutwallDb;
 }
 
 /**

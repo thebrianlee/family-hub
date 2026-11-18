@@ -124,7 +124,7 @@ export default function SetupScreen() {
       router.replace("/today");
       router.refresh();
     } catch {
-      setError("Could not reach Family Hub.");
+      setError("Could not reach Sproutwall.");
       setPending(false);
     }
   }
@@ -132,7 +132,7 @@ export default function SetupScreen() {
   return (
     <main className="h-screen overflow-y-auto bg-cream text-ink px-8 py-10">
       <div className="mx-auto max-w-3xl">
-        <div className="eyebrow mb-2">Family Hub</div>
+        <div className="eyebrow mb-2">Sproutwall</div>
         <h1 className="text-6xl font-extrabold tracking-tight">Set up the house</h1>
         <p className="mt-4 text-2xl leading-snug text-ink-soft">
           Try the board with the sample family, or add your own people. Choose a parent PIN before anything can be

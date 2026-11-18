@@ -1,3 +1,7 @@
+# The service key "family-hub" and the volume key "familyhub-data" are from
+# before the rename to Sproutwall. Keep them. A new volume key would start the
+# hub on a new, empty volume. A new service key would leave the old container
+# running beside the new one and change every "docker compose exec" command.
 services:
   family-hub:
     build: .
@@ -5,7 +9,6 @@ services:
       - "3847:3847"
     environment:
       DATA_DIR: /data
-      FAMILY_HUB_DB: /data/family-hub.db
       PHOTO_DIR: /photos
       PORT: "3847"
       BRIDGE_HOST: 127.0.0.1

@@ -146,8 +146,8 @@ export default function CalendarPage() {
   }, [range]);
   useEffect(() => {
     load();
-    window.addEventListener("familyhub:datachanged", load);
-    return () => window.removeEventListener("familyhub:datachanged", load);
+    window.addEventListener("sproutwall:datachanged", load);
+    return () => window.removeEventListener("sproutwall:datachanged", load);
   }, [load]);
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);

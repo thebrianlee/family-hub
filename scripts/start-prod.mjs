@@ -4,13 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ensureSecrets, loadEnvFile } from "./ensure-secrets.mjs";
+import { DB_ENV_VARS } from "./lib/db-path.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadEnvFile(path.join(root, ".env"));
 // The web server runs with its working directory inside .next/standalone, so
 // relative paths from .env (DATA_DIR=./data) must be pinned to the repo root
 // before anything is spawned. Otherwise dev and prod open different databases.
-for (const key of ["DATA_DIR", "PHOTO_DIR", "FAMILY_HUB_DB"]) {
+for (const key of ["DATA_DIR", "PHOTO_DIR", ...DB_ENV_VARS]) {
   const value = process.env[key];
   if (value && !path.isAbsolute(value)) process.env[key] = path.resolve(root, value);
 }
@@ -18,7 +19,7 @@ if (!process.env.DATA_DIR) process.env.DATA_DIR = path.join(root, "data");
 ensureSecrets();
 if (process.env.REQUIRE_AUTH_FOR_READS !== "1") {
   console.warn(
-    "[family-hub] Listening on every network interface with REQUIRE_AUTH_FOR_READS off: anyone who can reach this port can read the household. Set REQUIRE_AUTH_FOR_READS=1 to require the parent PIN on each screen."
+    "[sproutwall] Listening on every network interface with REQUIRE_AUTH_FOR_READS off: anyone who can reach this port can read the household. Set REQUIRE_AUTH_FOR_READS=1 to require the parent PIN on each screen."
   );
 }
 process.env.NODE_ENV = "production";

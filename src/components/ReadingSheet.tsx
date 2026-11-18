@@ -70,7 +70,7 @@ export default function ReadingSheet({
     try {
       const res = await post({ action: "finish", bookId: b.id });
       const body = await res.json().catch(() => ({}));
-      window.dispatchEvent(new CustomEvent("familyhub:datachanged"));
+      window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       load();
       if (res.ok) onLogged(`📚 "${b.title}" goes on the shelf! +${body.earned ?? 15}`, false);
     } finally { setBusy(false); }
@@ -81,7 +81,7 @@ export default function ReadingSheet({
     setBusy(true);
     try {
       await post({ action: "start", title: r.title, author: r.author, isbn: r.isbn, coverUrl: r.thumbnail });
-      window.dispatchEvent(new CustomEvent("familyhub:datachanged"));
+      window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       setMode("main"); setQuery(""); setResults(null);
       load();
     } finally { setBusy(false); }
@@ -107,7 +107,7 @@ export default function ReadingSheet({
         body: JSON.stringify({ kid, templateId, amount: m }),
       });
       const body = await res.json().catch(() => ({}));
-      window.dispatchEvent(new CustomEvent("familyhub:datachanged"));
+      window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       if (res.ok && !body.alreadyDone) {
         const name = memberOf(kid).name;
         onLogged(body.bucketDone ? `🎉 ${name} finished the evening! +${body.earned}` : `📖 ${m} ${unit} logged · +${body.earned}`, true);

@@ -1,6 +1,6 @@
-# Family Hub on a Raspberry Pi
+# Sproutwall on a Raspberry Pi
 
-This guide sets up Family Hub on a Raspberry Pi, with an optional touchscreen that shows the hub full screen. You do not need to be a programmer. You will copy a few commands into a terminal.
+This guide sets up Sproutwall on a Raspberry Pi, with an optional touchscreen that shows the hub full screen. You do not need to be a programmer. You will copy a few commands into a terminal.
 
 Plan for an evening. Most of the time is waiting for downloads and the first build.
 
@@ -54,7 +54,7 @@ Wait a minute and open the terminal again.
 
 ## Step 3: Install Docker
 
-Docker runs Family Hub in its own container. Use Docker's official instructions. The 64-bit Raspberry Pi OS is based on Debian, so Docker's [Raspberry Pi OS page](https://docs.docker.com/engine/install/raspberry-pi-os/) sends 64-bit users to the Debian steps.
+Docker runs Sproutwall in its own container. Use Docker's official instructions. The 64-bit Raspberry Pi OS is based on Debian, so Docker's [Raspberry Pi OS page](https://docs.docker.com/engine/install/raspberry-pi-os/) sends 64-bit users to the Debian steps.
 
 1. Follow **Install using the `apt` repository** on Docker's [Debian install page](https://docs.docker.com/engine/install/debian/). Docker also offers a convenience script on that page, but Docker itself recommends it only for testing.
 2. Let your user run Docker without `sudo`, as described in Docker's [post-install steps](https://docs.docker.com/engine/install/linux-postinstall/):
@@ -70,16 +70,14 @@ Docker runs Family Hub in its own container. Use Docker's official instructions.
    docker compose version
    ```
 
-## Step 4: Download and start Family Hub
+## Step 4: Download and start Sproutwall
 
 ```bash
 sudo apt install -y git
-git clone <repository-url> family-hub
-cd family-hub
+git clone https://github.com/thebrianlee/sproutwall.git sproutwall
+cd sproutwall
 docker compose up -d --build
 ```
-
-Replace `<repository-url>` with the address under the green **Code** button on this project's GitHub page. It ends in `.git`.
 
 **The first build on a Pi can take a long time.** It compiles the whole app on the Pi. Leave it running and do not unplug the Pi. If it stops with `Killed`, `exit code: 137` or "out of memory", see [The build runs out of memory](#the-build-runs-out-of-memory).
 
@@ -117,7 +115,7 @@ By default the Pi turns its screen off after some idle minutes. Turn that off:
 2. Choose **Display Options**, then **Screen Blanking**, and answer **No**.
 3. Finish and reboot.
 
-Family Hub has its own screensaver instead. After 10 idle minutes it shows your photos and quotes.
+Sproutwall has its own screensaver instead. After 10 idle minutes it shows your photos and quotes.
 
 ### Log in to the desktop automatically
 
@@ -145,7 +143,7 @@ The `&` at the end matters. This follows the official Raspberry Pi [kiosk tutori
 
 ```ini
 [autostart]
-familyhub = chromium-browser http://localhost:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run --start-maximized
+sproutwall = chromium-browser http://localhost:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run --start-maximized
 ```
 
 Reboot. The hub opens full screen and asks once for the parent PIN to unlock the screen. The unlock lasts 30 days.
@@ -156,22 +154,22 @@ To leave kiosk mode for a moment, press Alt+F4 with a keyboard attached.
 
 ## Keep it running
 
-These run in the `family-hub` folder (`cd ~/family-hub`). The [README](../README.md#back-up-and-update) explains each one.
+These run in the hub's folder: `cd ~/sproutwall`, or `cd ~/family-hub` if you installed before the rename to Sproutwall. The [README](../README.md#back-up-and-update) explains each one.
 
 **Back up** the household and photos to one file:
 
 ```bash
 docker compose stop
-docker compose run --rm -T --entrypoint tar family-hub czf - -C / data photos > family-hub-backup.tgz
+docker compose run --rm -T --entrypoint tar family-hub czf - -C / data photos > sproutwall-backup.tgz
 docker compose start
 ```
 
-Copy `family-hub-backup.tgz` off the Pi, for example to a USB stick. SD cards fail sometimes.
+Copy `sproutwall-backup.tgz` off the Pi, for example to a USB stick. SD cards fail sometimes.
 
 **Update** (back up first):
 
 ```bash
-git pull && docker compose up -d --build
+git pull && docker compose up -d --build --remove-orphans
 ```
 
 Updates rebuild the app on the Pi, so they also take a while.
@@ -198,7 +196,7 @@ Use your own new PIN instead of `4827`. Every screen then asks for the new PIN.
 
 - Turn off screen blanking (see [Step 6](#turn-off-screen-blanking)).
 - Some monitors and TVs have their own power-saving setting. Check the monitor's menu.
-- Family Hub's own screensaver shows photos and quotes, not a black screen. Tap the screen to go back to the hub.
+- Sproutwall's own screensaver shows photos and quotes, not a black screen. Tap the screen to go back to the hub.
 
 ### The build runs out of memory
 

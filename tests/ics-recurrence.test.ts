@@ -16,7 +16,7 @@ const get = async (): Promise<SafeResponse> => ({
 });
 
 function ics(...events: string[][]): string {
-  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Family Hub tests//EN"];
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Sproutwall tests//EN"];
   for (const e of events) lines.push("BEGIN:VEVENT", "DTSTAMP:20260101T000000Z", ...e, "END:VEVENT");
   lines.push("END:VCALENDAR");
   return lines.join("\r\n") + "\r\n";

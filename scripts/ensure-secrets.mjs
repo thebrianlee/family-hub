@@ -39,7 +39,7 @@ function ensure(name, filename) {
   if (fromEnv) {
     if (isValidSecret(fromEnv, min)) return;
     throw new Error(
-      `${name} is set but is not valid (needs ${min}+ characters of printable ASCII, no spaces). Fix it, or remove it to let Family Hub generate one.`
+      `${name} is set but is not valid (needs ${min}+ characters of printable ASCII, no spaces). Fix it, or remove it to let Sproutwall generate one.`
     );
   }
   const dir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), "data"));
