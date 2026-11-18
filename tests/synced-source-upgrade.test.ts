@@ -17,7 +17,7 @@ describe("an install from before synced_events.source", () => {
       INSERT INTO synced_events (id, member, title, date) VALUES ('shared:swim@test:riley', 'riley', 'Swim', '2026-12-01');
     `);
     old.close();
-    process.env.FAMILY_HUB_DB = file;
+    process.env.SPROUTWALL_DB = file;
 
     const { getDb } = await import("@/lib/db");
     const columns = () => (getDb().prepare("PRAGMA table_info(synced_events)").all() as { name: string }[]).map((c) => c.name);
@@ -28,7 +28,7 @@ describe("an install from before synced_events.source", () => {
 
     // A second start runs the same migration on the upgraded file.
     getDb().close();
-    globalThis.__familyHubDb = undefined;
+    globalThis.__sproutwallDb = undefined;
     expect(columns().filter((c) => c === "source")).toHaveLength(1);
   });
 });

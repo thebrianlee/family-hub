@@ -12,7 +12,7 @@ const ORIGINAL_DATA_DIR = process.env.DATA_DIR;
 let dir = "";
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "familyhub-secret-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "sproutwall-secret-"));
   process.env.DATA_DIR = dir;
   delete process.env.SESSION_SECRET;
 });

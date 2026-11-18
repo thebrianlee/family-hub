@@ -139,7 +139,7 @@ export default function TabNav() {
       </Link>
       {/* Instant screensaver — guests over, photos up. */}
       <button
-        onClick={() => window.dispatchEvent(new CustomEvent("familyhub:sleep"))}
+        onClick={() => window.dispatchEvent(new CustomEvent("sproutwall:sleep"))}
         aria-label="Start screensaver"
         className="touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 bg-cream-raised text-ink-faint shadow-tile active:bg-cream-sunken"
       >

@@ -138,7 +138,7 @@ Give AI agents a GitHub App instead of your personal token. An App has only the 
 
 Open **your profile picture → Settings → Developer settings → GitHub Apps → New GitHub App**.
 
-- [ ] **Name:** for example `family-hub-agent`.
+- [ ] **Name:** for example `sproutwall-agent`.
 - [ ] **Homepage URL:** the repository URL.
 - [ ] **Webhook:** turn **off** "Active".
 - [ ] **Repository permissions**, and nothing else:
@@ -348,7 +348,7 @@ Notes:
 - Publish by tagging a release: `git tag v1.0.0 && git push origin v1.0.0`. The metadata action creates `1.0.0`, `1.0` and `latest`.
 - The `arm64` half builds under emulation (QEMU), which may be slow. GitHub's native `ubuntu-24.04-arm` runners are an alternative, at the cost of a more complex workflow.
 - New GHCR packages start private. After the first run, open the package settings and make it public.
-- To use the image, `docker-compose.yml` would get `image: ghcr.io/<owner>/family-hub-open:latest` (your handle in lowercase) next to (or instead of) `build: .`, and the README and Pi guide would switch to `docker compose pull && docker compose up -d`.
+- To use the image, `docker-compose.yml` would get `image: ghcr.io/thebrianlee/sproutwall:<tag>` next to (or instead of) `build: .`, and the README and Pi guide would switch to `docker compose pull && docker compose up -d`.
 - Re-check the pinned SHAs before enabling. Dependabot keeps them current afterwards.
 
 ## 10. Last checks before "Make public"

@@ -1,6 +1,6 @@
-# Contributing to Family Hub
+# Contributing to Sproutwall
 
-Thanks for helping. Family Hub is a small self-hosted app that runs on a screen in a family's kitchen. Changes should stay easy to understand for a reviewer who has never seen that screen.
+Thanks for helping. Sproutwall is a small self-hosted app that runs on a screen in a family's kitchen. Changes should stay easy to understand for a reviewer who has never seen that screen.
 
 By taking part you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -17,7 +17,7 @@ npm run dev
 Open <http://127.0.0.1:3847>. The first page asks you to name the household and choose a PIN. You can keep the fictional sample family.
 
 - `npm run dev` starts the web app on port 3847 and the Ask the Hub bridge on `127.0.0.1:8787`.
-- Missing secrets are generated into `data/`. The database is `data/family-hub.db`. git ignores `data/`.
+- Missing secrets are generated into `data/`. The database is `data/sproutwall.db` (`data/family-hub.db` in a checkout from before the rename). git ignores `data/`.
 - `.env.example` sets `REQUIRE_AUTH_FOR_READS=0`, so screens are not locked while you develop. Set it to `1` to work on the unlock flow.
 - To start over, stop the dev server and delete `data/`.
 
@@ -35,8 +35,8 @@ npx vitest run tests/pin-lockout.test.ts # one file
 How tests stay away from real data:
 
 - `vitest.config.ts` runs `tests/setup.ts` before each test file, with `pool: "forks"`, so every file runs in its own process.
-- `tests/setup.ts` creates a new temporary folder and points `DATA_DIR` at it. It removes `FAMILY_HUB_DB` and `PHOTO_DIR` from the environment and sets a fixed test `SESSION_SECRET`.
-- So each test file gets its own empty database, and no test ever opens `data/family-hub.db`.
+- `tests/setup.ts` creates a new temporary folder and points `DATA_DIR` at it. It removes `SPROUTWALL_DB`, `FAMILY_HUB_DB` and `PHOTO_DIR` from the environment and sets a fixed test `SESSION_SECRET`.
+- So each test file gets its own empty database, and no test ever opens the real database in `data/`.
 
 Add a test when you fix a bug or change behavior. Security-relevant code (PIN, cookies, the access policy, outbound fetches) must have tests.
 
@@ -84,7 +84,7 @@ About the PII check (`scripts/check-pii.mjs`): it blocks home-directory paths, e
 
 ## Report a security problem
 
-Do not open a public issue. Use the repository's **Security** tab (it may be called **Security and quality**) and choose **Report a vulnerability** to open a private advisory. [SECURITY.md](SECURITY.md) explains what Family Hub protects and what to leave out of a report.
+Do not open a public issue. Use the repository's **Security** tab (it may be called **Security and quality**) and choose **Report a vulnerability** to open a private advisory. [SECURITY.md](SECURITY.md) explains what Sproutwall protects and what to leave out of a report.
 
 ## Good first issues
 
@@ -101,7 +101,7 @@ You may use AI tools. The rules below keep a human responsible for every change 
 
 **Label it.** If an AI agent wrote most of a pull request, add the `agent-authored` label and say in the description which tool or model wrote it and which human checked it.
 
-**How reviews work here.** Family Hub has one human maintainer who reviews code, [@hjunk](https://github.com/hjunk). He works with AI agents that write and review code. [GOVERNANCE.md](GOVERNANCE.md) has the details.
+**How reviews work here.** Sproutwall has one human maintainer who reviews code, [@hjunk](https://github.com/hjunk). He works with AI agents that write and review code. [GOVERNANCE.md](GOVERNANCE.md) has the details.
 
 - Pull requests from contributors and from Dependabot need @hjunk's own approval. Agents may comment on them but never approve them.
 - Pull requests written by @hjunk's agents are opened from his account, so GitHub won't let him approve them. For those only, [@ari-hjunk](https://github.com/ari-hjunk), his agent reviewer account, approves after an independent AI review has passed at that exact commit. That approval means "an agent review passed", not a human review. @hjunk reads the review and merges.

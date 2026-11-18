@@ -1,6 +1,6 @@
 # Security
 
-Family Hub is a household appliance for your home network. This page says exactly what it protects and what it does not.
+Sproutwall is a household appliance for your home network. This page says exactly what it protects and what it does not.
 
 ## Report a vulnerability
 

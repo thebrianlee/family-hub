@@ -2,7 +2,7 @@
 
 > **Status: Proposal, not implemented yet.** Nothing on this page exists in the code. Names, file layouts and APIs may change before the first skill ships. Open an issue labeled `skill/plugin` to discuss it.
 
-A **skill** is a small add-on that gives Family Hub a new card, tab, daily job or Ask the Hub source. Examples: a piano practice timer, a quiz of the day, a chore rotation. The goal is that a contributor can add a skill without touching the core app, and a parent can see exactly what a skill may do before turning it on.
+A **skill** is a small add-on that gives Sproutwall a new card, tab, daily job or Ask the Hub source. Examples: a piano practice timer, a quiz of the day, a chore rotation. The goal is that a contributor can add a skill without touching the core app, and a parent can see exactly what a skill may do before turning it on.
 
 ## Prerequisites
 
@@ -168,7 +168,7 @@ Good first skills use only existing APIs and need no network, for example a pian
 
 | | v1 | v2 |
 | --- | --- | --- |
-| Where skills live | In this repository, `skills/<id>/` | Also npm packages named `familyhub-skill-*` |
+| Where skills live | In this repository, `skills/<id>/` | Also npm packages named `sproutwall-skill-*` |
 | How they are added | Merged by pull request | Installed by the parent at build time, then the image is rebuilt |
 | Runtime download | Never | Never |
 | Manifest | `skill.json` | The same manifest, inside the package |

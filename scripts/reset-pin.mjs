@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
 import { loadEnvFile } from "./ensure-secrets.mjs";
+import { resolveDbPath } from "./lib/db-path.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadEnvFile(path.join(root, ".env"));
@@ -40,7 +41,9 @@ if (problem) {
 }
 
 const dataDir = path.resolve(root, process.env.DATA_DIR || "data");
-const dbPath = process.env.FAMILY_HUB_DB ? path.resolve(root, process.env.FAMILY_HUB_DB) : path.join(dataDir, "family-hub.db");
+// Same resolver as the web app, so this resets the PIN of the household the hub opens.
+const { file: dbPath, warnings } = resolveDbPath({ dataDir, base: root });
+for (const warning of warnings) console.warn(`reset-pin: ${warning}`);
 const db = new Database(dbPath, { fileMustExist: true });
 
 const salt = randomBytes(16).toString("hex");

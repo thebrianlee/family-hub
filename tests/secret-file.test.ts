@@ -13,7 +13,7 @@ const SAVED = { ...process.env };
 let dir = "";
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "familyhub-secretfile-"));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "sproutwall-secretfile-"));
   process.env.DATA_DIR = dir;
   delete process.env.SESSION_SECRET;
   delete process.env.BRIDGE_TOKEN;

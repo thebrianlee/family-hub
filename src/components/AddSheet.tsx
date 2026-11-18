@@ -27,7 +27,7 @@ function to24(h: number, m: number, pm: boolean): string {
   return `${String(hh).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 function fireChanged() {
-  window.dispatchEvent(new CustomEvent("familyhub:datachanged"));
+  window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
 }
 
 function TimePicker({

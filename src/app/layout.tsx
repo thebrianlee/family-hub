@@ -23,7 +23,7 @@ const jakarta = localFont({
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Family Hub",
+  title: "Sproutwall",
   description: "A wall display for one household",
 };
 

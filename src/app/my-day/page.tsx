@@ -121,8 +121,8 @@ export default function MyDayPage() {
   }, []);
   useEffect(() => {
     if (myView === "week") loadWeeks();
-    window.addEventListener("familyhub:datachanged", loadWeeks);
-    return () => window.removeEventListener("familyhub:datachanged", loadWeeks);
+    window.addEventListener("sproutwall:datachanged", loadWeeks);
+    return () => window.removeEventListener("sproutwall:datachanged", loadWeeks);
   }, [myView, loadWeeks]);
   const [moodFor, setMoodFor] = useState<KidId | null>(null);
   // Reward layer (folded in from the old Rewards tab): balance/goal/streak on each
@@ -157,9 +157,9 @@ export default function MyDayPage() {
     load();
     loadRewards();
     const onChange = () => { load(); loadRewards(); };
-    window.addEventListener("familyhub:datachanged", onChange);
+    window.addEventListener("sproutwall:datachanged", onChange);
     if (new URLSearchParams(window.location.search).get("v") === "week") setMyView("week");
-    return () => window.removeEventListener("familyhub:datachanged", onChange);
+    return () => window.removeEventListener("sproutwall:datachanged", onChange);
   }, [load, loadRewards]);
   // Deep-link: /my-day?read=<kid id> opens that kid's reading drill-down.
   const readParamDone = useRef(false);

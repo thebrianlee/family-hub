@@ -18,7 +18,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3847
 ENV HOSTNAME=0.0.0.0
 ENV DATA_DIR=/data
-ENV FAMILY_HUB_DB=/data/family-hub.db
+# No DB file name here: the app picks sproutwall.db, or family-hub.db on an
+# install from before the rename (scripts/lib/db-path.mjs).
 ENV PHOTO_DIR=/photos
 # tzdata: SQLite date('now','localtime') uses the C library, which needs the
 # zone files to follow the household timezone (TZ). Without them it stays UTC.

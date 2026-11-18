@@ -1,6 +1,6 @@
-# Family Hub
+# Sproutwall
 
-Family Hub is a family dashboard for a screen in your kitchen. It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. It runs on a computer in your home, such as a Raspberry Pi, and keeps the household's data on that computer. There is no cloud account and no subscription.
+Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitchen. It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. It runs on a computer in your home, such as a Raspberry Pi, and keeps the household's data on that computer. There is no cloud account and no subscription.
 
 ![The Today screen, showing the fictional Calder family](docs/screenshots/today.png)
 
@@ -25,19 +25,19 @@ The screenshots show the Calders, a made-up sample family. They are not a real h
 
 - A computer that stays on: a Linux PC, a Mac, a Windows PC with Docker Desktop, or a Raspberry Pi 4 or 5 ([Pi guide](docs/raspberry-pi.md)).
 - [Docker](https://docs.docker.com/get-docker/) with Compose. Check with `docker compose version`.
-- [git](https://git-scm.com/downloads), to download Family Hub and get updates.
+- [git](https://git-scm.com/downloads), to download Sproutwall and get updates.
 
 ### Start it
 
 Open a terminal and run:
 
 ```bash
-git clone <repository-url> family-hub
-cd family-hub
+git clone https://github.com/thebrianlee/sproutwall.git sproutwall
+cd sproutwall
 docker compose up -d --build
 ```
 
-Replace `<repository-url>` with the address under the green **Code** button at the top of this project's GitHub page. It ends in `.git`.
+This makes a folder named `sproutwall`, the hub's folder. The commands on this page run there. Installed before the rename? See [Installed before the rename](#installed-before-the-rename).
 
 The first start builds the app. That takes a while, and much longer on a Raspberry Pi. `-d` keeps it running in the background. It starts again by itself after a reboot, as long as Docker starts at boot.
 
@@ -129,7 +129,7 @@ The parent session lasts 15 minutes. If it ends while you are in Settings, the P
 
 ## Keep it safe
 
-Family Hub is built for a trusted home network. The short version:
+Sproutwall is built for a trusted home network. The short version:
 
 - **It is a home-network appliance.** Anyone who can reach port 3847 sees the unlock screen and can try PINs. Only devices in your home should be able to reach it.
 - **Never port-forward it.** Do not open port 3847, or any port that leads to it, on your router. Do not run it on a public server.
@@ -141,7 +141,7 @@ Family Hub is built for a trusted home network. The short version:
 
 Kids' data stays on your computer. The one exception is Ask the Hub, and only if you turn it on (see [Ask the Hub](#ask-the-hub)).
 
-Running your own copy for your own family is different from running it as a service for other families. Someone who hosts Family Hub for other households takes on legal duties, such as COPPA for children's data in the US. This is not legal advice.
+Running your own copy for your own family is different from running it as a service for other families. Someone who hosts Sproutwall for other households takes on legal duties, such as COPPA for children's data in the US. This is not legal advice.
 
 [SECURITY.md](SECURITY.md) has the full details and says how to report a security problem privately.
 
@@ -149,7 +149,7 @@ There are no per-person accounts. Google sign-in is not built. The parent PIN is
 
 ### Limit who can connect
 
-Create a file named `docker-compose.override.yml` in the `family-hub` folder. Compose reads it automatically.
+Create a file named `docker-compose.override.yml` in the hub's folder. Compose reads it automatically.
 
 ```yaml
 services:
@@ -198,41 +198,49 @@ ANTHROPIC_API_KEY=paste-your-key-here
 
 ### Back up
 
-Run these in the `family-hub` folder. The hub stops for a moment so the database is saved in a consistent state.
+Run these in the hub's folder. The hub stops for a moment so the database is saved in a consistent state.
 
 ```bash
 docker compose stop
-docker compose run --rm -T --entrypoint tar family-hub czf - -C / data photos > family-hub-backup.tgz
+docker compose run --rm -T --entrypoint tar family-hub czf - -C / data photos > sproutwall-backup.tgz
 docker compose start
 ```
 
-`family-hub-backup.tgz` now holds the whole household (the `familyhub-data` volume) and your `photos` folder. Copy it somewhere safe, such as a USB stick. Keep it private: it holds the database and the hub's secret keys.
+`sproutwall-backup.tgz` now holds the whole household (the Docker volume whose name ends in `familyhub-data`) and your `photos` folder. Copy it somewhere safe, such as a USB stick. Keep it private: it holds the database and the hub's secret keys.
 
 ### Restore
 
-On the same computer, or on a new one after the [install steps](#start-it):
+On the same computer, or on a new one after the [install steps](#start-it). Restoring replaces the household on this computer with the one in the backup, so back up first if the hub holds anything you want to keep.
 
 ```bash
 docker compose stop
-docker compose run --rm -T --entrypoint sh family-hub -c 'rm -f /data/family-hub.db-wal /data/family-hub.db-shm && tar xzf - -C /' < family-hub-backup.tgz
+docker compose run --rm -T --entrypoint sh family-hub -c 'rm -f /data/sproutwall.db* /data/family-hub.db* && tar xzf - -C /' < sproutwall-backup.tgz
 docker compose start
 ```
 
-The `rm` removes the database's temporary side files first, so they cannot mix with the restored database.
+The `rm` first removes the hub's current database and its temporary side files, so only the database from the backup is left. This also works with a backup made before the rename to Sproutwall (`family-hub-backup.tgz`, which holds `family-hub.db`).
 
 ### Update
 
-Back up first. Then, in the `family-hub` folder:
+Back up first. Then, in the hub's folder:
 
 ```bash
-git pull && docker compose up -d --build
+git pull && docker compose up -d --build --remove-orphans
 ```
 
-Your household data stays in the `familyhub-data` volume. The hub updates its database by itself when it starts.
+Your household data stays in its Docker volume (`docker volume ls` shows a name ending in `familyhub-data`). The hub updates its database by itself when it starts. Before it changes the database, it saves a copy in the volume's `backups` folder and keeps the last five.
+
+### Installed before the rename
+
+Sproutwall used to be called Family Hub. If you installed it then, there is nothing to change:
+
+- Keep using your `family-hub` folder, and update with the command above. GitHub forwards the old address.
+- The hub keeps using your existing database (`family-hub.db`), volume and commands.
+- Do not clone the project again into a new folder. Docker names the data volume after the folder, so a new folder starts with an empty household. To move to a new folder anyway, [back up](#back-up) in the old folder, then [restore](#restore) in the new one.
 
 ## Forgot the PIN
 
-There is no way to reset the PIN from the web page. That is on purpose. On the computer that runs the hub, in the `family-hub` folder, run:
+There is no way to reset the PIN from the web page. That is on purpose. On the computer that runs the hub, in the hub's folder, run:
 
 ```bash
 docker compose exec family-hub node scripts/reset-pin.mjs 4827
@@ -270,7 +278,7 @@ Kids' first names are not sent unless you turn this on. In [Settings](#parent-se
 
 ## Calendars
 
-Family Hub shows each person's calendar from a secret iCal link. It only reads. Events added on the wall stay on the wall.
+Sproutwall shows each person's calendar from a secret iCal link. It only reads. Events added on the wall stay on the wall.
 
 ### Add a link
 
@@ -295,7 +303,7 @@ If Settings says the link sends the hub somewhere it won't follow (more than 3 r
 
 The screensaver shows your photos. It starts after 10 idle minutes, or when someone taps the moon button.
 
-- Put `.jpg`, `.jpeg`, `.png` or `.webp` files in the `photos` folder inside the `family-hub` folder.
+- Put `.jpg`, `.jpeg`, `.png` or `.webp` files in the `photos` folder inside the hub's folder.
 - Use file names with only letters, numbers, dots, dashes and underscores. Files with spaces or other characters in the name are skipped.
 - New photos show up without a restart.
 - Without photos, the screensaver shows quotes.
@@ -331,7 +339,7 @@ cp .env.example .env
 npm run dev
 ```
 
-`npm run dev` (`scripts/dev.mjs`) starts the web app on port 3847 (listening on all interfaces) and the Ask the Hub bridge on `127.0.0.1:8787`. Missing secrets are generated into `data/` (`session-secret`, `bridge-token`), which git ignores. The database is `data/family-hub.db`. `.env.example` sets `REQUIRE_AUTH_FOR_READS=0`, so screens are not locked in development. Open <http://127.0.0.1:3847>.
+`npm run dev` (`scripts/dev.mjs`) starts the web app on port 3847 (listening on all interfaces) and the Ask the Hub bridge on `127.0.0.1:8787`. Missing secrets are generated into `data/` (`session-secret`, `bridge-token`), which git ignores. The database is `data/sproutwall.db` (`data/family-hub.db` in a checkout from before the rename). `.env.example` sets `REQUIRE_AUTH_FOR_READS=0`, so screens are not locked in development. Open <http://127.0.0.1:3847>.
 
 Checks (CI runs all of them in one job named `check`):
 

@@ -15,7 +15,7 @@ describe("an install from before the members table", () => {
       INSERT INTO ledger (kid, amount, source, label) VALUES ('quinn', 12, 'myday', 'Checklist');
     `);
     old.close();
-    process.env.FAMILY_HUB_DB = file;
+    process.env.SPROUTWALL_DB = file;
 
     const { getMembers, isKidId } = await import("@/lib/household");
     const { getBalances } = await import("@/lib/queries");
