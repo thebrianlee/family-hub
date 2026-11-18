@@ -165,3 +165,24 @@ describe("health check", () => {
     expect(await res.json()).toEqual({ ok: true, version: pkg.version, schema: LATEST_SCHEMA });
   });
 });
+
+describe("proxy in the blocked state", () => {
+  it("answers API calls with 503 and the code, and lets pages and health through", async () => {
+    const file = useDbFile("proxy-blocked");
+    fs.copyFileSync(FIXTURE, file);
+    const raw = new Database(file);
+    raw.pragma("user_version = 999");
+    raw.close();
+    const { proxy } = await import("@/proxy");
+    const { NextRequest } = await import("next/server");
+    const get = (p: string) => proxy(new NextRequest(`http://hub.home${p}`));
+
+    const api = get("/api/today");
+    expect(api.status).toBe(503);
+    expect(await api.json()).toMatchObject({ code: "db_newer_than_app" });
+    // NextResponse.next() carries this header; the page then renders BlockedScreen.
+    expect(get("/today").headers.get("x-middleware-next")).toBe("1");
+    expect(get("/api/health").headers.get("x-middleware-next")).toBe("1");
+    expect(userVersion(file)).toBe(999);
+  });
+});
