@@ -240,6 +240,47 @@ describe("a database that becomes newer while this build opens it", () => {
     expect(backups(file)).toEqual([]);
   });
 
+  it("is refused without any write when the upgrade lands between the check and the WAL switch", async () => {
+    const file = useDbFile("race-wal");
+    fs.copyFileSync(FIXTURE, file);
+    // An earlier run of this app already put the file in WAL mode, as every
+    // Sproutwall build does.
+    const prep = new Database(file);
+    prep.pragma("journal_mode = WAL");
+    prep.close();
+    const { initializeDb, isDbBlocked } = await import("@/lib/db");
+    const db = new Database(file);
+    const writes: string[] = [];
+    const realPragma = db.pragma.bind(db);
+    let raced = false;
+    // Interleave: right after the first version check, when this build asks
+    // for the journal mode, a newer build commits schema 999.
+    db.pragma = ((source: string, options?: Database.PragmaOptions) => {
+      if (/=/.test(source)) writes.push(source);
+      if (source === "journal_mode" && !raced) {
+        raced = true;
+        const newer = new Database(file);
+        newer.pragma("user_version = 999");
+        newer.close();
+      }
+      return realPragma(source, options);
+    }) as typeof db.pragma;
+    const rows = () => (realPragma("user_version", { simple: true }), db.prepare("SELECT COUNT(*) c FROM settings").get());
+    const before = rows();
+    let err: unknown;
+    try {
+      initializeDb(db, file);
+    } catch (e) {
+      err = e;
+    }
+    expect(raced).toBe(true);
+    expect(isDbBlocked(err) && err.code).toBe("db_newer_than_app");
+    expect(writes).toEqual([]);
+    expect(rows()).toEqual(before);
+    db.close();
+    expect(backups(file)).toEqual([]);
+  });
+
   it("setup and PIN answer 503 with the code instead of failing", async () => {
     const file = useDbFile("blocked-bootstrap");
     fs.copyFileSync(FIXTURE, file);

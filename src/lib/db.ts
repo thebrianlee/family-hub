@@ -86,7 +86,14 @@ function createDb(): Database.Database {
  */
 export function initializeDb(db: Database.Database, file: string): void {
   assertNotNewer(db, file);
-  db.pragma("journal_mode = WAL");
+  // WAL is a persistent property of the file, and every Sproutwall build uses
+  // it. So switch only a file that is not in WAL yet: a database that a newer
+  // build has upgraded is already WAL, and this build issues no write to it at
+  // all. (Changing the journal mode can't share a transaction with the version
+  // check; SQLite forbids it.) The version is checked again right after.
+  const mode = String(db.pragma("journal_mode", { simple: true })).toLowerCase();
+  if (mode !== "wal") db.pragma("journal_mode = WAL");
+  assertNotNewer(db, file);
   runMigrations(db, file);
   db.transaction(() => {
     assertNotNewer(db, file);
