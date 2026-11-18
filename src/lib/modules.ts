@@ -3,6 +3,7 @@ import {
   MODULES,
   TOGGLEABLE_MODULES,
   applyModuleChanges,
+  defaultModuleState,
   getModule,
   type ModuleManifestV0,
   type ModuleState,
@@ -66,13 +67,14 @@ export function enabledTabs(on: readonly string[] = enabledModules()): ModuleTab
  * applyModuleChanges), in one transaction. Inside a caller's transaction (the
  * setup claim) this is a savepoint, so it commits or rolls back with it.
  * Writes a row for every toggleable module, so a fresh install stores its
- * choices and keeps them even if a later version changes a default.
+ * choices and keeps them even if a later version changes a default. First-run
+ * setup starts from the defaults; Settings starts from what is stored.
  */
 export function setEnabled(changes: ModuleChanges, { actor }: { actor: "setup" | "parent" }): ModuleState {
   const db = getDb();
   return db.transaction(() => {
     const before = effectiveState();
-    const next = applyModuleChanges(before, changes);
+    const next = applyModuleChanges(actor === "setup" ? defaultModuleState() : before, changes);
     const write = db.prepare(
       `INSERT INTO module_state (id, enabled) VALUES (?, ?)
        ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled, updated_at=datetime('now')
