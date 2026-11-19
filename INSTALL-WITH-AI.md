@@ -22,14 +22,19 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
      amd64. Other 64-bit distributions are listed as should-work, with the tools installed
      from their own instructions.
 
-3. Not yet verified on real hardware or live services [미확인]:
-   - Anonymous GHCR access for verify-image: pull token, referrers, bundle blob and its one
-     redirect; gh reading the image from the registry with no account (docs/install-cli.md,
-     "Still to verify once the first preview image exists").
+3. Verified on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS
+   with gh 2.86.0, not yet on a Pi:
+   - Anonymous GHCR access for verify-image (pull token, referrers, bundle download) and gh
+     reading the image from the registry with no account.
+   - verify-image passes for the real pair; the attested subject is the index digest; a wrong
+     source commit (exit 1) and a tampered digest (exit 4) fail; the committed template is
+     refused (exit 2).
+   - The step 4 sed and its three checks, with GNU sed.
+
+4. Not yet verified on real hardware or live services [미확인]:
+   - A wrong signer workflow failing, live; verify-image on arm64 Linux.
    - GitHub's apt repository serves arm64 gh 2.68.0 or newer on Raspberry Pi OS (Bookworm and Trixie).
-   - verify-image passes against the real pair; the attested subject is the index digest;
-     wrong signer, wrong commit and a tampered digest all fail.
-   - The step 4 sed render of the digest, then doctor image_identity passing with that file.
+   - Doctor image_identity passing with the step 4 file.
    - Raspberry Pi Imager wording (customisation, key-only SSH) and that Imager keeps the
      public key's comment in authorized_keys. Step 8, tier B, removes the line by that
      comment; the fingerprint listing after it catches a miss.
@@ -334,11 +339,13 @@ git diff --numstat
 grep -c '@sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845"' docker-compose.preview.yml
 ```
 
-All three must match exactly:
+All three must match exactly. `git status --short` prints this one line only. It starts with a space, because the change is not staged:
 
-- `git status --short` lists one line only: `M docker-compose.preview.yml`.
-- `git diff --numstat` prints one line only: `1`, `1` and `docker-compose.preview.yml` (one line removed, one added, in that file only).
-- `grep -c` prints `1`.
+```text
+ M docker-compose.preview.yml
+```
+
+`git diff --numstat` prints one line only: `1`, `1` and `docker-compose.preview.yml` (one line removed, one added, in that file only). `grep -c` prints `1`.
 
 Now check the image. Run it from this folder, the checkout's top folder:
 

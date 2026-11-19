@@ -128,17 +128,17 @@ It takes the digest of the image that `docker compose -f docker-compose.preview.
 
 Messages are fixed text. gh's own output is never printed.
 
-### Still to verify once the first preview image exists
+### Checks against the first preview image
 
-The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`:
+The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`. Items marked "Done" passed on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS with gh 2.86.0 and Docker Compose 5.8.0; they still need one run on the Pi.
 
-1. Anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
-2. [미확인] (unverified): GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
-3. With an `oci://` subject, gh also reads the image from the registry: check that this works anonymously.
+1. Done: anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
+2. [미확인] (unverified): the bundle download worked, but whether GHCR answered with a redirect was not recorded. To check: GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
+3. Done: with an `oci://` subject, gh also reads the image from the registry anonymously.
 4. GitHub's apt repository has arm64 packages, and `gh --version` there is 2.68.0 or newer.
-5. The attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
-6. `verify-image` passes against the real pair, then once more with `--trusted-root` and no network.
-7. Negative tests fail with a non-zero exit: wrong signer workflow, wrong `--source-sha`, a tampered digest.
+5. Done: the attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
+6. `verify-image` passes against the real pair (done), then once more with `--trusted-root` and no network (not run yet).
+7. Negative tests fail with a non-zero exit: wrong `--source-sha` (done, exit 1), a tampered digest (done, exit 4), wrong signer workflow (not run yet).
 8. [미확인] (unverified) on the Pi: Docker's bridge routes from the host to the container address, so doctor's `GET` to `http://<container address>:3847/api/health` answers. Rootless Docker is expected to give `unknown` instead.
 9. On a dual-stack network, `0.0.0.0:3847:3847` creates no IPv6 listener (`ss -ltn` shows no `[::]:3847`) and doctor reports `app_bind` as `unknown` / `confirm_trusted_lan`.
 
