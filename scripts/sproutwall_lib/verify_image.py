@@ -1,13 +1,14 @@
 """`sproutwall verify-image`: attestation check of the pinned preview image.
 
-It reads the digest pinned in docker-compose.preview.yml (never a tag), checks
-that gh is new enough, gets the attestation bundle anonymously from GHCR (or
+It takes the digest Compose would start from docker-compose.preview.yml (the
+literal pin, equal to the effective `docker compose config`; never a tag),
+checks that gh is new enough, gets the attestation bundle anonymously from GHCR (or
 from --bundle), and runs the spec 4.2 step 4 command with `--bundle`, the only
 gh mode that needs no `gh auth login`. gh runs with a fresh, empty config
 folder and no token variables, so the result never depends on a login.
 
-It starts nothing. Any refusal, missing tool, missing bundle or failed check
-exits non-zero. gh's own output and anything fetched are never printed; all
+It starts nothing. Any refusal, missing tool, missing bundle, failed check or
+failed cleanup of its temporary files exits non-zero. gh's own output and anything fetched are never printed; all
 messages are fixed text.
 """
 
@@ -19,8 +20,8 @@ import tempfile
 from . import attestation, compose
 from .system import command_env
 
-SOURCE_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-GH_VERSION_RE = re.compile(r"^gh version (\d+)\.(\d+)\.(\d+)\b")
+SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}", re.ASCII)
+GH_VERSION_RE = re.compile(r"gh version (\d+)\.(\d+)\.(\d+)\b", re.ASCII)
 MIN_GH_VERSION = (2, 68, 0)  # first release with --source-digest
 OWNER_REPO = "thebrianlee/sproutwall"
 SIGNER_WORKFLOW = OWNER_REPO + "/.github/workflows/image.yml"
@@ -28,12 +29,14 @@ GH_TIMEOUT_S = 300.0
 # Variables that would let gh use an account or another GitHub host.
 GH_ACCOUNT_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST")
 BUNDLE_FILE = "attestation.jsonl"
+WORKDIR_PREFIX = "sproutwall-verify-"
 
 EXIT_VERIFIED = 0
 EXIT_NOT_VERIFIED = 1
 EXIT_REFUSED = 2
 EXIT_TOOL = 3
 EXIT_NO_BUNDLE = 4
+EXIT_CLEANUP = 5
 
 MESSAGES = {
     "bad_sha": "Refused: --source-sha must be the full 40-character lowercase commit SHA from the guide.",
@@ -53,6 +56,17 @@ MESSAGES = {
     "wrong_repo": "Refused: the image in docker-compose.preview.yml is not " + compose.REPOSITORY + ".",
     "bad_ref": "Refused: the image line in docker-compose.preview.yml is not a valid pinned reference.",
     "mismatch": "Refused: the digest in docker-compose.preview.yml is not the published digest given with --digest.",
+    "interpolated": (
+        "Refused: the image line in docker-compose.preview.yml uses a variable. The verified image must "
+        "be written out in full, so the image Compose starts cannot depend on the environment."
+    ),
+    "docker_missing": "Refused: Docker Compose is needed to read the effective compose file, and it was not found.",
+    "compose_failed": "Refused: docker compose could not read docker-compose.preview.yml.",
+    "services": "Refused: docker-compose.preview.yml must define exactly one service, family-hub (all profiles counted).",
+    "build": "Refused: the family-hub service in docker-compose.preview.yml must not have a build section.",
+    "mismatch_effective": (
+        "Refused: the image Compose would start is not the image written in docker-compose.preview.yml."
+    ),
     "gh_missing": (
         "Not verified: the GitHub CLI (gh) was not found. Install gh %d.%d.%d or newer from GitHub's "
         "package repository, then run this again. Do not start the hub." % MIN_GH_VERSION
@@ -73,6 +87,11 @@ MESSAGES = {
     "gh_failed": (
         "Not verified: the attestation check did not pass (wrong digest, missing or untrusted "
         "attestation, wrong workflow or source commit, or no registry access). Do not start the hub."
+    ),
+    "cleanup": (
+        "Stopped: the temporary attestation files could not be removed. Delete the folders named "
+        + WORKDIR_PREFIX
+        + "* in the system's temporary folder, then run this again. Do not start the hub yet."
     ),
 }
 
@@ -112,7 +131,7 @@ def gh_env(base_env, config_dir):
 
 
 def gh_version_ok(version_output):
-    match = GH_VERSION_RE.match(version_output.strip())
+    match = GH_VERSION_RE.match(version_output.strip().splitlines()[0] if version_output.strip() else "")
     return bool(match) and tuple(int(part) for part in match.groups()) >= MIN_GH_VERSION
 
 
@@ -133,14 +152,12 @@ def verify_image(
     fetch=None,
 ):
     """(exit code, message key, verified digest or None). Starts nothing."""
-    if not isinstance(source_sha, str) or not SOURCE_SHA_RE.match(source_sha):
+    if not isinstance(source_sha, str) or not SOURCE_SHA_RE.fullmatch(source_sha):
         return EXIT_REFUSED, "bad_sha", None
-    if published_digest is not None and (
-        not isinstance(published_digest, str) or not compose.DIGEST_RE.match(published_digest)
-    ):
+    if published_digest is not None and not compose.is_digest(published_digest):
         return EXIT_REFUSED, "bad_digest", None
     try:
-        digest = compose.read_pinned_digest(system, compose_file)
+        digest = compose.effective_pinned_digest(system, compose_file)
     except compose.ComposeError as error:
         return EXIT_REFUSED, error.code, None
     if published_digest is not None and published_digest != digest:
@@ -155,27 +172,31 @@ def verify_image(
     if version.rc != 0 or not gh_version_ok(version.out):
         return EXIT_TOOL, "gh_old", None
 
-    workdir = tempfile.mkdtemp(prefix="sproutwall-verify-")  # mode 0700
+    workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)  # mode 0700
     try:
-        if bundle is None:
-            try:
-                bundles = (fetch or attestation.fetch_bundles)(digest, opener=opener)
-            except attestation.BundleError as error:
-                key = "bad_bundle" if error.code in ("digest", "size") else "no_bundle"
-                return EXIT_NO_BUNDLE, key, None
-            bundle_path = os.path.join(workdir, BUNDLE_FILE)
-            _write_private(bundle_path, attestation.jsonl(bundles))
-        else:
-            bundle_path = bundle
-        config_dir = os.path.join(workdir, "gh-config")
-        os.mkdir(config_dir, 0o700)
-        result = system.run(
-            gh_verify_argv(digest, source_sha, bundle_path, trusted_root),
-            timeout=GH_TIMEOUT_S,
-            env=gh_env(command_env(), config_dir),
-        )
+        outcome = _verify_in(workdir, system, digest, source_sha, bundle, trusted_root, opener, fetch)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+    if os.path.lexists(workdir):
+        return EXIT_CLEANUP, "cleanup", None  # even after a successful check
+    return outcome
+
+
+def _verify_in(workdir, system, digest, source_sha, bundle, trusted_root, opener, fetch):
+    if bundle is None:
+        try:
+            bundles = (fetch or attestation.fetch_bundles)(digest, opener=opener)
+        except attestation.BundleError as error:
+            return EXIT_NO_BUNDLE, ("bad_bundle" if error.code in ("digest", "size") else "no_bundle"), None
+        bundle = os.path.join(workdir, BUNDLE_FILE)
+        _write_private(bundle, attestation.jsonl(bundles))
+    config_dir = os.path.join(workdir, "gh-config")
+    os.mkdir(config_dir, 0o700)
+    result = system.run(
+        gh_verify_argv(digest, source_sha, bundle, trusted_root),
+        timeout=GH_TIMEOUT_S,
+        env=gh_env(command_env(), config_dir),
+    )
     if result.missing:
         return EXIT_TOOL, "gh_missing", None
     if result.timed_out:
@@ -190,5 +211,5 @@ def verified_lines(digest, source_sha):
     return [
         "Verified: %s@%s" % (compose.REPOSITORY, digest),
         "  signed by %s, built from commit %s." % (SIGNER_WORKFLOW, source_sha),
-        "Next: docker compose -f docker-compose.preview.yml up -d --wait",
+        "Next: " + compose.START_COMMAND,
     ]

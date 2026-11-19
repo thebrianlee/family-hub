@@ -210,6 +210,29 @@ class CliTests(unittest.TestCase):
             for value in ("Riley", "Quinn", "sk-canary", "token"):
                 self.assertNotIn(value, out + err)
 
+    def test_json_help_and_usage_print_the_fixed_object(self):
+        for argv in (
+            ["doctor", "--json", "--help"],
+            ["doctor", "-h", "--json", "--phase", "final"],
+            ["--json"],
+            ["--help", "--json"],
+            ["verify-image", "--json", "--source-sha", "0" * 40],
+            ["unknown-command", "--json"],
+        ):
+            code, out, err = main(argv, healthy_pi())
+            self.assertEqual(code, 2, argv)
+            self.assertEqual(err, "", argv)
+            report = json.loads(out)
+            self.assertEqual(report, schema.fallback_report(report["phase"]), argv)
+            self.assertEqual({(c["status"], c["action"]) for c in report["checks"]}, {("unknown", "retry_local")})
+        self.assertEqual(json.loads(main(["doctor", "--json", "--help", "--phase", "final"], healthy_pi())[1])["phase"], "final")
+
+    def test_fallback_is_valid_closed_schema(self):
+        for phase in schema.PHASES + ("bogus",):
+            report = schema.fallback_report(phase)
+            schema.validate(report)
+            self.assertEqual(schema.exit_code(report), 2)
+
     def test_fallback_keeps_a_valid_requested_phase(self):
         code, out, _ = main(["doctor", "--json", "--phase", "final", "--tier", "D"], healthy_pi())
         self.assertEqual(json.loads(out)["phase"], "final")

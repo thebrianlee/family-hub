@@ -5,6 +5,8 @@ import fnmatch
 import ipaddress
 import json
 
+from sproutwall_lib import compose
+from sproutwall_lib.checks import HEALTH_FORMAT
 from sproutwall_lib.system import CommandResult, HttpResponse
 
 ROOT = "/repo"
@@ -25,6 +27,19 @@ def compose_text(reference='"ghcr.io/thebrianlee/sproutwall:preview@' + DIGEST +
         "    ports:\n"
         '      - "3847:3847"\n' % reference
     )
+
+
+def compose_config_json(image="ghcr.io/thebrianlee/sproutwall:preview@" + DIGEST, extra_services=None, **service):
+    """`docker compose config --format json` for the preview file."""
+    body = {"image": image, "ports": [{"mode": "ingress", "host_ip": "0.0.0.0", "target": 3847, "published": "3847"}]}
+    body.update(service)
+    services = {"family-hub": body}
+    services.update(extra_services or {})
+    return json.dumps({"name": "sproutwall", "services": services, "volumes": {"familyhub-data": {}}})
+
+
+def health_state(health="healthy", status="running"):
+    return json.dumps({"health": health, "status": status})
 
 
 def ok(out="", err="", rc=0):
@@ -103,6 +118,7 @@ class FakeSystem:
         self.commands = {}
         self.files = {}
         self.dirs = set()
+        self.unlistable = set()
         self.http_map = {}
         self.which_map = {}
         self.home_dir = HOME
@@ -149,10 +165,14 @@ class FakeSystem:
         return self.read_bytes(path).decode("utf-8", "replace")
 
     def exists(self, path):
-        return path in self.files or path in self.dirs
+        prefix = path.rstrip("/") + "/"
+        return path in self.files or path in self.dirs or any(f.startswith(prefix) for f in self.files)
 
     def is_file(self, path):
         return path in self.files
+
+    def listable(self, path):
+        return path not in self.unlistable
 
     def glob(self, pattern):
         return sorted(p for p in self.files if fnmatch.fnmatch(p, pattern))
@@ -203,18 +223,19 @@ def healthy_pi(phase_ready=True):
     s.set(["docker", "compose", "version", "--short"], ok("2.29.7\n"))
     s.set(["docker", "version", "--format", "{{.Server.Version}}"], ok("27.3.1\n"))
     s.files[COMPOSE] = compose_text()
+    s.set(compose.config_argv(COMPOSE), ok(compose_config_json()))
     s.set(["docker", "compose", "-f", COMPOSE, "ps", "--all", "--quiet"], ok(CID + "\n"))
     s.set(["docker", "inspect", "--type", "container"], ok(container_json()))
+    s.set(["docker", "inspect", "--type", "container", "--format", HEALTH_FORMAT], ok(health_state()))
     s.set(["docker", "image", "inspect"], ok(image_json()))
     s.set(exec_key("true"), ok())
     s.set(exec_key("test", "-w", "/data"), ok())
     s.set(exec_key("test", "-f", "/data/sproutwall.db"), ok())
     s.set(exec_key("test", "-w", "/data/sproutwall.db"), ok())
     s.set(exec_key("test", "-f", "/data/family-hub.db"), ok(rc=1))
-    s.set(
-        exec_key("cat", "/proc/net/tcp", "/proc/net/tcp6"),
-        ok(proc_table([("127.0.0.1", 8787, "0A"), ("0.0.0.0", 3847, "0A")])),
-    )
+    s.set(exec_key("cat", "/proc/net/tcp"), ok(proc_table([("127.0.0.1", 8787, "0A"), ("0.0.0.0", 3847, "0A")])))
+    s.set(exec_key("test", "-e", "/proc/net/tcp6"), ok())
+    s.set(exec_key("cat", "/proc/net/tcp6"), ok(proc_table([("::1", 8787, "0A")], v6=True)))
     s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 3847, "0A"), ("127.0.0.1", 631, "0A")])
     s.files["/proc/net/tcp6"] = proc_table([("::1", 631, "0A")], v6=True)
     s.set(
@@ -224,7 +245,13 @@ def healthy_pi(phase_ready=True):
     for unit in ("ssh.service", "ssh.socket"):
         s.set(["systemctl", "is-enabled", unit], ok("disabled\n", rc=1))
         s.set(["systemctl", "is-active", unit], ok("inactive\n", rc=3))
+    # Debian: sshd.service is an alias of ssh.service; there is no sshd.socket.
+    s.set(["systemctl", "is-enabled", "sshd.service"], ok("alias\n"))
+    s.set(["systemctl", "is-active", "sshd.service"], ok("inactive\n", rc=3))
+    s.set(["systemctl", "is-enabled", "sshd.socket"], ok("not-found\n", rc=4))
+    s.set(["systemctl", "is-active", "sshd.socket"], ok("inactive\n", rc=3))
     s.files["/etc/ssh/sshd_config"] = SSHD_CONFIG
+    s.dirs.add("/etc/ssh/sshd_config.d")
     s.http_map[("GET", "/api/health")] = health_response(setup=phase_ready)
     if phase_ready:
         s.http_map[("GET", "/api/modules")] = HttpResponse(401, b'{"error":"Unlock this screen with the parent PIN"}')

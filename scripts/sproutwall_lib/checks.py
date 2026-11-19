@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 
 from . import compose, kiosk, net, sshd
 from .schema import INCOMPLETE, PASS, fail, unknown
+from .system import command_env
 
-COMPOSE_VERSION = re.compile(r"^v?(\d+)\.(\d+)")
-CONTAINER_ID = re.compile(r"^[0-9a-f]{12,64}$")
+COMPOSE_VERSION = re.compile(r"v?(\d+)\.(\d+)", re.ASCII)
+CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}", re.ASCII)
 HOST_ARCH = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 
 APP_PORT = 3847
@@ -22,7 +23,7 @@ APP_USER = "node"
 DATA_DIR = "/data"
 PHOTO_DIR = "/photos"
 DB_FILES = ("sproutwall.db", "family-hub.db")  # scripts/lib/db-path.mjs order
-DATA_VOLUME = re.compile(r"(?:^|_)familyhub-data$")
+DATA_VOLUME = re.compile(r"(?:[a-z0-9][a-z0-9_.-]*_)?familyhub-data", re.ASCII)  # <project>_familyhub-data
 
 # Only the fields doctor needs, so container environment (keys, tokens)
 # never even reaches this process.
@@ -32,6 +33,11 @@ CONTAINER_FORMAT = (
     '"port_bindings":{{json .HostConfig.PortBindings}},"mounts":{{json .Mounts}}}'
 )
 IMAGE_FORMAT = '{"id":{{json .Id}},"repo_digests":{{json .RepoDigests}},"arch":{{json .Architecture}},"os":{{json .Os}}}'
+# Docker's own health state of the container, and nothing else.
+HEALTH_FORMAT = (
+    '{"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},'
+    '"status":{{json .State.Status}}}'
+)
 
 # Installation-only assistant CLIs and their credential/config locations
 # (relative to the home folder). Presence at the final phase means the
@@ -81,11 +87,15 @@ def _json_object(text):
 
 def gather_docker(system, compose_file):
     """The hub's containers (service family-hub of the preview project) and their images."""
-    result = system.run(["docker", "compose", "-f", compose_file, "ps", "--all", "--quiet"], timeout=30.0)
+    result = system.run(
+        ["docker", "compose", "-f", compose_file, "ps", "--all", "--quiet"],
+        timeout=30.0,
+        env=compose.compose_env(command_env()),
+    )
     if result.rc != 0:
         return DockerState(False)
     ids = [line.strip() for line in result.out.splitlines() if line.strip()]
-    if not all(CONTAINER_ID.match(cid) for cid in ids):
+    if not all(CONTAINER_ID.fullmatch(cid) for cid in ids):
         return DockerState(False)
     containers = []
     for cid in ids:
@@ -146,26 +156,30 @@ class Context:
         return compose.compose_path(self.root)
 
     def compose_digest(self):
-        return self._once("digest", lambda: compose.read_pinned_digest(self.system, self.compose_file()))
+        """The digest Compose would start: the literal pin, equal to the effective config's."""
+        return self._once("digest", lambda: compose.effective_pinned_digest(self.system, self.compose_file()))
 
     def docker(self):
         return self._once("docker", lambda: gather_docker(self.system, self.compose_file()))
 
     def host_sockets(self):
-        """Every TCP socket in the host's namespace (IPv4 and IPv6), or None."""
+        """(sockets read, complete) for the host's TCP tables, IPv4 and IPv6.
+
+        Whatever was read is kept even when the other table failed, so an
+        exposure already seen is never lost to a later read error.
+        """
 
         def read():
-            try:
-                sockets = net.parse_proc_net_tcp(self.system.read_text("/proc/net/tcp"))
-            except (OSError, ValueError):
-                return None
-            try:
-                sockets += net.parse_proc_net_tcp(self.system.read_text("/proc/net/tcp6"))
-            except FileNotFoundError:
-                pass  # IPv6 is off in this kernel: no IPv6 sockets
-            except (OSError, ValueError):
-                return None
-            return sockets
+            sockets, complete = [], True
+            for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+                try:
+                    sockets += net.parse_proc_net_tcp(self.system.read_text(path))
+                except FileNotFoundError:
+                    if path.endswith("tcp"):
+                        complete = False  # IPv4 table must exist; a missing tcp6 means IPv6 is off
+                except (OSError, ValueError):
+                    complete = False
+            return sockets, complete
 
         return self._once("sockets", read)
 
@@ -183,28 +197,51 @@ class Context:
 
         return self._once("interfaces", read)
 
-    def health(self):
-        """(HTTP response, JSON object or None) for GET /api/health, asked once."""
+    def hub_ready(self):
+        """True only when Docker reports the one hub container running and healthy.
+
+        Its own healthcheck has then already opened (and, on first start,
+        created) the database, so a GET from doctor cannot be the request
+        that initializes storage. Doctor sends no HTTP request otherwise.
+        """
 
         def ask():
-            resp = self.system.http("GET", "/api/health", headers={"Accept": "application/json"})
+            state = self.docker()
+            if not state.ok or len(state.containers) != 1:
+                return False
+            cid = state.containers[0].cid
+            result = self.system.run(["docker", "inspect", "--type", "container", "--format", HEALTH_FORMAT, cid])
+            data = _json_object(result.out) if result.rc == 0 else None
+            return data is not None and data.get("health") == "healthy" and data.get("status") == "running"
+
+        return self._once("ready", ask)
+
+    def hub_get(self, path):
+        """(HTTP response, JSON object or None) for a GET to the hub, or None when not ready."""
+        if not self.hub_ready():
+            return None
+
+        def ask():
+            resp = self.system.http("GET", path, headers={"Accept": "application/json"})
             body = _json_object(resp.body.decode("utf-8", "replace")) if resp.status is not None else None
             return resp, body
 
-        return self._once("health", ask)
+        return self._once("get " + path, ask)
 
-    def ssh_directives(self):
+    def ssh_config(self):
+        """("ok", directives), ("missing", []) when no SSH server config exists, or ("unreadable", None)."""
+
         def read():
             try:
-                return sshd.read_directives(self.system)
+                directives = sshd.read_directives(self.system)
             except sshd.SshConfigUnreadable:
-                return None
+                return ("unreadable", None)
+            return ("missing", []) if directives is None else ("ok", directives)
 
         return self._once("sshd", read)
 
     def ssh_ports(self):
-        directives = self.ssh_directives()
-        return sshd.ports(directives) if directives is not None else [22]
+        return sshd.ports(self.ssh_config()[1])
 
     def exec_in(self, container, argv):
         """Run argv inside the container as the app's own user."""
@@ -259,7 +296,7 @@ def check_image_identity(ctx):
     try:
         digest = ctx.compose_digest()
     except compose.ComposeError as error:
-        return INCOMPLETE if error.code == "unreadable" else fail("verify_release")
+        return INCOMPLETE if error.code in compose.UNAVAILABLE else fail("verify_release")
     state = ctx.docker()
     if not state.ok:
         return INCOMPLETE
@@ -298,7 +335,7 @@ def check_storage(ctx):
         if (
             data is None
             or data.get("Type") != "volume"
-            or not DATA_VOLUME.search(str(data.get("Name", "")))
+            or not DATA_VOLUME.fullmatch(str(data.get("Name", "")))
             or data.get("RW") is False
             or photos is None
         ):
@@ -330,7 +367,10 @@ def check_storage(ctx):
 
 
 def check_health(ctx):
-    resp, body = ctx.health()
+    answer = ctx.hub_get("/api/health")
+    if answer is None:
+        return INCOMPLETE  # not healthy in Docker's view: no request is sent
+    resp, body = answer
     if resp.status is None:
         return fail("verify_release") if resp.error == "refused" else INCOMPLETE
     if resp.status == 200 and body is not None and body.get("ok") is True:
@@ -368,50 +408,74 @@ def check_app_bind(ctx):
                 complete = False
     else:
         complete = False
-    sockets = ctx.host_sockets()
-    if sockets is None:
-        complete = False
-    else:
-        binds += [addr for addr, port, st in sockets if st == net.LISTEN and port in host_ports]
+    sockets, sockets_complete = ctx.host_sockets()
+    complete = complete and sockets_complete
+    binds += [addr for addr, port, st in sockets if st == net.LISTEN and port in host_ports]
     interfaces = ctx.interfaces()
     if interfaces is None:
         complete = False
+    # A public exposure already seen fails even when another read failed.
     return _exposure(binds, interfaces, complete)
+
+
+def _container_sockets(ctx, container):
+    """(sockets read, complete) in the container's network namespace, IPv4 and IPv6."""
+    sockets = []
+    result = ctx.exec_in(container, ["cat", "/proc/net/tcp"])
+    try:
+        if result.rc != 0:
+            return sockets, False
+        sockets += net.parse_proc_net_tcp(result.out)
+    except ValueError:
+        return sockets, False
+    has_ipv6 = ctx.exec_in(container, ["test", "-e", "/proc/net/tcp6"]).rc
+    if has_ipv6 == 1:
+        return sockets, True  # IPv6 is off in the container: no IPv6 sockets
+    if has_ipv6 != 0:
+        return sockets, False
+    result = ctx.exec_in(container, ["cat", "/proc/net/tcp6"])
+    try:
+        if result.rc != 0:
+            return sockets, False
+        sockets += net.parse_proc_net_tcp(result.out)
+    except ValueError:
+        return sockets, False
+    return sockets, True
 
 
 def check_bridge_bind(ctx):
     state = ctx.docker()
     if not state.ok:
         return INCOMPLETE
+    complete = True
     for container in state.containers:
         try:
             if any(net.published(m, BRIDGE_PORT) for m in (container.ports, container.port_bindings)):
                 return fail("restrict_ports")
         except (ValueError, TypeError):
-            return INCOMPLETE
+            complete = False
+            continue
         if container.network_mode == "host":
-            sockets = ctx.host_sockets()
+            sockets, read_all = ctx.host_sockets()
         elif container.running:
-            result = ctx.exec_in(container, ["cat", "/proc/net/tcp", "/proc/net/tcp6"])
-            try:
-                # tcp6 is absent when IPv6 is off; cat then exits 1 after printing tcp.
-                sockets = net.parse_proc_net_tcp(result.out) if result.rc in (0, 1) else None
-            except ValueError:
-                sockets = None
+            sockets, read_all = _container_sockets(ctx, container)
         else:
-            sockets = None
-        if sockets is None:
-            return INCOMPLETE
+            sockets, read_all = [], False
         for address, port, st in sockets:
             if st == net.LISTEN and port == BRIDGE_PORT and net.classify(address) != "loopback":
                 return fail("restrict_ports")
-    return PASS
+        complete = complete and read_all
+    # Pass only when both address families were read in every container.
+    return PASS if complete else INCOMPLETE
 
 
 def check_ssh_policy(ctx):
+    config_state, directives = ctx.ssh_config()
+    if config_state == "unreadable":
+        return unknown("review_ssh")  # a Port or password rule could be hidden in it
     ports = ctx.ssh_ports()
-    sockets = ctx.host_sockets()
-    state = sshd.service_state(ctx.system, sockets, ports)
+    sockets, sockets_complete = ctx.host_sockets()
+    state = sshd.service_state(ctx.system, sockets, sockets_complete, ports)
     if state == "off":
         return PASS
     if state == "unknown":
@@ -419,24 +483,26 @@ def check_ssh_policy(ctx):
     # SSH is on. Only tier B allows it, and only until the final phase.
     if ctx.tier != "B" or ctx.phase == "final":
         return fail("review_ssh")
-    directives = ctx.ssh_directives()
-    if directives is None:
+    if config_state != "ok":
         return unknown("review_ssh")
     if sshd.allows_password(directives):
         return fail("review_ssh")
     interfaces = ctx.interfaces()
-    if sockets is None or interfaces is None:
-        return INCOMPLETE
     binds = [addr for addr, port, st in sockets if st == net.LISTEN and port in ports]
-    if "public" in net.exposure_classes(binds, interfaces):
+    if "public" in net.exposure_classes(binds, interfaces or []):
         return fail("review_ssh")
+    if not sockets_complete or interfaces is None:
+        return INCOMPLETE
     return PASS
 
 
 def check_setup(ctx):
     # The `setup` boolean of the anonymous health answer (the app's
     # setup_complete setting). Doctor never sends a write to the hub.
-    resp, body = ctx.health()
+    answer = ctx.hub_get("/api/health")
+    if answer is None:
+        return INCOMPLETE
+    resp, body = answer
     if resp.status != 200 or body is None or body.get("ok") is not True:
         return INCOMPLETE
     if body.get("setup") is True:
@@ -449,7 +515,10 @@ def check_setup(ctx):
 def check_read_guard(ctx):
     # /api/modules is a core read API behind the read lock that returns no
     # household data even when the lock is off.
-    resp = ctx.system.http("GET", "/api/modules", headers={"Accept": "application/json"})
+    answer = ctx.hub_get("/api/modules")
+    if answer is None:
+        return INCOMPLETE
+    resp, _ = answer
     if resp.status == 401:
         return PASS
     if isinstance(resp.status, int) and 200 <= resp.status < 300:
@@ -498,12 +567,12 @@ def check_temporary_access(ctx):
                 return fail("remove_agent")
         except OSError:
             return INCOMPLETE
-    sockets = ctx.host_sockets()
-    if sockets is None:
-        return INCOMPLETE
+    sockets, sockets_complete = ctx.host_sockets()
     ports = ctx.ssh_ports()
     if any(st == net.ESTABLISHED and port in ports for _, port, st in sockets):
         return fail("remove_agent")  # an SSH session into the Pi is still open
+    if not sockets_complete or ctx.ssh_config()[0] == "unreadable":
+        return INCOMPLETE
     return PASS
 
 

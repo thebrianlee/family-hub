@@ -139,10 +139,12 @@ def exit_code(report):
 
 
 def fallback_report(phase):
-    """The report for a run that could not inspect anything (usage error, crash)."""
-    if _canonical(phase, PHASES) is None:
-        phase = PHASES[0]
-    return build_report(phase, {})
+    """The report for a run that inspected nothing (help or usage error with
+    --json, crash): every check unknown/retry_local, result unknown (exit 2).
+    scripts/sproutwall prints the same object when even the import fails."""
+    phase = _canonical(phase, PHASES) or PHASES[0]
+    checks = [{"id": check_id, "status": "unknown", "action": "retry_local"} for check_id in CHECK_IDS]
+    return {"schema": SCHEMA_VERSION, "phase": phase, "result": "unknown", "checks": checks}
 
 
 def validate(report):
@@ -161,8 +163,11 @@ def validate(report):
             raise ValueError("check keys")
         if _canonical(check["status"], STATUSES) is None or _canonical(check["action"], ACTIONS) is None:
             raise ValueError("check values")
-        if not is_required(check["id"], report["phase"]) and check["status"] != "not_applicable":
+        omitted = not is_required(check["id"], report["phase"])
+        if omitted and check["status"] != "not_applicable" and (check["status"], check["action"]) != INCOMPLETE:
             raise ValueError("phase omission")
+        if not omitted and check["status"] == "not_applicable":
+            raise ValueError("not_applicable is only for phase omissions")
     if report["result"] != result_of(checks):
         raise ValueError("result")
 

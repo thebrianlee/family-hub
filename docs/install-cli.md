@@ -19,7 +19,7 @@ sproutwall doctor [--json] --phase running|configured|final [--tier A|B|C] [--ki
 - `--tier`: who operated the terminal. A (agent on the Pi) and C (chat only) expect SSH off. B (laptop agent over SSH) allows temporary key-only SSH on the home network until the final phase. Default: A.
 - `--kiosk`: the screen choice from the install (decision 2). Default: on.
 
-Doctor only reads. It changes nothing on the Pi or in the hub, and sends the hub only `GET` requests.
+Doctor only reads. It changes nothing on the Pi or in the hub. It sends the hub `GET` requests only, and only after Docker reports the hub's container `healthy` (`docker inspect` of `.State.Health.Status` and `.State.Status`, nothing else). The container's own healthcheck has then already opened the database, so a request from doctor is never the one that creates, migrates or seeds it. While the container is starting, unhealthy or missing, `health`, `setup` and `read_guard` are `unknown` with `retry_local` and no request is sent. A blocked database also makes the container unhealthy, so it shows up here as `unknown`; `docker compose -f docker-compose.preview.yml logs` says why.
 
 ### Checks
 
@@ -29,12 +29,12 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 | --- | --- |
 | `platform` | 64-bit Linux the image is built for (see below). |
 | `docker` | Docker Compose v2 or newer is installed and this user can reach the Docker daemon. |
-| `image_identity` | The hub's container runs the image pinned by digest in `docker-compose.preview.yml`, for this computer's architecture. A tag is never trusted. |
+| `image_identity` | The hub's container runs the image Compose would start from `docker-compose.preview.yml` (see [verify-image](#verify-image-check-the-image-before-starting-it)), for this computer's architecture. A tag is never trusted. |
 | `storage` | `/data` is the named `familyhub-data` volume, `/photos` is mounted, and the app user can write `/data` and the database (`sproutwall.db`, or `family-hub.db` from before the rename). |
-| `health` | `GET http://127.0.0.1:3847/api/health` answers HTTP 200 with JSON `ok: true`. Redirects are not followed. A 503 with a `code` (blocked database) fails with `restore_storage`. |
+| `health` | Docker reports the container healthy, and then `GET http://127.0.0.1:3847/api/health` answers HTTP 200 with JSON `ok: true`. Redirects are not followed. |
 | `app_bind` | Port 3847 is reachable only on loopback. See [Exposure](#exposure). |
-| `bridge_bind` | The Ask bridge port 8787 is not published and listens only on loopback inside the container. |
-| `ssh_policy` | SSH is off, or (tier B, before `final`) it is key-only and not listening on a public address. Password logins, `PermitRootLogin yes` and password settings inside `Match` blocks fail. |
+| `bridge_bind` | The Ask bridge port 8787 is not published and listens only on loopback inside the container. Both address families must be read; a missing IPv6 table counts only when IPv6 is off in the container. |
+| `ssh_policy` | SSH is off, or (tier B, before `final`) it is key-only and not listening on a public address. See below. |
 | `setup` | `/api/health` reports `setup: true` (first-run setup is finished). From `configured`. |
 | `read_guard` | An anonymous `GET /api/modules` (no cookie) is refused with 401. From `configured`. |
 | `kiosk` | The kiosk launcher matches `--kiosk`. From `final`. |
@@ -46,13 +46,15 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 
 **`setup`.** The health answer carries one boolean, `setup`, from the hub's `setup_complete` setting (only when the database is readable; the blocked 503 answer is unchanged). It tells an anonymous visitor nothing new: the setup screen, and `/api/setup` answering 409 once setup is done, already show it. `setup: false` fails with `open_hub`; no answer, or an image from before the field existed, is `unknown`.
 
+**`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. If `/etc/ssh/sshd_config` or any file or folder it includes cannot be read, the result is `unknown` (`review_ssh`), because a port or password rule could hide there.
+
 **`kiosk` marker.** The kiosk setup (a later release) adds exactly one launcher line to `~/.config/labwc/autostart`, ending with the comment `# sproutwall:kiosk-launcher`. Doctor counts the lines with that marker that are not commented out: one when `--kiosk on`, none when `--kiosk off`.
 
 ### Exposure
 
 Doctor reads the listening sockets (`/proc/net/tcp` and `/proc/net/tcp6`), every interface address (`ip -j addr show`, IPv4 and IPv6) and the container's published ports. Loopback is local; `10/8`, `172.16/12`, `192.168/16`, link-local and `fc00::/7` are the home network; every other address, including a global IPv6 address, is public. A wildcard bind (`0.0.0.0`, `::`) counts on every interface.
 
-- Public exposure fails with `restrict_ports`, even if part of the inspection failed.
+- Public exposure fails with `restrict_ports`, even if part of the inspection failed: what was already read is kept when a later read fails.
 - A home-network publication, such as the default `3847:3847`, is `unknown` with `confirm_trusted_lan`. Local checks cannot prove that the router forwards nothing, that no tunnel exists or that everyone on the network is trusted, so this is never reported as safe.
 - If any part of the inspection did not complete, the result is `unknown` with `retry_local`.
 
@@ -62,7 +64,7 @@ If `app_bind` still fails with the preview, some interface has a public IPv4 add
 
 ### Output and exit codes
 
-With `--json`, stdout is exactly one JSON object, on every path (usage errors and crashes included):
+With `--json` anywhere on the command line, stdout is exactly one JSON object on every path. Help, usage errors and crashes print the fixed object with `result` `unknown` and every check `unknown` / `retry_local`, and exit 2:
 
 ```json
 {"schema":1,"phase":"running","result":"unknown","checks":[{"id":"platform","status":"pass","action":"none"}, "..."]}
@@ -78,6 +80,8 @@ With `--json`, stdout is exactly one JSON object, on every path (usage errors an
 
 ### Redaction
 
+`scripts/sproutwall` is a small bootstrap that sets this up before anything else runs: it turns off warnings and bytecode files, installs handlers for uncaught exceptions in the main thread and in other threads, and runs every import and the whole command inside one guard. If anything fails, even importing the tool's own code, a `--json` run prints the fixed object above (exit 2) and any other run prints one fixed line to stderr. Never a traceback or a path.
+
 The JSON is built only from the fixed check ids, the status and action names and the schema number, and is checked against the closed schema before it is printed. Doctor never prints command output or error text, file contents, paths, names, addresses, URLs, tokens, PINs, cookies, environment values or exception messages. Container details are read with a format that requests only the fields doctor needs, so the container's environment never reaches doctor at all. Without `--json`, doctor prints fixed text for each action. The unit tests seed fictional names, an iCal URL with a token, a PIN, an API key and a cookie into every input, on success and failure paths, and check that none of them appears on stdout or stderr.
 
 ## `verify-image`: check the image before starting it
@@ -86,12 +90,13 @@ The JSON is built only from the fixed check ids, the status and action names and
 sproutwall verify-image --source-sha <40-hex commit> [--digest sha256:<64-hex>] [--bundle FILE] [--trusted-root FILE]
 ```
 
-It reads the `image@sha256:` digest from `docker-compose.preview.yml` and checks that GitHub's build attestation for that digest was signed by `.github/workflows/image.yml` in `thebrianlee/sproutwall`, built from the published commit `--source-sha`. It starts nothing.
+It takes the digest of the image that `docker compose -f docker-compose.preview.yml up` would start, and checks that GitHub's build attestation for that digest was signed by `.github/workflows/image.yml` in `thebrianlee/sproutwall`, built from the published commit `--source-sha`. It starts nothing. On success it prints the start command, `docker compose -f docker-compose.preview.yml up -d --wait`, for exactly the file it checked.
 
-1. Refuses a placeholder digest, a tag-only reference (such as `:preview`), another repository, a SHA that is not 40 lowercase hex characters, and a `--digest` that differs from the compose file. The committed `docker-compose.preview.yml` holds a placeholder until the first preview is published, so it is always refused, and Docker rejects it too.
-2. Requires `gh` 2.68.0 or newer (the first with `--source-digest`). Debian's own `gh` packages are older; install `gh` from GitHub's package repository.
-3. Downloads the attestation bundle with no account: an anonymous pull token from `ghcr.io`, the OCI referrers of the digest, then each Sigstore bundle. Only HTTPS, with timeouts, size limits and a sha256 check of every manifest and bundle. Redirects are never followed, with one exception: a bundle download may take exactly one hop to `https://pkg-containers.githubusercontent.com`, where GHCR serves blobs from signed links. That request carries no authorization header and may not redirect again; the sha256 check of the bytes is what makes it safe. The bundle is written to a private temporary file (mode 0600) that is deleted afterwards.
-4. Runs, with a fresh empty `GH_CONFIG_DIR` and without `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` or `GH_HOST`, so the result never depends on a login:
+1. Refuses a placeholder digest, a tag-only reference (such as `:preview`), another repository, a SHA that is not exactly 40 lowercase hex characters (nothing before or after, not even a newline), and a `--digest` that differs from the compose file. The committed `docker-compose.preview.yml` holds a placeholder until the first preview is published, so it is always refused, and Docker rejects it too.
+2. Reads the image two ways, and both must agree: the file's one literal `image:` line (a line with a variable, `$`, is refused), and the effective configuration from `docker compose -f docker-compose.preview.yml --profile "*" config --format json`, which applies interpolation, includes and extends. That configuration must have exactly one service, `family-hub`, counting every profile, with no `build`, and an image `ghcr.io/thebrianlee/sproutwall[:tag]@sha256:<64 hex>`. `COMPOSE_FILE` and `COMPOSE_PROFILES` are removed from Docker's environment, so only this file is read; the start command passes the same `-f`, which Compose prefers over `COMPOSE_FILE`. Without Docker Compose it refuses.
+3. Requires `gh` 2.68.0 or newer (the first with `--source-digest`). Debian's own `gh` packages are older; install `gh` from GitHub's package repository.
+4. Downloads the attestation bundle with no account: an anonymous pull token from `ghcr.io`, the OCI referrers of the digest, then each Sigstore bundle. Only HTTPS, with timeouts, size limits and a sha256 check of every manifest and bundle. Redirects are never followed, with one exception: a bundle download may take exactly one hop to `https://pkg-containers.githubusercontent.com`, where GHCR serves blobs from signed links. That request carries no authorization header and may not redirect again; the sha256 check of the bytes is what makes it safe. The bundle is written to a private temporary file (mode 0600) that is deleted afterwards.
+5. Runs, with a fresh empty `GH_CONFIG_DIR` and without `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` or `GH_HOST`, so the result never depends on a login:
 
    ```bash
    gh attestation verify "oci://ghcr.io/thebrianlee/sproutwall@$DIGEST" -R thebrianlee/sproutwall \
@@ -106,9 +111,10 @@ It reads the `image@sha256:` digest from `docker-compose.preview.yml` and checks
 | --- | --- |
 | 0 | Verified. It prints the digest, the signer workflow and the commit, then the start command. |
 | 1 | Not verified: gh refused the attestation, or timed out. |
-| 2 | Refused before checking: bad arguments or compose file. |
+| 2 | Refused before checking: bad arguments, the compose file, or no Docker Compose to read it. |
 | 3 | `gh` is missing or older than 2.68.0. |
 | 4 | The attestation bundle could not be downloaded, or failed its digest or size checks. |
+| 5 | Its temporary files could not be removed. This wins even over a successful check: remove the `sproutwall-verify-*` folders in the system's temporary folder, then run it again. |
 
 Messages are fixed text. gh's own output is never printed.
 

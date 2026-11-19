@@ -1,24 +1,26 @@
 """SSH server state and policy, from what an unprivileged user can read.
 
-State comes from `systemctl is-enabled/is-active` for ssh.service and
-ssh.socket plus the listening sockets. Policy comes from /etc/ssh/sshd_config
-and the files it includes (sshd -T needs root, and doctor never uses sudo).
-sshd uses the first value it reads for a keyword; Match blocks are conditional.
+State comes from `systemctl is-enabled/is-active` for ssh.service,
+sshd.service, ssh.socket and sshd.socket, plus listening sockets on port 22
+and on every Port in the readable config. Policy comes from
+/etc/ssh/sshd_config and the files it includes (sshd -T needs root, and
+doctor never uses sudo). Any include that cannot be read or listed makes the
+config unreadable, which is reported as unknown.
 """
 
 import os
 
 SSHD_CONFIG = "/etc/ssh/sshd_config"
-UNITS = ("ssh.service", "ssh.socket")
+UNITS = ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket")
 UNIT_DIRS = ("/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system")
+DEFAULT_PORT = 22
 
 _ENABLED_ON = {"enabled", "enabled-runtime", "linked", "linked-runtime"}
-_ENABLED_OFF = {"disabled", "masked", "masked-runtime", "not-found"}
+# "alias": another name for a unit that is checked under its own name.
+_ENABLED_OFF = {"disabled", "masked", "masked-runtime", "not-found", "alias"}
 _ACTIVE_ON = {"active", "activating", "reloading", "refreshing", "deactivating"}
 _ACTIVE_OFF = {"inactive", "failed"}
-
-# Keywords that allow a password to be typed, and their values that do.
-_PASSWORD_KEYWORDS = ("passwordauthentication", "kbdinteractiveauthentication", "permitemptypasswords")
+_PASSWORD_KEYWORDS = ("passwordauthentication", "kbdinteractiveauthentication", "challengeresponseauthentication")
 
 
 class SshConfigUnreadable(Exception):
@@ -62,14 +64,14 @@ def _unit_state(system, unit):
     return "off"
 
 
-def service_state(system, sockets, ports):
-    """on, off or unknown. sockets is None when listeners could not be read."""
-    states = [_unit_state(system, unit) for unit in UNITS]
-    if sockets is not None and any(state == "0A" and port in ports for _, port, state in sockets):
+def service_state(system, sockets, sockets_complete, ports):
+    """on, off or unknown. A listener already seen counts even if a later read failed."""
+    if any(state == "0A" and port in ports for _, port, state in sockets):
         return "on"
+    states = [_unit_state(system, unit) for unit in UNITS]
     if "on" in states:
         return "on"
-    if "unknown" in states or sockets is None:
+    if "unknown" in states or not sockets_complete:
         return "unknown"
     return "off"
 
@@ -81,12 +83,18 @@ def _resolve_include(pattern):
 def read_directives(system, path=SSHD_CONFIG, depth=0):
     """[(keyword, args, in_match)] in file order, with Include expanded.
 
-    Raises SshConfigUnreadable when any file cannot be read.
+    None when the main config does not exist (no SSH server installed).
+    Raises SshConfigUnreadable when any file cannot be read or an include
+    folder cannot be listed.
     """
     if depth > 8:
         raise SshConfigUnreadable()
     try:
         text = system.read_text(path)
+    except FileNotFoundError:
+        if depth == 0:
+            return None
+        raise SshConfigUnreadable() from None
     except OSError:
         raise SshConfigUnreadable() from None
     directives = []
@@ -107,8 +115,12 @@ def read_directives(system, path=SSHD_CONFIG, depth=0):
             continue
         if keyword == "include":
             for pattern in args.split():
-                for included in system.glob(_resolve_include(pattern)):
-                    for keyword2, args2, match2 in read_directives(system, included, depth + 1):
+                pattern = _resolve_include(pattern)
+                folder = os.path.dirname(pattern)
+                if system.exists(folder) and not system.listable(folder):
+                    raise SshConfigUnreadable()
+                for included in system.glob(pattern):
+                    for keyword2, args2, match2 in read_directives(system, included, depth + 1) or []:
                         directives.append((keyword2, args2, match2 or in_match))
             continue
         directives.append((keyword, args, in_match))
@@ -128,34 +140,28 @@ def effective(directives, keyword, default):
 
 
 def ports(directives):
-    found = []
-    for name, args, in_match in directives:
-        if name == "port" and not in_match:
+    """Port 22 and every Port the config names."""
+    found = {DEFAULT_PORT}
+    for name, args, _ in directives or []:
+        if name == "port":
             try:
-                found.append(int(args.split()[0]))
+                found.add(int(args.split()[0]))
             except (ValueError, IndexError):
                 continue
-    return found or [22]
+    return sorted(found)
 
 
 def allows_password(directives):
-    """True when sshd could accept a typed password or a root password login."""
+    """True unless the config is key-only everywhere, Match blocks included."""
     if effective(directives, "passwordauthentication", "yes") != "no":
         return True
     if effective(directives, "kbdinteractiveauthentication", "yes") != "no":
         return True
-    if effective(directives, "permitemptypasswords", "no") != "no":
-        return True
-    if effective(directives, "permitrootlogin", "prohibit-password") == "yes":
-        return True
-    methods = effective(directives, "authenticationmethods", "any")
-    if "password" in methods or "keyboard-interactive" in methods:
-        return True
     for name, args, in_match in directives:
-        if not in_match:
-            continue
         value = args.lower()
-        if name in _PASSWORD_KEYWORDS + ("challengeresponseauthentication",) and value != "no":
+        if name in _PASSWORD_KEYWORDS and (value == "yes" or (in_match and value != "no")):
+            return True
+        if name == "permitemptypasswords" and value != "no":
             return True
         if name == "permitrootlogin" and value == "yes":
             return True

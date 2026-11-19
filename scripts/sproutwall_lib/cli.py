@@ -1,13 +1,16 @@
 """Command line for scripts/sproutwall.
 
-Option values are never echoed. `doctor --json` writes exactly one JSON object
-to stdout on every path, usage errors and crashes included.
+Option values are never echoed. With --json anywhere on the command line,
+stdout gets exactly one closed-schema JSON object on every path: a doctor
+report, or the fixed fallback (result unknown, exit 2) for help, usage
+errors and crashes. scripts/sproutwall prints the same fallback if even this
+module cannot be imported.
 """
 
 import os
 import sys
 
-from . import schema, text
+from . import compose, schema, text
 from .doctor import human_lines, run_doctor
 from .system import System
 from .verify_image import MESSAGES, verified_lines, verify_image
@@ -53,11 +56,12 @@ def parse_options(args, spec):
     return options
 
 
-def _requested_phase(args):
-    for index, arg in enumerate(args):
+def requested_phase(argv):
+    """The --phase value if it is a valid phase, else the first phase. Never echoed."""
+    for index, arg in enumerate(argv):
         value = None
-        if arg == "--phase" and index + 1 < len(args):
-            value = args[index + 1]
+        if arg == "--phase" and index + 1 < len(argv):
+            value = argv[index + 1]
         elif arg.startswith("--phase="):
             value = arg.partition("=")[2]
         if value in schema.PHASES:
@@ -65,8 +69,11 @@ def _requested_phase(args):
     return schema.PHASES[0]
 
 
-def _doctor(args, system, root, out, err):
-    json_mode = "--json" in args
+def fallback_json(argv):
+    return schema.serialize(schema.fallback_report(requested_phase(argv)))
+
+
+def _doctor(args, system, root, out, err, json_mode):
     try:
         options = parse_options(
             args,
@@ -80,9 +87,10 @@ def _doctor(args, system, root, out, err):
         if "--phase" not in options:
             raise UsageError()
     except UsageError:
-        err.write(text.DOCTOR_USAGE + "\n")
         if json_mode:
-            out.write(schema.serialize(schema.fallback_report(_requested_phase(args))) + "\n")
+            out.write(fallback_json(args) + "\n")
+        else:
+            err.write(text.DOCTOR_USAGE + "\n")
         return schema.EXIT_UNKNOWN
     report = run_doctor(
         system,
@@ -99,8 +107,6 @@ def _doctor(args, system, root, out, err):
 
 
 def _verify(args, system, root, out, err):
-    from .compose import compose_path
-
     try:
         options = parse_options(
             args, {"--source-sha": None, "--digest": None, "--bundle": None, "--trusted-root": None}
@@ -112,7 +118,7 @@ def _verify(args, system, root, out, err):
         return 2
     code, key, digest = verify_image(
         system,
-        compose_path(root),
+        compose.compose_path(root),
         options["--source-sha"],
         published_digest=options.get("--digest"),
         bundle=options.get("--bundle"),
@@ -126,20 +132,26 @@ def _verify(args, system, root, out, err):
 
 
 def _main(argv, system, root, out, err):
-    if not argv or argv[0] in HELP:
-        (out if argv else err).write(text.USAGE + "\n")
-        return 0 if argv else 2
-    command, args = argv[0], list(argv[1:])
+    json_mode = "--json" in argv
+    command = argv[0] if argv else None
+    if command == "doctor" and not any(arg in HELP for arg in argv[1:]):
+        return _doctor(argv[1:], system, root, out, err, json_mode)
+    if json_mode:
+        # Help, usage errors and verify-image (which has no JSON output): the
+        # fixed object, so a --json caller always gets one closed-schema object.
+        out.write(fallback_json(argv) + "\n")
+        return schema.EXIT_UNKNOWN
     if command == "doctor":
-        if any(arg in HELP for arg in args):
-            out.write(text.DOCTOR_USAGE + "\n")
-            return 0
-        return _doctor(args, system, root, out, err)
+        out.write(text.DOCTOR_USAGE + "\n")
+        return 0
     if command == "verify-image":
-        if any(arg in HELP for arg in args):
+        if any(arg in HELP for arg in argv[1:]):
             out.write(text.VERIFY_USAGE + "\n")
             return 0
-        return _verify(args, system, root, out, err)
+        return _verify(argv[1:], system, root, out, err)
+    if command in HELP:
+        out.write(text.USAGE + "\n")
+        return 0
     err.write(text.USAGE + "\n")
     return 2
 
@@ -148,12 +160,11 @@ def main(argv, system=None, root=None, out=None, err=None):
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr
     argv = list(argv)
-    json_doctor = bool(argv) and argv[0] == "doctor" and "--json" in argv
     try:
         return _main(argv, system or System(), root or default_root(), out, err)
     except (Exception, KeyboardInterrupt):  # noqa: BLE001 - fixed output only, never the error
-        if json_doctor:
-            out.write(schema.serialize(schema.fallback_report(_requested_phase(argv[1:]))) + "\n")
+        if "--json" in argv:
+            out.write(fallback_json(argv) + "\n")
         else:
-            err.write("sproutwall: stopped by an unexpected error. Nothing was changed.\n")
+            err.write(text.FAILED + "\n")
         return 2

@@ -9,10 +9,10 @@ import stat
 import unittest
 from unittest import mock
 
-from sproutwall_lib import attestation, cli, verify_image as vi
+from sproutwall_lib import attestation, cli, compose, verify_image as vi
 from sproutwall_lib.system import CommandResult
 
-from .fakes import COMPOSE, DIGEST, ROOT, SOURCE_SHA, FakeSystem, compose_text, ok
+from .fakes import COMPOSE, DIGEST, ROOT, SOURCE_SHA, FakeSystem, compose_config_json, compose_text, ok
 
 TOKEN = "canary" + "ghtoken" + "0quinn"
 BUNDLES = [{"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "n": 1}, {"n": 2}]
@@ -21,6 +21,7 @@ BUNDLES = [{"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "n": 1
 def gh_system(verify=None, version="gh version 2.89.0 (2026-03-26)\nhttps://github.com/cli/cli/releases/tag/v2.89.0\n"):
     s = FakeSystem()
     s.files[COMPOSE] = compose_text()
+    s.set(compose.config_argv(COMPOSE), ok(compose_config_json()))
     if version is not None:
         s.set(["gh", "--version"], ok(version))
     s.set(["gh", "attestation", "verify"], verify if verify is not None else ok("", ""))
@@ -39,7 +40,7 @@ class RefusalTests(unittest.TestCase):
         self.assertIsNone(digest)
         if key:
             self.assertEqual(got_key, key)
-        self.assertEqual(system.calls, [], "nothing runs after a refusal")
+        self.assertFalse([c for c in system.calls if c[0][0] == "gh"], "gh never runs after a refusal")
 
     def test_placeholder(self):
         s = gh_system()
@@ -70,12 +71,71 @@ class RefusalTests(unittest.TestCase):
             self.assert_refused(s, key=key)
 
     def test_source_sha_must_be_40_lowercase_hex(self):
-        for sha in ("", "5972e3e", SOURCE_SHA.upper(), SOURCE_SHA + "0", SOURCE_SHA[:-1] + "g", "main", None):
+        for sha in ("", "5972e3e", SOURCE_SHA.upper(), SOURCE_SHA + "0", SOURCE_SHA[:-1] + "g", "main", None,
+                    SOURCE_SHA + "\n", " " + SOURCE_SHA, SOURCE_SHA[:-1] + "\u0661"):
             self.assert_refused(gh_system(), sha=sha, key="bad_sha")
 
     def test_published_digest_must_match(self):
         self.assert_refused(gh_system(), key="mismatch", published_digest="sha256:" + "f" * 64)
-        self.assert_refused(gh_system(), key="bad_digest", published_digest="preview")
+        for bad in ("preview", DIGEST + "\n", DIGEST.upper()):
+            self.assert_refused(gh_system(), key="bad_digest", published_digest=bad)
+
+    def test_digest_with_trailing_newline_in_effective_config(self):
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok(compose_config_json(image="ghcr.io/thebrianlee/sproutwall@" + DIGEST + "\n")))
+        self.assert_refused(s, key="bad_ref")
+
+
+class EffectiveComposeTests(RefusalTests):
+    """The verified digest must be the image Compose would start."""
+
+    def test_interpolated_image(self):
+        s = gh_system()
+        s.files[COMPOSE] = compose_text('"${SPROUTWALL_IMAGE:-ghcr.io/thebrianlee/sproutwall@' + DIGEST + '}"')
+        self.assert_refused(s, key="interpolated")
+
+    def test_extra_service_including_profiled_ones(self):
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok(compose_config_json(extra_services={"sidecar": {"image": "busybox", "profiles": ["x"]}})))
+        self.assert_refused(s, key="services")
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok('{"services":{"hub":{"image":"ghcr.io/thebrianlee/sproutwall@' + DIGEST + '"}}}'))
+        self.assert_refused(s, key="services")
+
+    def test_build_key(self):
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok(compose_config_json(build={"context": "."})))
+        self.assert_refused(s, key="build")
+
+    def test_digest_mismatch_between_file_and_effective_config(self):
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok(compose_config_json(image="ghcr.io/thebrianlee/sproutwall@sha256:" + "f" * 64)))
+        self.assert_refused(s, key="mismatch_effective")
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok(compose_config_json(image="ghcr.io/thebrianlee/sproutwall:preview")))
+        self.assert_refused(s, key="tag_only")
+
+    def test_missing_docker_or_failing_compose(self):
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), CommandResult(None, missing=True))
+        self.assert_refused(s, key="docker_missing")
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok("", "yaml: line 3", rc=15))
+        self.assert_refused(s, key="compose_failed")
+        s = gh_system()
+        s.set(compose.config_argv(COMPOSE), ok("not json"))
+        self.assert_refused(s, key="compose_failed")
+
+    def test_compose_reads_only_this_file_with_all_profiles(self):
+        s = gh_system()
+        env = {"PATH": "/usr/bin", "COMPOSE_FILE": "/tmp/other.yml", "COMPOSE_PROFILES": "extra", "COMPOSE_PROJECT_NAME": "sproutwall"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=fake_fetch)
+        argv, call_env = [c for c in s.calls if c[0][:2] == ("docker", "compose")][0]
+        self.assertEqual(list(argv), ["docker", "compose", "-f", COMPOSE, "--profile", "*", "config", "--format", "json"])
+        self.assertNotIn("COMPOSE_FILE", call_env)
+        self.assertNotIn("COMPOSE_PROFILES", call_env)
+        self.assertEqual(call_env["COMPOSE_PROJECT_NAME"], "sproutwall")
 
     def test_missing_bundle_or_root_file(self):
         self.assert_refused(gh_system(), key="bad_file", bundle="/tmp/no-such-bundle.jsonl")
@@ -93,7 +153,7 @@ class GhVersionGateTests(unittest.TestCase):
             s = gh_system(version=version)
             code, key, _ = vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=fake_fetch)
             self.assertEqual((code, key), (vi.EXIT_TOOL, "gh_old"), version)
-            self.assertEqual([c[0][:3] for c in s.calls], [("gh", "--version")])
+            self.assertEqual([c[0][:3] for c in s.calls if c[0][0] == "gh"], [("gh", "--version")])
 
     def test_minimum_version_passes_the_gate(self):
         s = gh_system(version="gh version 2.68.0 (2025-03-05)\n")
@@ -156,6 +216,21 @@ class VerifyRunTests(unittest.TestCase):
         )
         self.assertTrue(vi.gh_verify_argv(DIGEST, SOURCE_SHA, "b")[3].endswith("@sha256:" + DIGEST[7:]))
 
+    def test_cleanup_failure_is_its_own_exit_even_after_success(self):
+        for rc in (0, 1):
+            s = gh_system(verify=self.recording_gh(rc=rc))
+            with mock.patch.object(vi.shutil, "rmtree", lambda *a, **k: None):
+                code, key, digest = vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=fake_fetch)
+            leftover = os.path.dirname(self.seen["bundle_path"])
+            try:
+                self.assertEqual((code, key, digest), (vi.EXIT_CLEANUP, "cleanup", None))
+                self.assertTrue(os.path.exists(leftover))
+            finally:
+                import shutil
+
+                shutil.rmtree(leftover, ignore_errors=True)
+        self.assertEqual(vi.EXIT_CLEANUP, 5)
+
     def test_temp_files_removed_on_failure(self):
         s = gh_system(verify=self.recording_gh(rc=1))
         code, key, digest = vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=fake_fetch)
@@ -178,7 +253,7 @@ class VerifyRunTests(unittest.TestCase):
             s = gh_system()
             code, got_key, _ = vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=failing)
             self.assertEqual((code, got_key), (vi.EXIT_NO_BUNDLE, key))
-            self.assertEqual([c[0][:3] for c in s.calls], [("gh", "--version")], "gh verify never runs")
+            self.assertEqual([c[0][:3] for c in s.calls if c[0][0] == "gh"], [("gh", "--version")], "gh verify never runs")
 
     def test_given_bundle_and_trusted_root_skip_the_fetch(self):
         def no_fetch(digest, opener=None):
@@ -209,6 +284,27 @@ class CliOutputTests(unittest.TestCase):
         self.assertIn(DIGEST, out)
         self.assertIn(SOURCE_SHA, out)
         self.assertNotIn(TOKEN, out + err)
+
+    def test_start_command_uses_exactly_the_verified_file(self):
+        code, out, _ = self.run_cli(["verify-image", "--source-sha", SOURCE_SHA], gh_system())
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[-1], "Next: docker compose -f docker-compose.preview.yml up -d --wait")
+        self.assertEqual(os.path.basename(COMPOSE), "docker-compose.preview.yml")
+        self.assertEqual(compose.compose_path(ROOT), COMPOSE)
+
+    def test_cleanup_failure_message_is_fixed(self):
+        import tempfile as real_tempfile
+
+        with real_tempfile.TemporaryDirectory() as own:
+            original = real_tempfile.mkdtemp
+            make = lambda prefix: original(prefix=prefix, dir=own)  # noqa: E731
+            with mock.patch.object(vi.shutil, "rmtree", lambda *a, **k: None), mock.patch.object(vi.tempfile, "mkdtemp", make):
+                code, out, err = self.run_cli(["verify-image", "--source-sha", SOURCE_SHA], gh_system())
+            self.assertTrue(os.listdir(own), "the work folder was left behind")
+        self.assertEqual(code, vi.EXIT_CLEANUP)
+        self.assertEqual(out, "")
+        self.assertNotIn(own, err)
+        self.assertIn("sproutwall-verify-*", err)
 
     def test_failure_prints_fixed_text_without_tokens_or_urls(self):
         def leaky_fetch(digest, opener=None):

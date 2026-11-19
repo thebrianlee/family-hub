@@ -48,8 +48,8 @@ MAX_MANIFEST_BYTES = 256 * 1024
 MAX_BUNDLE_BYTES = 1024 * 1024
 MAX_REFERRERS = 16
 
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_TOKEN = re.compile(r"^[A-Za-z0-9._~+/=-]{1,8192}$")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}", re.ASCII)
+_TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{1,8192}", re.ASCII)
 
 
 class BundleError(Exception):
@@ -124,7 +124,7 @@ def _descriptor(entry, cap):
     if not isinstance(entry, dict):
         raise BundleError("format")
     digest, size = entry.get("digest"), entry.get("size")
-    if not isinstance(digest, str) or not _DIGEST.match(digest):
+    if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
         raise BundleError("format")
     if type(size) is not int or size < 0:
         raise BundleError("format")
@@ -159,7 +159,7 @@ def _get_blob(opener, digest, auth):
 def _token(opener):
     data = _json(_get(opener, TOKEN_URL, MAX_TOKEN_BYTES))
     token = data.get("token") or data.get("access_token")
-    if not isinstance(token, str) or not _TOKEN.match(token):
+    if not isinstance(token, str) or not _TOKEN.fullmatch(token):
         raise BundleError("token")
     return token
 
@@ -187,7 +187,7 @@ def _referrers(opener, digest, auth):
 
 def fetch_bundles(digest, opener=None):
     """[bundle dict] attached to the image digest, or BundleError. Never empty."""
-    if not isinstance(digest, str) or not _DIGEST.match(digest):
+    if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
         raise BundleError("format")
     opener = opener or default_opener()
     try:

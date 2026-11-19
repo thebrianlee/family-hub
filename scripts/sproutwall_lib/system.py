@@ -97,6 +97,9 @@ class System:
     def is_file(self, path):
         return os.path.isfile(path)
 
+    def listable(self, path):
+        return os.access(path, os.R_OK | os.X_OK)
+
     def glob(self, pattern):
         return sorted(glob.glob(pattern))
 

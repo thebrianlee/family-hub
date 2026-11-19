@@ -63,6 +63,9 @@ TRUSTED_LAN_RESIDUAL = (
     "decision 3. Record this residual unknown; it is not a clean pass."
 )
 
+# Also hard-coded in scripts/sproutwall, which must work without this package.
+FAILED = "sproutwall: stopped by an unexpected error. Nothing was changed."
+
 DOCTOR_USAGE = (
     "usage: sproutwall doctor [--json] --phase running|configured|final "
     "[--tier A|B|C] [--kiosk on|off]"

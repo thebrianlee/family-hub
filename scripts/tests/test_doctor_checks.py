@@ -2,7 +2,7 @@
 
 import unittest
 
-from sproutwall_lib import checks
+from sproutwall_lib import checks, compose
 from sproutwall_lib.checks import Context
 from sproutwall_lib.system import CommandResult, HttpResponse
 
@@ -116,6 +116,30 @@ class ImageIdentityTests(unittest.TestCase):
             s = healthy_pi()
             s.files[COMPOSE] = fakes.compose_text(reference)
             self.assertEqual(run("image_identity", s), ("fail", "verify_release"), reference)
+
+    def test_effective_compose_must_be_the_pinned_single_service(self):
+        for config in (
+            fakes.compose_config_json(extra_services={"sidecar": {"image": "busybox"}}),
+            fakes.compose_config_json(build={"context": "."}),
+            fakes.compose_config_json(image="ghcr.io/thebrianlee/sproutwall@sha256:" + "f" * 64),
+            fakes.compose_config_json(image="ghcr.io/thebrianlee/sproutwall:preview"),
+        ):
+            s = healthy_pi()
+            s.set(compose.config_argv(COMPOSE), ok(config))
+            self.assertEqual(run("image_identity", s), ("fail", "verify_release"), config)
+
+    def test_fail_on_interpolated_image_line(self):
+        s = healthy_pi()
+        s.files[COMPOSE] = fakes.compose_text('"${SPROUTWALL_IMAGE:-ghcr.io/thebrianlee/sproutwall@' + fakes.DIGEST + '}"')
+        self.assertEqual(run("image_identity", s), ("fail", "verify_release"))
+
+    def test_unknown_when_compose_config_is_unavailable(self):
+        s = healthy_pi()
+        s.set(compose.config_argv(COMPOSE), CommandResult(None, missing=True))
+        self.assertEqual(run("image_identity", s), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.set(compose.config_argv(COMPOSE), ok("", "error", rc=1))
+        self.assertEqual(run("image_identity", s), ("unknown", "retry_local"))
 
     def test_fail_when_running_image_is_not_the_pinned_index(self):
         s = healthy_pi()
@@ -254,6 +278,13 @@ class AppBindTests(unittest.TestCase):
         s.files["/proc/net/tcp"] = proc_table([("198.51.100.9", 3847, "0A")])
         self.assertEqual(run("app_bind", s), ("fail", "restrict_ports"))
 
+    def test_public_listener_is_kept_when_a_later_read_fails(self):
+        s = healthy_pi()
+        s.files["/proc/net/tcp"] = proc_table([("198.51.100.9", 3847, "0A")])
+        s.files["/proc/net/tcp6"] = PermissionError(13, "denied")
+        s.set(["ip", "-j", "addr", "show"], ok(rc=1))
+        self.assertEqual(run("app_bind", s), ("fail", "restrict_ports"))
+
     def test_lan_address_bind_is_still_not_verified_safe(self):
         s = healthy_pi()
         lan = {"3847/tcp": [{"HostIp": "192.168.1.50", "HostPort": "3847"}]}
@@ -286,8 +317,30 @@ class BridgeBindTests(unittest.TestCase):
 
     def test_fail_when_bridge_listens_beyond_loopback(self):
         s = healthy_pi()
-        s.set(exec_key("cat", "/proc/net/tcp", "/proc/net/tcp6"), ok(proc_table([("0.0.0.0", 8787, "0A")])))
+        s.set(exec_key("cat", "/proc/net/tcp"), ok(proc_table([("0.0.0.0", 8787, "0A")])))
         self.assertEqual(run("bridge_bind", s), ("fail", "restrict_ports"))
+        s = healthy_pi()
+        s.set(exec_key("cat", "/proc/net/tcp6"), ok(proc_table([("::", 8787, "0A")], v6=True)))
+        self.assertEqual(run("bridge_bind", s), ("fail", "restrict_ports"))
+
+    def test_pass_when_ipv6_is_off_in_the_container(self):
+        s = healthy_pi()
+        s.set(exec_key("test", "-e", "/proc/net/tcp6"), ok(rc=1))
+        self.assertEqual(run("bridge_bind", s), PASS)
+
+    def test_unknown_when_either_family_is_unreadable(self):
+        s = healthy_pi()
+        s.set(exec_key("cat", "/proc/net/tcp6"), ok("", "Permission denied", rc=1))
+        self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.set(exec_key("cat", "/proc/net/tcp"), ok("", "Permission denied", rc=1))
+        self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.set(exec_key("test", "-e", "/proc/net/tcp6"), ok(rc=126))
+        self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.set(exec_key("cat", "/proc/net/tcp6"), ok("garbage"))
+        self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"))
 
     def test_fail_with_host_networking_and_open_bridge(self):
         s = healthy_pi()
@@ -297,7 +350,7 @@ class BridgeBindTests(unittest.TestCase):
 
     def test_unknown_when_container_cannot_be_inspected(self):
         s = healthy_pi()
-        s.set(exec_key("cat", "/proc/net/tcp", "/proc/net/tcp6"), ok("", "OCI runtime exec failed", rc=126))
+        s.set(exec_key("cat", "/proc/net/tcp"), ok("", "OCI runtime exec failed", rc=126))
         self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"))
         s = healthy_pi()
         s.set(["docker", "compose", "-f", COMPOSE, "ps", "--all", "--quiet"], ok(rc=1))
@@ -364,11 +417,52 @@ class SshPolicyTests(unittest.TestCase):
         s.set(["ip", "-j", "addr", "show"], ok("not json"))
         self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "retry_local"))
 
+    def test_sshd_units_and_custom_ports_count(self):
+        s = healthy_pi()
+        s.set(["systemctl", "is-active", "sshd.socket"], ok("active\n"))
+        self.assertEqual(run("ssh_policy", s), ("fail", "review_ssh"))
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config.d/10-port.conf"] = "Port 2222\n"
+        s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 2222, "0A")])
+        self.assertEqual(run("ssh_policy", s), ("fail", "review_ssh"))
+
+    def test_any_password_yes_is_not_key_only(self):
+        for extra in (
+            "Match User guest\n  PasswordAuthentication yes\n",
+            "Match Address 10.0.0.0/8\n  KbdInteractiveAuthentication yes\n",
+            "PasswordAuthentication yes\n",  # after an earlier "no": sshd ignores it, doctor does not
+        ):
+            s = healthy_pi()
+            ssh_on(s)
+            s.files["/etc/ssh/sshd_config"] = fakes.SSHD_CONFIG + extra
+            self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"), extra)
+
+    def test_unreadable_config_is_unknown_even_when_ssh_looks_off(self):
+        s = healthy_pi()
+        s.unlistable.add("/etc/ssh/sshd_config.d")
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config.d/20-x.conf"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s, tier="C"), ("unknown", "review_ssh"))
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+
+    def test_listener_seen_before_a_failed_read_still_counts(self):
+        s = healthy_pi()
+        s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 22, "0A")])
+        s.files["/proc/net/tcp6"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s), ("fail", "review_ssh"))
+        s = healthy_pi()
+        s.files["/proc/net/tcp6"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s), ("unknown", "review_ssh"))
+
     def test_off_when_openssh_is_not_installed(self):
         s = healthy_pi()
-        for unit in ("ssh.service", "ssh.socket"):
+        for unit in ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket"):
             s.set(["systemctl", "is-enabled", unit], ok("not-found\n", rc=4))
             s.set(["systemctl", "is-active", unit], ok("", "Failed to connect to bus", rc=1))
+        del s.files["/etc/ssh/sshd_config"]
         self.assertEqual(run("ssh_policy", s), PASS)
 
 
@@ -399,6 +493,36 @@ class SetupAndReadGuardTests(unittest.TestCase):
             paths = [path for _, path, _, _ in s.http_calls]
             self.assertEqual(paths.count("/api/health"), 1, "health is asked once and shared with setup")
             self.assertNotIn("/api/setup", paths)
+
+    def test_no_http_request_unless_docker_reports_healthy(self):
+        from sproutwall_lib.doctor import run_doctor
+
+        not_ready = [
+            ok(fakes.health_state("starting")),
+            ok(fakes.health_state("unhealthy")),
+            ok(fakes.health_state("healthy", "restarting")),
+            ok('{"health":null,"status":"running"}'),  # no healthcheck at all
+            ok("", "Error: No such container", rc=1),
+            CommandResult(None, missing=True),
+        ]
+        for state in not_ready:
+            s = healthy_pi()
+            s.set(["docker", "inspect", "--type", "container", "--format", checks.HEALTH_FORMAT], state)
+            report = run_doctor(s, ROOT, "final")
+            self.assertEqual(s.http_calls, [], state)
+            by_id = {c["id"]: (c["status"], c["action"]) for c in report["checks"]}
+            for check_id in ("health", "setup", "read_guard"):
+                self.assertEqual(by_id[check_id], ("unknown", "retry_local"), (state, check_id))
+        for broken in (ok(rc=1), ok(fakes.CID + "\n" + "d" * 64 + "\n"), CommandResult(None, missing=True)):
+            s = healthy_pi()
+            s.set(["docker", "compose", "-f", COMPOSE, "ps", "--all", "--quiet"], broken)
+            run_doctor(s, ROOT, "final")
+            self.assertEqual(s.http_calls, [], broken)
+
+    def test_health_state_is_read_with_a_narrow_format(self):
+        self.assertIn(".State.Health.Status", checks.HEALTH_FORMAT)
+        self.assertNotIn("Config", checks.HEALTH_FORMAT)
+        self.assertNotIn("Log", checks.HEALTH_FORMAT)
 
     def test_read_guard_pass_fail_unknown(self):
         self.assertEqual(run("read_guard", healthy_pi(), phase="configured"), PASS)
