@@ -135,7 +135,7 @@ The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package r
 1. Done: anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
 2. [미확인] (unverified): the bundle download worked, but whether GHCR answered with a redirect was not recorded. To check: GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
 3. Done: with an `oci://` subject, gh also reads the image from the registry anonymously.
-4. GitHub's apt repository has arm64 packages, and `gh --version` there is 2.68.0 or newer.
+4. GitHub's apt repository has arm64 packages, and `gh --version` there is 2.68.0 or newer. Done on Debian 13 arm64 (gh 2.105.0); not yet on Raspberry Pi OS.
 5. Done: the attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
 6. `verify-image` passes against the real pair (done), then once more with `--trusted-root` and no network (not run yet).
 7. Negative tests fail with a non-zero exit: wrong `--source-sha` (done, exit 1), a tampered digest (done, exit 4), wrong signer workflow (not run yet).

@@ -22,19 +22,25 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
      amd64. Other 64-bit distributions are listed as should-work, with the tools installed
      from their own instructions.
 
-3. Verified on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS
-   with gh 2.86.0, not yet on a Pi:
-   - Anonymous GHCR access for verify-image (pull token, referrers, bundle download) and gh
-     reading the image from the registry with no account.
-   - verify-image passes for the real pair; the attested subject is the index digest; a wrong
-     source commit (exit 1) and a tampered digest (exit 4) fail; the committed template is
-     refused (exit 2).
-   - The step 4 sed and its three checks, with GNU sed.
+3. Verified on 2026-11-19 against the pinned pair (run 44596530739, attempt 2):
+   - On macOS with gh 2.86.0: anonymous GHCR access for verify-image (pull token,
+     referrers, bundle download) and gh reading the image from the registry with no account;
+     verify-image passes for the real pair; the attested subject is the index digest; a
+     wrong source commit (exit 1) and a tampered digest (exit 4) fail; the committed
+     template is refused (exit 2).
+   - A full tier C run of this guide, steps 2-6 and 8, in a Debian 13 arm64 VM (Lima, no
+     host mounts, loopback only): GitHub's apt repository installed arm64 gh 2.105.0;
+     verify-image exit 0; the hub started healthy; setup finished; doctor passed every
+     applicable check in all three phases except ssh_policy (the VM needs SSH) and the
+     expected app_bind unknown; the household and the PIN lock survived a reboot.
+   Not covered by the VM run: steps 1 and 7, a phone on the LAN, tiers A and B, and
+   Raspberry Pi OS itself.
 
 4. Not yet verified on real hardware or live services [미확인]:
-   - A wrong signer workflow failing, live; verify-image on arm64 Linux.
-   - GitHub's apt repository serves arm64 gh 2.68.0 or newer on Raspberry Pi OS (Bookworm and Trixie).
-   - Doctor image_identity passing with the step 4 file.
+   - A wrong signer workflow failing, live; the offline --trusted-root run; whether GHCR
+     answers the bundle blob request with a redirect (the download worked, but this was not
+     recorded).
+   - GitHub's apt repository on Raspberry Pi OS (Bookworm and Trixie) itself.
    - Raspberry Pi Imager wording (customisation, key-only SSH) and that Imager keeps the
      public key's comment in authorized_keys. Step 8, tier B, removes the line by that
      comment; the fingerprint listing after it catches a miss.
@@ -245,6 +251,12 @@ On an amd64 computer with Debian or Ubuntu:
 test "$(dpkg --print-architecture)" = amd64 && test "$(uname -m)" = x86_64 && echo "64-bit OK"
 ```
 
+On another arm64 board or computer with Debian or Ubuntu (not a Raspberry Pi):
+
+```bash
+test "$(dpkg --print-architecture)" = arm64 && test "$(uname -m)" = aarch64 && echo "64-bit OK"
+```
+
 On a Linux without `dpkg` (another distribution), check the same two things that `doctor` checks there:
 
 ```bash
@@ -307,10 +319,10 @@ gh attestation verify --help >/dev/null && echo "gh attestation OK"
 
 You need Python 3.11 or newer, Docker Compose v2 or newer, `Docker OK`, `gh` 2.68.0 or newer and `gh attestation OK`.
 
-**Check again for an existing hub,** now that Docker is installed. This must print nothing:
+**Check again for an existing hub,** now that Docker is installed. This must print nothing. Empty output is the good result:
 
 ```bash
-ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker volume ls -q | grep familyhub-data
+ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker volume ls -q --filter name=familyhub-data
 ```
 
 If it prints anything, this device already has a hub. Stop and read [Existing install / update](#existing-install--update).
@@ -514,7 +526,7 @@ It passes with `"result":"pass"` (exit 0), or with `"result":"unknown"` (exit 2)
 Finally, restart with `sudo reboot`, then check once more, with no assistant:
 
 - **With the kiosk:** the hub comes back on the screen by itself.
-- **Without the kiosk** (no kiosk, or a screen set up by hand): in the Terminal, run the two checks below. `ps` must show `healthy`, and the health check must print `"ok":true`. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
+- **Without the kiosk** (no kiosk, or a screen set up by hand): in the Terminal, run the two checks below. `ps` must show `healthy`, and the health check must print `"ok":true`. Right after the restart, `ps` can show `health: starting` for up to a minute: wait 30 seconds and run both checks again before you treat it as a problem. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
 
   ```bash
   cd ~/sproutwall

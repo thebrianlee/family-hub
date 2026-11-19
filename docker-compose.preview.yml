@@ -4,10 +4,11 @@
 #
 #   docker compose -f docker-compose.preview.yml up -d --wait
 #
-# PLACEHOLDER: no preview image is published yet. The image line below holds
-# the template token <published-index-digest-hex> instead of a digest, so
-# verify-image and doctor refuse this file and Docker rejects the reference.
-# The install guide supplies the real sha256 index digest for each preview.
+# TEMPLATE: the image line below holds the template token
+# <published-index-digest-hex> instead of a digest, because a commit cannot
+# contain the digest of the image built from it. As committed, verify-image
+# and doctor refuse this file and Docker rejects the reference. Step 4 of
+# INSTALL-WITH-AI.md writes the published sha256 index digest into it.
 # Docker selects the image by that digest; the ":preview" tag is only there
 # to make the line readable, and is never resolved.
 #
