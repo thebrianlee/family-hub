@@ -1,0 +1,125 @@
+name: Preview image
+
+# Builds the app image for amd64 and arm64 from main and publishes it to GHCR
+# with only two tags: ghcr.io/thebrianlee/sproutwall:preview and
+# :preview-<short commit>. No "latest" and no version tags until releases
+# start. Each image carries an SBOM and full build provenance, plus a GitHub
+# build-provenance attestation that is also pushed to the registry.
+# The install guide's verification pins this file's path as the signer
+# workflow, so don't rename or move it.
+# Owner setup: docs/maintainers/repo-setup.md, section 9.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# No token permissions by default. The image job asks for exactly what it needs.
+permissions: {}
+
+# One publish at a time, and a running publish is never cancelled, so two
+# runs can't race on :preview.
+concurrency:
+  group: image-preview
+  cancel-in-progress: false
+
+jobs:
+  image:
+    # Only main publishes. The repository check stops forks from spending
+    # build minutes on a push they can't make.
+    if: github.ref == 'refs/heads/main' && github.repository == 'thebrianlee/sproutwall'
+    # Pinned image so a runner upgrade can't change the build under us.
+    runs-on: ubuntu-24.04
+    # The arm64 half builds under emulation (QEMU), which is slow.
+    timeout-minutes: 90
+    permissions:
+      contents: read # check out the code
+      packages: write # push the image to GHCR
+      id-token: write # sign the attestation (Sigstore, keyless)
+      attestations: write # store the attestation on GitHub
+    steps:
+      # Actions are pinned to full commit SHAs, version in the comment
+      # (resolved 2026-11-19 UTC). Dependabot keeps them current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Short commit and version
+        id: meta
+        run: |
+          short="${GITHUB_SHA::7}"
+          version="$(jq -r .version package.json)"
+          # The version goes into an image label: refuse anything unexpected.
+          if ! [[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            echo "::error::Unexpected version in package.json"
+            exit 1
+          fi
+          {
+            echo "short=$short"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No build args and no build secrets. The context is the checked-out
+      # folder, not a Git URL, so the action passes no token into the build.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          sbom: true
+          provenance: mode=max
+          tags: |
+            ghcr.io/thebrianlee/sproutwall:preview
+            ghcr.io/thebrianlee/sproutwall:preview-${{ steps.meta.outputs.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/thebrianlee/sproutwall
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/thebrianlee/sproutwall
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories and
+          # would need the artifact-metadata permission.
+          create-storage-record: false
+
+      # The pair the maintainers copy into the install guide.
+      - name: Job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build step returned no image digest"
+            exit 1
+          fi
+          {
+            echo "### Preview image published"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Image index digest | \`$DIGEST\` |"
+            echo "| Source commit | \`$GITHUB_SHA\` |"
+            echo "| Tags | \`preview\`, \`preview-$SHORT\` |"
+            echo
+            echo "Pinned image reference:"
+            echo
+            echo '```'
+            echo "ghcr.io/thebrianlee/sproutwall:preview@$DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

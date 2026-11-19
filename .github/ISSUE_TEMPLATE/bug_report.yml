@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Family Hub does not work the way the screen says it should.
+description: Something in Sproutwall does not work the way the screen says it should.
 title: "[Bug] "
 labels: ["bug"]
 body:
@@ -40,7 +40,7 @@ body:
     id: version
     attributes:
       label: Version or commit
-      description: Run `git log -1 --oneline` in the family-hub folder.
+      description: Run `git log -1 --oneline` in the sproutwall folder (family-hub if you installed before the rename).
       placeholder: "a1b2c3d Fix ..."
   - type: input
     id: device

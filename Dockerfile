@@ -1,3 +1,4 @@
+# Digest pin pending: change each node:22-alpine below to node:22-alpine@sha256:<multi-arch index digest>.
 FROM node:22-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++

@@ -1,6 +1,6 @@
 # Governance
 
-Family Hub is a small open-source project. This page says who decides what, and how a change gets into `main`.
+Sproutwall is a small open-source project. This page says who decides what, and how a change gets into `main`.
 
 ## People and accounts
 

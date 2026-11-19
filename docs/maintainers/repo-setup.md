@@ -7,6 +7,7 @@ The files mentioned are already in the repository:
 - The issue forms and the pull request template work as soon as they are on `main`.
 - `.github/dependabot.yml` starts weekly update pull requests once it is on `main`.
 - `.github/CODEOWNERS` asks owners for reviews automatically, but only **blocks** merges once the ruleset in section 2 is on.
+- `.github/workflows/image.yml` publishes a preview image after each push to `main`, once the one-time owner steps in section 9 are done.
 
 GitHub moves settings around from time to time. If a name below does not match your screen exactly, look for the closest match on the same page.
 
@@ -112,14 +113,14 @@ Dependabot version updates are configured by `.github/dependabot.yml`: npm, GitH
 
 Open **Settings → Actions → General**.
 
-- [ ] **Actions permissions:** allow only actions created by GitHub (CI uses only `actions/checkout` and `actions/setup-node`). If you later add the image workflow from section 9, also allow `docker/*` actions. If the page offers "Require actions to be pinned to a full-length commit SHA", turn it on.
+- [ ] **Actions permissions:** allow actions created by GitHub, plus `docker/*` actions. CI uses only `actions/checkout` and `actions/setup-node`. The image workflow (section 9) also uses `actions/attest-build-provenance` and four `docker/*` actions; section 9, step (a) says where to enter `docker/*`. If the page offers "Require actions to be pinned to a full-length commit SHA", turn it on.
 - [ ] **Approval for running fork pull request workflows:** "Require approval for all external contributors".
-- [ ] **Workflow permissions:** "Read repository contents and packages permissions" (read-only token).
+- [ ] **Workflow permissions:** "Read repository contents and packages permissions" (read-only token). Keep it read-only: the image workflow asks for its write permissions in its own `permissions:` block (section 9, step (c)).
 - [ ] Turn **off** "Allow GitHub Actions to create and approve pull requests".
 
 Rules for future workflows:
 
-- Declare the smallest `permissions:` block in every workflow, like `ci.yml` does.
+- Declare the smallest `permissions:` block in every workflow, like `ci.yml` does. `image.yml` sets `permissions: {}` at the top and gives write access to its one job only.
 - Pin third-party actions to a full commit SHA, with the version in a comment.
 - Never use `pull_request_target` to run code from a fork.
 - CI needs no repository secrets. Don't add personal access tokens as secrets.
@@ -292,64 +293,38 @@ Labels: `good first issue`, `security`
   - a test makes the database query fail and expects status 503 with a body of exactly `{ "ok": false }`.
 - `tests/auth.test.ts` already checks that the proxy lets `/api/health` through, so this issue is only about the response body.
 
-## 9. Recommended: publish a multi-arch image
+## 9. Preview image
 
-Building Next.js on a Raspberry Pi is slow and needs a lot of memory. A prebuilt image for both `amd64` and `arm64`, published to GitHub Container Registry (GHCR) when you push a version tag, would let parents run `docker compose pull` instead of building.
+Building Next.js on a Raspberry Pi is slow and needs a lot of memory. `.github/workflows/image.yml` builds the image once on GitHub, for both `amd64` and `arm64`, and publishes it to GitHub Container Registry (GHCR).
 
-This is a recommendation. It is **not** an active workflow. If you want it, save the snippet as `.github/workflows/image.yml` in a pull request.
+**What it publishes.** Preview images only:
 
-```yaml
-name: Publish image
+- Two tags: `ghcr.io/thebrianlee/sproutwall:preview`, which moves to the newest build, and `ghcr.io/thebrianlee/sproutwall:preview-<short commit>` (the first 7 characters of the commit), which stays. No `latest` and no version tags.
+- An SBOM and full build provenance (`provenance: mode=max`), stored in the image index.
+- A GitHub build-provenance attestation (`actions/attest-build-provenance`). It is signed with this workflow's identity, stored on GitHub, and also pushed to GHCR next to the image, so a verifier can fetch it from the registry instead of from GitHub.
+- OCI labels: `org.opencontainers.image.source` (this repository), `org.opencontainers.image.version` (from `package.json`) and `org.opencontainers.image.revision` (the commit).
 
-on:
-  push:
-    tags: ["v*.*.*"]
+It uses no repository secrets (only the built-in `GITHUB_TOKEN`) and no build arguments.
 
-permissions:
-  contents: read
+**When it runs.** On every push to `main` (each merged pull request), and by hand from **Actions → Preview image → Run workflow** on the `main` branch. It never runs for pull requests, and it publishes nothing from other branches or from forks. Only one run publishes at a time, and a running publish is never cancelled. If several pushes land during a build, only the newest waiting one runs next, so the commits in between get no `preview-<short commit>` tag.
 
-jobs:
-  image:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      # Pinned to full commit SHAs, version in the comment (resolved 2026-11-17).
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-```
+**What to copy.** Each run's summary page (**Actions →** the run **→ Summary**) shows the image index digest and the source commit. Copy that pair into the install guide. Install files pin the image by that digest (`ghcr.io/thebrianlee/sproutwall:preview@sha256:...`), never by the moving `:preview` tag, and the verification checks the attestation against that commit. The verification names `.github/workflows/image.yml` as the signer workflow, so don't rename or move that file.
+
+**Releases come later.** There are no version tags, no `latest` and no GitHub releases yet. They wait for a RELEASING.md (see [GOVERNANCE.md](../../GOVERNANCE.md#releases)). Until the install guide points at a published preview, the README keeps building locally with `docker compose up -d --build`.
+
+### One-time owner steps
+
+The repository owner does these once. Do step (a) **before the first run**: merging the pull request that adds `image.yml` is a push to `main`, so it starts the first run.
+
+- [ ] **(a) Allow the `docker/*` actions, before the first run.** Open **Settings → Actions → General → Actions permissions** and choose "Allow thebrianlee, and select non-thebrianlee, actions and reusable workflows". Keep **Allow actions created by GitHub** checked, leave "Allow actions by Marketplace verified creators" unchecked, enter `docker/*` in **Allow or block specified actions and reusable workflows**, and save. If a run started before this, it failed at the start and published nothing: change the setting, then start the workflow by hand (**Actions → Preview image → Run workflow**).
+- [ ] **(b) Make the package public, after the first successful run.** New GHCR packages start private, so only signed-in accounts with access can pull them. Open your profile → **Packages → sproutwall → Package settings**. Under **Danger Zone**, choose **Change visibility → Public**. If the package page does not show this repository as its source, use **Connect repository** on that page.
+- [ ] **(c) Check that the workflow gets its permissions with the read-only default token.** Leave **Workflow permissions** read-only (section 4). In the first run, open the `image` job, expand **Set up job → GITHUB_TOKEN Permissions**, and check that it lists `Attestations: write`, `Contents: read`, `IdToken: write`, `Metadata: read` and `Packages: write`, and nothing else. If the push to GHCR fails with `denied`, a package named `sproutwall` may already exist without access for this repository: in that package's **Package settings → Manage Actions access**, add this repository with the **Write** role, then run the workflow again. Don't switch the default token to read and write.
 
 Notes:
 
-- Only this job gets `packages: write`. Everything else stays read-only.
-- Publish by tagging a release: `git tag v1.0.0 && git push origin v1.0.0`. The metadata action creates `1.0.0`, `1.0` and `latest`.
-- The `arm64` half builds under emulation (QEMU), which may be slow. GitHub's native `ubuntu-24.04-arm` runners are an alternative, at the cost of a more complex workflow.
-- New GHCR packages start private. After the first run, open the package settings and make it public.
-- To use the image, `docker-compose.yml` would get `image: ghcr.io/thebrianlee/sproutwall:<tag>` next to (or instead of) `build: .`, and the README and Pi guide would switch to `docker compose pull && docker compose up -d`.
-- Re-check the pinned SHAs before enabling. Dependabot keeps them current afterwards.
+- The `arm64` half builds under emulation (QEMU), which is slow, and the job stops after 90 minutes. If that is too slow, GitHub's native `ubuntu-24.04-arm` runners are the alternative, at the cost of a matrix and a merge step.
+- The `node:22-alpine` base image is not pinned by digest yet; see the comment at the top of the `Dockerfile`. Dependabot (Docker and GitHub Actions) keeps the base image and the pinned action SHAs current.
+- `actions/attest-build-provenance` runs `actions/attest`, which it also pins to a full commit SHA, so "Require actions to be pinned to a full-length commit SHA" (section 4) does not block it.
 
 ## 10. Last checks before "Make public"
 
@@ -362,4 +337,4 @@ Notes:
 - [ ] `.github/CODEOWNERS` names real owners (now `@hjunk` and `@ari-hjunk`) and the PII check still passes (section 5). Do this **before** turning on the ruleset.
 - [ ] The ruleset shows **Active**, and a test pull request cannot be merged without the `check` status and a code owner approval.
 - [ ] **Backup and restore round trip.** The commands in the README's "Back up and update" section were written without a running Docker engine. On a test install, run the backup, change something (add a list item), run the restore, and check that the hub opens with the original family, data and PIN, and that `docker compose ps` says `healthy`.
-- [ ] **Decide on the prebuilt image** (section 9). If yes: add the workflow, push a version tag, make the GHCR package public, add `image:` to `docker-compose.yml`, and change the README and the Raspberry Pi guide from `docker compose up -d --build` to `docker compose pull && docker compose up -d`. If no: leave the build step as it is.
+- [ ] **Preview image** (section 9): the one-time owner steps are done, a run on `main` succeeded, and the GHCR package is public. The README and the Raspberry Pi guide keep `docker compose up -d --build` until the install guide pins a published preview by digest.
