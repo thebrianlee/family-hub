@@ -6,6 +6,8 @@
 // the routine, not hidden under Rewards.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { answerGate } from "@/lib/answer-gate";
+import { coverPreviewSrc } from "@/lib/cover-preview";
 import { KidId } from "@/lib/family";
 import { useMembers } from "./MembersProvider";
 import { useModules } from "./ModulesProvider";
@@ -59,23 +61,29 @@ export default function ReadingSheet({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // Each open, for each kid and routine, starts over (src/lib/answer-gate.ts):
+  // an answer that lands after the sheet closed or Reading went off, from an
+  // earlier open, for another kid, or overtaken by a newer request is dropped.
+  const [gates] = useState(() => ({ load: answerGate(), search: answerGate() }));
+  const key = `${kid}:${templateId}`;
 
-  // An answer that lands after the sheet closed or Reading went off is dropped.
   const load = useCallback(() => {
     if (!kid || !activeRef.current) return;
+    const ticket = gates.load.take(key);
     fetch(`/api/reading?kid=${kid}`)
       .then((r) => r.json())
-      .then((d) => { if (activeRef.current) setSummary(d.summary); })
+      .then((d) => { if (activeRef.current && gates.load.isCurrent(ticket)) setSummary(d.summary); })
       .catch(() => {});
-  }, [kid]);
+  }, [kid, key, gates]);
   // Fresh on every open; the book, minutes and search go as soon as the sheet
-  // closes or Reading is switched off.
+  // closes, switches kids or Reading is switched off.
   useEffect(() => {
     activeRef.current = active;
-    setMode("main"); setMinutes(""); setQuery(""); setResults(null);
+    gates.load.reset(active ? key : "");
+    gates.search.reset(active ? key : "");
+    setMode("main"); setMinutes(""); setQuery(""); setResults(null); setSummary(null);
     if (active) load();
-    else setSummary(null);
-  }, [active, load]);
+  }, [active, key, load, gates]);
 
   const post = (body: Record<string, unknown>) =>
     fetch("/api/reading", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kid, ...body }) });
@@ -105,12 +113,18 @@ export default function ReadingSheet({
 
   const runSearch = async () => {
     if (!activeRef.current || query.trim().length < 2) return;
+    const ticket = gates.search.take(key);
+    const current = () => activeRef.current && gates.search.isCurrent(ticket);
     setBusy(true);
     try {
       const res = await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);
       const found = (await res.json()).results ?? [];
-      if (activeRef.current) setResults(found);
-    } catch { if (activeRef.current) setResults([]); } finally { setBusy(false); }
+      if (current()) setResults(found);
+    } catch { if (current()) setResults([]); } finally { setBusy(false); }
+  };
+  const leaveSearch = () => {
+    gates.search.reset(key);
+    setMode("main"); setResults(null); setQuery("");
   };
 
   // Log tonight's minutes → ticks the Reading routine.
@@ -200,8 +214,8 @@ export default function ReadingSheet({
             {results?.map((r, i) => (
               <button key={i} disabled={busy} onClick={() => startBook(r)} className="tile px-5 py-3 flex items-center gap-4 text-left active:bg-cream-sunken disabled:opacity-50">
                 {r.thumbnail ? (
-                   
-                  <img src={r.thumbnail} alt="" className="w-[52px] h-[76px] rounded-lg object-cover shrink-0 shadow-tile" />
+                  // Through the hub, never from the book site (src/lib/cover-preview.ts).
+                  <img src={coverPreviewSrc(r.thumbnail)} alt="" className="w-[52px] h-[76px] rounded-lg object-cover shrink-0 shadow-tile" />
                 ) : (
                   <div className="w-[52px] h-[76px] rounded-lg bg-cream-sunken flex items-center justify-center text-2xl shrink-0">📕</div>
                 )}
@@ -213,7 +227,7 @@ export default function ReadingSheet({
             ))}
             {results && results.length === 0 && <div className="text-xl font-bold text-ink-faint text-center py-6">Nothing found — try different words.</div>}
           </div>
-          <button onClick={() => { setMode("main"); setResults(null); setQuery(""); }} className="btn-soft px-6 py-3 text-xl self-start shrink-0">← Back</button>
+          <button onClick={leaveSearch} className="btn-soft px-6 py-3 text-xl self-start shrink-0">← Back</button>
         </div>
       )}
     </Modal>

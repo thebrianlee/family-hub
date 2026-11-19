@@ -13,12 +13,13 @@ vi.mock("@/lib/safe-fetch", async (importOriginal) => {
 });
 
 import { POST as askPost } from "@/app/api/ask/route";
+import { GET as thumbGet } from "@/app/api/books/thumb/route";
 import { backfillCovers, downloadCover, searchBooks } from "@/lib/books";
 import { getDb } from "@/lib/db";
 import { replaceHousehold, validateHousehold } from "@/lib/household";
 import { checkCalendarLink } from "@/lib/household-settings";
 import { fetchCalendarText, refreshIcs } from "@/lib/ics";
-import { ModuleOffError, moduleFetch, moduleGet } from "@/lib/module-fetch";
+import { MODULE_FETCH_MAX_REDIRECTS, ModuleOffError, moduleFetch, moduleGet } from "@/lib/module-fetch";
 import { isEnabled, setEnabled } from "@/lib/modules";
 import { getSetting, setSetting } from "@/lib/queries";
 import { safeGet, type SafeGetter, type SafeResponse } from "@/lib/safe-fetch";
@@ -89,13 +90,113 @@ describe("the helper", () => {
     expect(safeGet).not.toHaveBeenCalled();
   });
 
-  it("with the module on passes the request through unchanged", async () => {
-    const init = { cache: "no-store" as const };
+  it("with the module on passes the request through, never letting fetch follow a redirect itself", async () => {
+    const signal = AbortSignal.timeout(8000);
+    const init = { cache: "no-store" as const, signal };
     await moduleFetch("reading", "https://openlibrary.org/search.json?q=owls", init);
-    expect(fetchMock).toHaveBeenCalledWith("https://openlibrary.org/search.json?q=owls", init);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, sent] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://openlibrary.org/search.json?q=owls");
+    expect(sent).toMatchObject({ cache: "no-store", signal, redirect: "manual" });
     const opts = { maxBytes: 1000, timeoutMs: 1000 };
     await moduleGet("calendar", "https://cal.example/a.ics", opts, getMock);
     expect(getMock).toHaveBeenCalledWith("https://cal.example/a.ics", opts);
+  });
+});
+
+describe("redirects in moduleFetch", () => {
+  const SEARCH = "https://openlibrary.org/search.json?q=owls";
+  const MIRROR = "https://openlibrary.org/mirror/search.json?q=owls";
+  const moved = (to: string, status = 302) => new Response(null, { status, headers: { location: to } });
+
+  it("a 302, then the module switched off before the next hop: no second request starts", async () => {
+    fetchMock.mockImplementationOnce(async () => {
+      off("reading"); // a parent switches Reading off while the first answer is on its way
+      return moved(MIRROR);
+    });
+    await expect(moduleFetch("reading", SEARCH, { signal: AbortSignal.timeout(8000) })).rejects.toBeInstanceOf(ModuleOffError);
+    expect(urls(fetchMock)).toEqual([SEARCH]);
+  });
+
+  it("with the module on, follows the redirect itself: checked hops, the same signal, manual each time", async () => {
+    const signal = AbortSignal.timeout(8000);
+    fetchMock.mockImplementationOnce(async () => moved("/mirror/search.json?q=owls", 301));
+    fetchMock.mockImplementationOnce(async () => Response.json({ docs: [] }));
+    const res = await moduleFetch("reading", SEARCH, { signal, headers: { "User-Agent": "Sproutwall" } });
+    expect(res.status).toBe(200);
+    expect(urls(fetchMock)).toEqual([SEARCH, MIRROR]);
+    for (const [, sent] of fetchMock.mock.calls) {
+      expect(sent?.redirect).toBe("manual");
+      expect(sent?.signal).toBe(signal);
+      expect(new Headers(sent?.headers).get("user-agent")).toBe("Sproutwall");
+    }
+  });
+
+  it("the timeout and abort signal still stop a later hop", async () => {
+    const ctrl = new AbortController();
+    fetchMock.mockImplementationOnce(async () => {
+      ctrl.abort();
+      return moved(MIRROR);
+    });
+    fetchMock.mockImplementationOnce(async (_url, sent) => {
+      sent?.signal?.throwIfAborted();
+      return Response.json({ docs: [] });
+    });
+    await expect(moduleFetch("reading", SEARCH, { signal: ctrl.signal })).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][1]?.signal?.aborted).toBe(true);
+  });
+
+  it(`stops after ${MODULE_FETCH_MAX_REDIRECTS} redirects, and never goes from https down to http`, async () => {
+    fetchMock.mockImplementation(async () => moved(MIRROR));
+    await expect(moduleFetch("reading", SEARCH)).rejects.toThrow("too many redirects");
+    expect(fetchMock).toHaveBeenCalledTimes(MODULE_FETCH_MAX_REDIRECTS + 1);
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => moved(MIRROR.replace("https:", "http:")));
+    await expect(moduleFetch("reading", SEARCH)).rejects.toThrow("https to http");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send an Authorization header on to another origin", async () => {
+    fetchMock.mockImplementationOnce(async () => moved("https://www.googleapis.com/books/v1/volumes?q=owls"));
+    fetchMock.mockImplementationOnce(async () => Response.json({ items: [] }));
+    await moduleFetch("reading", SEARCH, { headers: { Authorization: "Bearer sample-token" } });
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer sample-token");
+    expect(new Headers(fetchMock.mock.calls[1][1]?.headers).get("authorization")).toBeNull();
+  });
+
+  it("only follows redirects for GET and HEAD; a POST must say redirect: \"error\"", async () => {
+    await expect(moduleFetch("ask", "http://127.0.0.1:8787/ask", { method: "POST", body: "{}" })).rejects.toBeInstanceOf(TypeError);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await moduleFetch("ask", "http://127.0.0.1:8787/ask", { method: "POST", body: "{}", redirect: "error" });
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe("error");
+  });
+
+  it("the Ask bridge call refuses a redirect instead of following it", async () => {
+    fetchMock.mockImplementationOnce(async () => {
+      throw new TypeError("fetch failed: unexpected redirect");
+    });
+    const res = await askPost(
+      new NextRequest("http://localhost/api/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "Why do owls hoot?" }),
+      })
+    );
+    expect(res.status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe("error");
+  });
+
+  it("the Daily Spark call refuses a redirect too", async () => {
+    process.env.BRIDGE_TOKEN = "sample-bridge-token-0123456789";
+    getDb().prepare("DELETE FROM spark_cache").run();
+    fetchMock.mockImplementationOnce(async () => Response.json({ days: [] }));
+    refreshSparkIfStale();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe("error");
+    delete process.env.BRIDGE_TOKEN;
   });
 });
 
@@ -190,6 +291,39 @@ describe("reading", () => {
     expect(getMock).toHaveBeenCalledTimes(2);
   });
 
+  const bareBooks = (...titles: string[]) => {
+    const db = getDb();
+    db.prepare("DELETE FROM books").run();
+    const kid = (db.prepare("SELECT id FROM members WHERE role='kid' LIMIT 1").get() as { id: string }).id;
+    for (const title of titles) db.prepare("INSERT INTO books (kid, title) VALUES (?, ?)").run(kid, title);
+  };
+  const coverPaths = () =>
+    (getDb().prepare("SELECT cover_path FROM books ORDER BY id").all() as { cover_path: string | null }[]).map((r) => r.cover_path);
+  const found = (title: string) => Response.json({ docs: [{ title, cover_i: 8675309 }] });
+
+  it("a backfill counts a book as filled only when its cover was saved", async () => {
+    bareBooks("Owl Moon", "Frog and Toad");
+    fetchMock.mockImplementation(async () => found("Owl Moon"));
+    getMock.mockImplementationOnce(async () => image()); // the first cover downloads
+    getMock.mockImplementationOnce(async () => ({ status: 404, contentType: "", location: null, body: Buffer.from("") }));
+    await expect(backfillCovers(getMock)).resolves.toEqual({ filled: 1, missed: 1 });
+    expect(coverPaths()[0]).toMatch(/^\/api\/covers\/book-\d+\.jpg$/);
+    expect(coverPaths()[1]).toBeNull();
+  });
+
+  it("a cover refused because Reading went off is not counted as filled, and the backfill stops", async () => {
+    bareBooks("Owl Moon", "Frog and Toad");
+    fetchMock.mockImplementation(async () => found("Owl Moon"));
+    getMock.mockImplementationOnce(async () => {
+      off("reading"); // switched off while the first cover's first hop is on its way
+      return redirect("https://ia800100.us.archive.org/view/sample-L.jpg");
+    });
+    await expect(backfillCovers(getMock)).resolves.toEqual({ filled: 0, missed: 0 });
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(urls(fetchMock)).toHaveLength(1);
+    expect(coverPaths()).toEqual([null, null]);
+  });
+
   it("Reading switched off during a backfill: no cover download and no next book's search", async () => {
     const db = getDb();
     db.prepare("DELETE FROM books").run();
@@ -204,6 +338,50 @@ describe("reading", () => {
     await backfillCovers();
     expect(urls(fetchMock)).toHaveLength(1);
     expect(safeGet).not.toHaveBeenCalled();
+  });
+});
+
+describe("search result thumbnails (/api/books/thumb)", () => {
+  const COVER = "https://covers.openlibrary.org/b/id/8675309-L.jpg";
+  const thumb = (url: string) => thumbGet(new NextRequest(`http://localhost/api/books/thumb?url=${encodeURIComponent(url)}`));
+
+  it("is owned by Reading, so the proxy's module gate covers it", async () => {
+    const { moduleForPath } = await import("@/modules/registry");
+    expect(moduleForPath("/api/books/thumb")?.id).toBe("reading");
+  });
+
+  it("with Reading on, serves the cover from the hub through the guarded download", async () => {
+    vi.mocked(safeGet).mockImplementationOnce(async () => image());
+    const res = await thumb(COVER);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    expect((await res.arrayBuffer()).byteLength).toBe(2000);
+    expect(urls(vi.mocked(safeGet))).toEqual([COVER]);
+  });
+
+  it("with Reading off (a parent's read passes the proxy) answers module_off and contacts nothing", async () => {
+    off("reading");
+    const res = await thumb(COVER);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "module_off" });
+    expect(safeGet).not.toHaveBeenCalled();
+  });
+
+  it("refuses an address outside the cover hosts without a request", async () => {
+    for (const url of ["https://tracker.invalid/pixel.gif", "http://covers.openlibrary.org/b/id/1-L.jpg", "not a link"]) {
+      expect((await thumb(url)).status).toBe(404);
+    }
+    expect(safeGet).not.toHaveBeenCalled();
+  });
+
+  it("Reading switched off during a cover redirect: the next hop never starts", async () => {
+    vi.mocked(safeGet).mockImplementationOnce(async () => {
+      off("reading");
+      return redirect("https://ia800100.us.archive.org/view/sample-L.jpg");
+    });
+    const res = await thumb(COVER);
+    expect(res.status).toBe(404);
+    expect(urls(vi.mocked(safeGet))).toEqual([COVER]);
   });
 });
 

@@ -11,14 +11,21 @@
 // data from such an answer checks it against `rev` too (todayAnswerAction).
 //
 // The module watcher, on every screen: GET /api/modules every minute, on each
-// sproutwall:datachanged event and when the tab is shown again. A module
-// switched off elsewhere reloads the page (watcherAction), which clears every
-// screen's data, any open sheet and Ambient at once, so no screen has to clear
-// a module's leftovers on its own. A module switched on is just shown. The
-// screen that saves the change (Settings → Modules) applies its own answer and
-// does not reload. The real gate is on the server (src/proxy.ts, and
-// src/lib/module-fetch.ts for outside requests): this only keeps the screen
-// from showing what is switched off.
+// sproutwall:datachanged event and when the tab is shown again.
+//
+// One rule (moduleStateAction) for every module state that reaches the
+// provider: the watcher's, a /api/today answer, a Settings save and the
+// layout. A module switched off reloads the page, which clears every screen's
+// data, any open sheet and Ambient at once, so no screen has to clear a
+// module's leftovers on its own; so does a restored database, whether its
+// revision went back or came back to the one shown with other modules. A
+// module switched on is just shown. The one exception: while Settings →
+// Modules holds the watcher for its save, the state it hands over is shown
+// without a reload, so the screen that saves the change does not reload
+// itself. A hold ends after HOLD_MAX_MS at the latest, and the watcher checks
+// at once when the last one ends. The real gate is on the server
+// (src/proxy.ts, and src/lib/module-fetch.ts for outside requests): this only
+// keeps the screen from showing what is switched off.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { getModule } from "@/modules/registry";
@@ -87,42 +94,110 @@ function isSnapshot(v: unknown): v is ModuleSnapshot {
   );
 }
 
+/** The same module ids, in any order. */
+function sameModules(a: readonly string[], b: readonly string[]): boolean {
+  const set = new Set(a);
+  return set.size === new Set(b).size && b.every((id) => set.has(id));
+}
+
 /**
- * What the module watcher does with the server's module state (GET
- * /api/modules) while the screen shows `shown`. `revAtStart` is the revision
- * shown when the request left; it defaults to the one shown now.
- * - "reload" when the server's revision is lower than the one shown when the
- *   request left: its database was replaced (a restore from a backup);
+ * What the screen does with a module state `next` that reaches the provider
+ * while it shows `shown`: the watcher's GET /api/modules, a /api/today
+ * answer, a Settings save or the layout. `revAtStart` is the revision shown
+ * when the request for `next` left; it defaults to the one shown now. Pass
+ * -Infinity when it is not known (the layout): a lower revision is then
+ * taken as late, and the watcher still catches a restore.
+ * - "reload" when the revision is lower than the one shown when the request
+ *   left: the database was replaced (a restore from a backup);
+ * - "none" when it is lower than the one shown now but not than that: read
+ *   before a newer state reached this screen while it was on its way, which
+ *   is late, not a restore;
+ * - "reload" at the same revision with other modules: a restore that came
+ *   back to the revision shown (each revision has one module set);
+ * - "none" at the same revision with the same modules;
  * - "reload" when it is higher and a module shown as on is off there: only a
  *   full reload clears every screen's data, open sheets and Ambient;
- * - "sync" when it is higher and modules were only turned on: shown at once
- *   (syncModules), no reload;
- * - "none" otherwise: the same revision; an answer read before a newer state
- *   reached this screen while it was on its way (a Settings save or a Today
- *   poll), which is late, not a restore; a failed request; no revision.
+ * - "sync" when it is higher and modules were only turned on (or none
+ *   changed): shown at once, no reload;
+ * - "none" for anything that is not a module state (a failed request, no
+ *   revision, no module list).
  */
-export function watcherAction(shown: ModuleSnapshot, server: unknown, revAtStart = shown.rev): "reload" | "sync" | "none" {
-  if (!isSnapshot(server)) return "none";
-  if (server.rev < Math.min(revAtStart, shown.rev)) return "reload";
-  if (server.rev <= shown.rev) return "none";
-  return shown.modules.some((id) => !server.modules.includes(id)) ? "reload" : "sync";
+export function moduleStateAction(shown: ModuleSnapshot, next: unknown, revAtStart = shown.rev): "reload" | "sync" | "none" {
+  if (!isSnapshot(next)) return "none";
+  if (next.rev < Math.min(revAtStart, shown.rev)) return "reload";
+  if (next.rev < shown.rev) return "none";
+  if (next.rev === shown.rev) return sameModules(shown.modules, next.modules) ? "none" : "reload";
+  return shown.modules.some((id) => !next.modules.includes(id)) ? "reload" : "sync";
 }
 
 /** How often the watcher checks when nothing else prompts it. */
 const WATCH_MS = 60_000;
+
+/** The longest one hold keeps the watcher waiting, whatever happens to the save. */
+export const HOLD_MAX_MS = 15_000;
+
+export type WatcherHolds = {
+  /** Whether any hold is active. */
+  held: () => boolean;
+  /** Start a hold; the returned function ends it (calling it again does nothing). */
+  hold: () => () => void;
+  /** Run `fn` each time the last hold ends; returns a function that stops it. */
+  whenIdle: (fn: () => void) => () => void;
+};
+
+/**
+ * The holds on the module watcher (Settings → Modules while its save is on
+ * its way). A hold ends when its release is called (the save is done, or the
+ * card unmounts) or after `maxMs` at the latest, so a stalled save can't keep
+ * the watcher waiting. When the last hold ends, the whenIdle functions run
+ * once: the watcher checks at once, so a check skipped while held is not
+ * lost. No React, so it is tested with fake timers.
+ */
+export function watcherHolds(maxMs = HOLD_MAX_MS): WatcherHolds {
+  let count = 0;
+  const idle = new Set<() => void>();
+  return {
+    held: () => count > 0,
+    hold: () => {
+      count++;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        clearTimeout(timer);
+        count--;
+        if (count === 0) for (const fn of [...idle]) fn();
+      };
+      const timer = setTimeout(release, maxMs);
+      return release;
+    },
+    whenIdle: (fn) => {
+      idle.add(fn);
+      return () => {
+        idle.delete(fn);
+      };
+    },
+  };
+}
 
 type Modules = {
   isOn: (id: string) => boolean;
   /** The revision of the module state shown. */
   rev: number;
   tabs: TabInfo[];
-  /** A module state from /api/today or a Settings save; shown only if it is newer. */
-  syncModules: (state: ModuleSnapshot) => void;
   /**
-   * For Settings → Modules while its save is on its way: the watcher ignores
-   * what it reads until the returned function is called, because the save's
-   * own answer (syncModules) is what this screen shows. Without it, a check
-   * that read the new state first would reload the screen that saved it.
+   * A module state from /api/today or a Settings save, with the revision
+   * shown when its request left. Goes through moduleStateAction like the
+   * watcher's: a module switched off reloads the page, except while the
+   * watcher is held.
+   */
+  syncModules: (state: ModuleSnapshot, revAtStart?: number) => void;
+  /**
+   * For Settings → Modules while its save is on its way: until the returned
+   * function is called (or HOLD_MAX_MS has passed) the watcher waits and the
+   * state handed to syncModules is shown without a reload, because the
+   * save's own answer is what this screen shows. Without it, a check that
+   * read the new state first would reload the screen that saved it.
    */
   holdWatcher: () => () => void;
 };
@@ -148,53 +223,60 @@ export default function ModulesProvider({
   children: React.ReactNode;
 }) {
   const [shown, setShown] = useState<ModuleSnapshot>(() => ({ rev, modules: enabled, tabs }));
-  // New props from the layout (router.refresh() keeps this state) go through
-  // the same rule as the other sources.
-  const fromLayout = JSON.stringify({ rev, modules: enabled, tabs });
-  const [seenLayout, setSeenLayout] = useState(fromLayout);
-  if (seenLayout !== fromLayout) {
-    setSeenLayout(fromLayout);
-    setShown((prev) => newerModuleState(prev, { rev, modules: enabled, tabs }));
-  }
-
-  // What the watcher compares with: the state shown, ahead of the next render
-  // when syncModules has just been called.
+  // What every decision compares with: the state shown, ahead of the next
+  // render when one has just been applied.
   const shownRef = useRef(shown);
-  useEffect(() => {
-    shownRef.current = newerModuleState(shownRef.current, shown);
-  }, [shown]);
-  const holds = useRef(0);
-
-  const syncModules = useCallback((next: ModuleSnapshot) => {
+  const show = useCallback((next: ModuleSnapshot) => {
     shownRef.current = newerModuleState(shownRef.current, next);
     setShown((prev) => newerModuleState(prev, next));
   }, []);
 
-  const holdWatcher = useCallback(() => {
-    holds.current++;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      holds.current--;
-    };
-  }, []);
+  const [holds] = useState(() => watcherHolds());
+
+  // Every module state that reaches the provider goes through here.
+  const apply = useCallback(
+    (next: unknown, revAtStart?: number) => {
+      if (holds.held()) {
+        // Settings → Modules is saving: it shows its own answer.
+        if (isSnapshot(next)) show(next);
+        return;
+      }
+      const action = moduleStateAction(shownRef.current, next, revAtStart);
+      if (action === "reload") window.location.reload();
+      else if (action === "sync") show(next as ModuleSnapshot);
+    },
+    [holds, show]
+  );
+
+  const syncModules = useCallback((next: ModuleSnapshot, revAtStart?: number) => apply(next, revAtStart), [apply]);
+
+  // New props from the layout (router.refresh() keeps this state) go through
+  // the same rule. Nothing says when their request left, so a lower revision
+  // counts as late; the watcher still catches a restore.
+  const fromLayout = JSON.stringify({ rev, modules: enabled, tabs });
+  useEffect(() => {
+    apply(JSON.parse(fromLayout), Number.NEGATIVE_INFINITY);
+  }, [fromLayout, apply]);
 
   // The module watcher (see the top of this file).
   useEffect(() => {
     let live = true;
     const check = () => {
+      // Held: the end of the last hold checks again.
+      if (holds.held()) return;
       const revAtStart = shownRef.current.rev;
       void fetch("/api/modules", { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null)
         .then((server: unknown) => {
-          if (!live || holds.current > 0) return;
-          const action = watcherAction(shownRef.current, server, revAtStart);
-          if (action === "reload") window.location.reload();
-          else if (action === "sync") syncModules(server as ModuleSnapshot);
+          // Read while a save was on its way: skipped, and checked again
+          // when the hold ends.
+          if (!live || holds.held()) return;
+          apply(server, revAtStart);
         });
     };
+    // When the last hold ends, at once.
+    const stopIdle = holds.whenIdle(check);
     const onVisible = () => {
       if (document.visibilityState === "visible") check();
     };
@@ -203,11 +285,12 @@ export default function ModulesProvider({
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       live = false;
+      stopIdle();
       window.clearInterval(timer);
       window.removeEventListener("sproutwall:datachanged", check);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [syncModules]);
+  }, [apply, holds]);
 
   const value = useMemo<Modules>(() => {
     const isOn = (id: string): boolean => {
@@ -216,8 +299,8 @@ export default function ModulesProvider({
       if (m.core) return true;
       return shown.modules.includes(id) && (m.dependsOn ?? []).every(isOn);
     };
-    return { isOn, rev: shown.rev, tabs: shown.tabs, syncModules, holdWatcher };
-  }, [shown, syncModules, holdWatcher]);
+    return { isOn, rev: shown.rev, tabs: shown.tabs, syncModules, holdWatcher: holds.hold };
+  }, [shown, syncModules, holds]);
 
   return <ModulesContext.Provider value={value}>{children}</ModulesContext.Provider>;
 }

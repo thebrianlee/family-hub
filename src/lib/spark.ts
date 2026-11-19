@@ -126,8 +126,10 @@ export function refreshSparkIfStale(): void {
 
   (async () => {
     // Ask switched off since /api/today checked: the bridge is not called.
+    // The local bridge never redirects, so a redirect is refused, not followed.
     const res = await moduleFetch("ask", `${bridge}/generate`, {
       method: "POST",
+      redirect: "error",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       cache: "no-store",
       body: JSON.stringify({ days: missing, avoid: Array.from(avoid).slice(0, 120) }),

@@ -16,6 +16,12 @@ This part exists. Today's features are **built-in modules** that a parent switch
 - **Tests** check that every route belongs to a module and that the hosts in `permissions.network` match the hosts in the code.
 - **Not in v0:** third-party skills, per-module settings, a delete-data action, permission-upgrade prompts and per-kid enable.
 
+### Known limits
+
+- A request that is already on its way when a module is switched off is not cancelled. Each new request, fallback and redirect hop checks first (`src/lib/module-fetch.ts`).
+- Other screens follow a switch-off within 60 seconds, or at once on a `sproutwall:datachanged` event or when the tab is shown again (`src/components/ModulesProvider.tsx`).
+- An Ask question refused because Ask was switched off after the hub accepted it still uses its slot in the rate limit.
+
 ## Prerequisites
 
 Skills need a stable core API first. Two changes come before any skill work:

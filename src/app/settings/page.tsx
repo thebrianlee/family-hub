@@ -331,6 +331,9 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
   );
 }
 
+const toModuleState = (data: { modules?: { id: string; enabled: boolean }[] }): ModuleState =>
+  Object.fromEntries((data.modules ?? []).map((m) => [m.id, m.enabled]));
+
 /**
  * Settings → Modules: switch built-in features on or off. Off only hides a
  * module from the wall; its data stays. Turning one off that others need asks
@@ -338,7 +341,7 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
  */
 function ModulesCard() {
   const router = useRouter();
-  const { syncModules, holdWatcher } = useModules();
+  const { rev, syncModules, holdWatcher } = useModules();
   const expired = useContext(SessionExpired);
   const [state, setState] = useState<ModuleState | null>(null);
   // The module revision `state` was read at. A snapshot replaces it only when
@@ -348,38 +351,52 @@ function ModulesCard() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const toState = (data: { modules?: { id: string; enabled: boolean }[] }): ModuleState =>
-    Object.fromEntries((data.modules ?? []).map((m) => [m.id, m.enabled]));
-
+  // While mounted; and the watcher hold of a save still on its way, which
+  // ends when this card goes (ModulesProvider holdWatcher).
+  const live = useRef(false);
+  const hold = useRef<(() => void) | null>(null);
   useEffect(() => {
-    let live = true;
+    live.current = true;
+    return () => {
+      live.current = false;
+      hold.current?.();
+      hold.current = null;
+    };
+  }, []);
+
+  const load = useCallback(() => {
     void fetch("/api/settings/modules", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (live && d && isNewerRev(stateRev.current, d.rev)) {
+        if (live.current && d && isNewerRev(stateRev.current, d.rev)) {
           stateRev.current = d.rev;
-          setState(toState(d));
+          setState(toModuleState(d));
         }
       })
       .catch(() => null);
-    return () => {
-      live = false;
-    };
   }, []);
+  // The first read, and a fresh one whenever the wall shows a newer module
+  // state than these switches: a change made on another screen that only
+  // turned modules on (one that turned any off reloads the page).
+  useEffect(() => {
+    if (stateRev.current < 0 || isNewerRev(stateRev.current, rev)) load();
+  }, [rev, load]);
 
   const name = (id: string) => getModule(id)?.name ?? id;
 
   // The switches stay locked (busy) until the answer is read and applied, or
   // the save has failed. Until then the module watcher waits too, so this
-  // screen shows its own answer instead of reloading (ModulesProvider).
+  // screen shows its own answer instead of reloading (ModulesProvider), but
+  // for HOLD_MAX_MS at most and never after this card is gone.
   const save = async (id: string, on: boolean) => {
     if (!state || busy) return;
     setConfirm(null);
     setBusy(true);
     setError("");
     setSaved("");
+    const revAtStart = rev;
     const release = holdWatcher();
+    hold.current = release;
     try {
       const res = await fetch("/api/settings/modules", {
         method: "PUT",
@@ -395,7 +412,7 @@ function ModulesCard() {
       if (!res.ok) return setError(typeof data.error === "string" ? data.error : "That didn't save.");
       // Older than the switches shown: keep them, here and on the wall.
       if (!isNewerRev(stateRev.current, data.rev)) return;
-      const next = toState(data);
+      const next = toModuleState(data);
       const alsoOn = Object.keys(next).filter((m) => m !== id && next[m] && !state[m]);
       stateRev.current = data.rev;
       setState(next);
@@ -405,11 +422,14 @@ function ModulesCard() {
           : "Hidden from the wall. Nothing is deleted; turn it back on any time."
       );
       // Show the saved state at once (newest revision wins, so a Today poll
-      // already in flight can't undo it), then re-render the layout too.
-      syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs });
+      // already in flight can't undo it), then re-render the layout too. A
+      // save that outlived its hold goes through the provider's rule like
+      // any other state.
+      syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs }, revAtStart);
       router.refresh();
     } finally {
       release();
+      if (hold.current === release) hold.current = null;
       setBusy(false);
     }
   };

@@ -161,8 +161,18 @@ export default function TodayPage() {
   useEffect(() => {
     revShown.current = Math.max(revShown.current, rev);
   }, [rev]);
+  // An answer that lands after this page was left is not used at all: it
+  // would hand its module state to the screen now shown.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const show = useCallback(
     (d: Today, revAtStart: number) => {
+      if (!mounted.current) return;
       const action = todayAnswerAction(revAtStart, revShown.current, d.modulesRev);
       // The database was replaced (restore): start over from the server.
       if (action === "reload") return window.location.reload();
@@ -171,7 +181,8 @@ export default function TodayPage() {
       revShown.current = d.modulesRev;
       setT(d);
       if (Array.isArray(d.tabs) && Array.isArray(d.modules)) {
-        syncModules({ rev: d.modulesRev, modules: d.modules, tabs: d.tabs });
+        // The provider's rule: a module switched off reloads the page.
+        syncModules({ rev: d.modulesRev, modules: d.modules, tabs: d.tabs }, revAtStart);
       }
     },
     [syncModules]

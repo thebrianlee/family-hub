@@ -4,6 +4,8 @@
 // and a celebratory grid of every finished book. Finish → "Tell me about it".
 
 import { useCallback, useEffect, useState } from "react";
+import { answerGate } from "@/lib/answer-gate";
+import { coverPreviewSrc } from "@/lib/cover-preview";
 import { KidId } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
 import { useModules } from "@/components/ModulesProvider";
@@ -81,13 +83,26 @@ export default function ReadingPage() {
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
 
-  const load = useCallback((k: KidId) => {
-    fetch(`/api/reading?kid=${k}`).then((r) => r.json()).then((d) => setSummary(d.summary)).catch(() => {});
-  }, []);
+  // An answer for a kid no longer picked, or overtaken by a newer request, is
+  // dropped (src/lib/answer-gate.ts); so is a search from a closed "Start a
+  // Book" sheet.
+  const [gates] = useState(() => ({ load: answerGate(), search: answerGate() }));
+  const load = useCallback(
+    (k: KidId) => {
+      const ticket = gates.load.take(k);
+      fetch(`/api/reading?kid=${k}`)
+        .then((r) => r.json())
+        .then((d) => { if (gates.load.isCurrent(ticket)) setSummary(d.summary); })
+        .catch(() => {});
+    },
+    [gates]
+  );
 
   useEffect(() => {
+    gates.load.reset(kid ?? "");
+    gates.search.reset(kid ?? "");
     if (kid) load(kid);
-  }, [kid, load]);
+  }, [kid, load, gates]);
 
   const post = (payload: Record<string, unknown>) =>
     fetch("/api/reading", {
@@ -127,19 +142,21 @@ export default function ReadingPage() {
 
   const runSearch = async () => {
     if (query.trim().length < 2) return;
+    const ticket = gates.search.take(kid ?? "");
     setSearching(true);
     try {
       const res = await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);
       const body = await res.json();
-      setResults(body.results ?? []);
+      if (gates.search.isCurrent(ticket)) setResults(body.results ?? []);
     } catch {
-      setResults([]);
+      if (gates.search.isCurrent(ticket)) setResults([]);
     } finally {
       setSearching(false);
     }
   };
 
   const closeNew = () => {
+    gates.search.reset(kid ?? "");
     setNewOpen(false);
     setQuery("");
     setResults(null);
@@ -351,8 +368,8 @@ export default function ReadingPage() {
                     className="tile px-5 py-4 flex items-center gap-5 text-left active:bg-cream-sunken disabled:opacity-50"
                   >
                     {r.thumbnail ? (
-                       
-                      <img src={r.thumbnail} alt="" className="w-[64px] h-[92px] rounded-lg object-cover shrink-0 shadow-tile" />
+                      // Through the hub, never from the book site (src/lib/cover-preview.ts).
+                      <img src={coverPreviewSrc(r.thumbnail)} alt="" className="w-[64px] h-[92px] rounded-lg object-cover shrink-0 shadow-tile" />
                     ) : (
                       <div className="w-[64px] h-[92px] rounded-lg bg-cream-sunken flex items-center justify-center text-3xl shrink-0">
                         📕
@@ -377,6 +394,7 @@ export default function ReadingPage() {
                 {results !== null && (
                   <button
                     onClick={() => {
+                      gates.search.reset(kid ?? "");
                       setResults(null);
                       setQuery("");
                     }}

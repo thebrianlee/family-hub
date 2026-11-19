@@ -1,12 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { deckQuotes } from "@/components/Ambient";
 import {
+  HOLD_MAX_MS,
   isCurrentRev,
   isNewerRev,
+  moduleStateAction,
   newerModuleState,
   todayAnswerAction,
-  watcherAction,
+  watcherHolds,
   type ModuleSnapshot,
 } from "@/components/ModulesProvider";
 import { GET as modulesGet } from "@/app/api/modules/route";
@@ -85,6 +87,14 @@ describe("isNewerRev (Settings → Modules applies a snapshot or keeps its switc
   it("never applies an answer without a usable revision", () => {
     for (const rev of [undefined, null, "7", Number.NaN]) expect(isNewerRev(-1, rev)).toBe(false);
   });
+
+  it("the switches read again when the wall shows a newer state (Meals turned on elsewhere)", () => {
+    const switchesRev = 4; // read at rev 4, Meals off
+    let wallRev = 4;
+    expect(isNewerRev(switchesRev, wallRev)).toBe(false); // nothing to read
+    wallRev = 5; // the watcher synced another screen's "Meals on"
+    expect(isNewerRev(switchesRev, wallRev)).toBe(true); // GET /api/settings/modules again
+  });
 });
 
 describe("deckQuotes (the screensaver's quotes)", () => {
@@ -156,7 +166,7 @@ describe("todayAnswerAction (late answers versus a restored database)", () => {
   });
 });
 
-describe("watcherAction (the module watcher on every screen)", () => {
+describe("moduleStateAction (one rule for the watcher, /api/today, a Settings save and the layout)", () => {
   const at = (rev: number, on: string[]): ModuleSnapshot => {
     const modules = ["core", ...on];
     return { rev, modules, tabs: enabledTabs(modules) };
@@ -165,53 +175,161 @@ describe("watcherAction (the module watcher on every screen)", () => {
   const without = (...off: string[]) => ALL.filter((m) => !off.includes(m));
 
   it("reloads when a module shown as on is off at a newer revision", () => {
-    expect(watcherAction(at(4, ALL), at(5, without("reading")))).toBe("reload");
+    expect(moduleStateAction(at(4, ALL), at(5, without("reading")))).toBe("reload");
     // Routines off takes rewards and progress with it: still one reload.
-    expect(watcherAction(at(4, ALL), at(9, without("routines", "rewards", "progress")))).toBe("reload");
+    expect(moduleStateAction(at(4, ALL), at(9, without("routines", "rewards", "progress")))).toBe("reload");
   });
 
   it("reloads when one module went on and another off at the newer revision", () => {
-    expect(watcherAction(at(4, without("ask")), at(5, [...without("meals"), "ask"]))).toBe("reload");
+    expect(moduleStateAction(at(4, without("ask")), at(5, [...without("meals"), "ask"]))).toBe("reload");
   });
 
   it("syncs without a reload when modules were only turned on", () => {
-    expect(watcherAction(at(4, without("meals")), at(5, ALL))).toBe("sync");
-    expect(watcherAction(at(4, ALL), at(6, [...ALL, "ask"]))).toBe("sync");
+    expect(moduleStateAction(at(4, without("meals")), at(5, ALL))).toBe("sync");
+    expect(moduleStateAction(at(4, ALL), at(6, [...ALL, "ask"]))).toBe("sync");
     // A save that changed nothing still bumps the revision.
-    expect(watcherAction(at(4, ALL), at(5, ALL))).toBe("sync");
+    expect(moduleStateAction(at(4, ALL), at(5, ALL))).toBe("sync");
   });
 
   it("reloads when the server's revision is lower than the one shown (a restored database)", () => {
-    expect(watcherAction(at(7, ALL), at(2, ALL))).toBe("reload");
-    expect(watcherAction(at(7, without("lists")), at(0, ALL))).toBe("reload");
+    expect(moduleStateAction(at(7, ALL), at(2, ALL))).toBe("reload");
+    expect(moduleStateAction(at(7, without("lists")), at(0, ALL))).toBe("reload");
   });
 
-  it("does nothing at the same revision", () => {
-    expect(watcherAction(at(5, ALL), at(5, ALL))).toBe("none");
-    expect(watcherAction(at(5, ALL), at(5, without("meals")))).toBe("none");
+  it("does nothing at the same revision with the same modules, in any order", () => {
+    expect(moduleStateAction(at(5, ALL), at(5, ALL))).toBe("none");
+    expect(moduleStateAction(at(5, ALL), at(5, [...ALL].reverse()))).toBe("none");
+  });
+
+  it("reloads at the same revision with other modules (a restore that came back to the revision shown)", () => {
+    // A restore to rev 3, then a save that turned Meals off and Ask on: the
+    // server is back at the shown rev 5 with another module set.
+    expect(moduleStateAction(at(5, ALL), at(5, [...without("meals"), "ask"]))).toBe("reload");
+    // Only turned on, at the same revision: a restore too.
+    expect(moduleStateAction(at(5, without("lists")), at(5, ALL))).toBe("reload");
+    // However the answer was started.
+    expect(moduleStateAction(at(5, ALL), at(5, without("meals")), 5)).toBe("reload");
+    expect(moduleStateAction(at(5, ALL), at(5, without("meals")), Number.NEGATIVE_INFINITY)).toBe("reload");
   });
 
   it("does nothing with an answer read before a newer state reached the screen (late, not a restore)", () => {
     // The check left at rev 4; a Settings save on this screen (or a Today
     // poll) showed rev 5 before the answer, read at rev 4, came back.
-    expect(watcherAction(at(5, without("meals")), at(4, ALL), 4)).toBe("none");
+    expect(moduleStateAction(at(5, without("meals")), at(4, ALL), 4)).toBe("none");
     // Read below the revision shown when it left: the database went back.
-    expect(watcherAction(at(5, without("meals")), at(3, ALL), 4)).toBe("reload");
+    expect(moduleStateAction(at(5, without("meals")), at(3, ALL), 4)).toBe("reload");
+  });
+
+  it("a state with no known start (the layout): a lower revision is late, the rest as for the watcher", () => {
+    const shown = at(5, ALL);
+    const unknown = Number.NEGATIVE_INFINITY;
+    expect(moduleStateAction(shown, at(4, without("meals")), unknown)).toBe("none");
+    expect(moduleStateAction(shown, at(0, ALL), unknown)).toBe("none");
+    expect(moduleStateAction(shown, at(6, without("meals")), unknown)).toBe("reload");
+    expect(moduleStateAction(shown, at(6, [...ALL, "ask"]), unknown)).toBe("sync");
+  });
+
+  it("an old /api/today answer handed over after the page changed: a module it turned off reloads", () => {
+    // Today's poll left at rev 4 and lands at rev 6 with Lists off while the
+    // wall shows Lists at rev 4: the provider reloads instead of quietly
+    // moving to rev 6, which the next watcher check would then see as current.
+    expect(moduleStateAction(at(4, ALL), at(6, without("lists")), 4)).toBe("reload");
+    // Settings' own save, answered after its hold ran out, goes the same way.
+    expect(moduleStateAction(at(4, ALL), at(5, without("reading")), 4)).toBe("reload");
   });
 
   it("does nothing after a failed check or an answer without a usable revision", () => {
     const shown = at(5, ALL);
     for (const server of [null, undefined, "5", {}, { error: "Unlock this screen with the parent PIN" }]) {
-      expect(watcherAction(shown, server)).toBe("none");
+      expect(moduleStateAction(shown, server)).toBe("none");
     }
     for (const rev of [undefined, null, "6", Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(watcherAction(shown, { rev, modules: ["core"], tabs: [] })).toBe("none");
+      expect(moduleStateAction(shown, { rev, modules: ["core"], tabs: [] })).toBe("none");
     }
     // A revision but no usable module list.
-    expect(watcherAction(shown, { rev: 6, tabs: [] })).toBe("none");
-    expect(watcherAction(shown, { rev: 6, modules: "core", tabs: [] })).toBe("none");
-    expect(watcherAction(shown, { rev: 6, modules: [1, 2], tabs: [] })).toBe("none");
-    expect(watcherAction(shown, { rev: 6, modules: ["core"] })).toBe("none");
+    expect(moduleStateAction(shown, { rev: 6, tabs: [] })).toBe("none");
+    expect(moduleStateAction(shown, { rev: 6, modules: "core", tabs: [] })).toBe("none");
+    expect(moduleStateAction(shown, { rev: 6, modules: [1, 2], tabs: [] })).toBe("none");
+    expect(moduleStateAction(shown, { rev: 6, modules: ["core"] })).toBe("none");
+  });
+});
+
+describe("watcherHolds (Settings holds the watcher while its save is on its way)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a stalled save's hold ends by itself after HOLD_MAX_MS, and the watcher checks at once", () => {
+    const check = vi.fn();
+    const holds = watcherHolds();
+    holds.whenIdle(check);
+    holds.hold(); // the save never answers, and nothing calls release
+    expect(holds.held()).toBe(true);
+    vi.advanceTimersByTime(HOLD_MAX_MS - 1);
+    expect(holds.held()).toBe(true);
+    expect(check).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(holds.held()).toBe(false);
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(HOLD_MAX_MS).toBeLessThanOrEqual(15_000);
+  });
+
+  it("released early (the save answered, or the card unmounted): checks at once, once, and the timer does nothing later", () => {
+    const check = vi.fn();
+    const holds = watcherHolds();
+    holds.whenIdle(check);
+    const release = holds.hold();
+    vi.advanceTimersByTime(2000);
+    release();
+    expect(holds.held()).toBe(false);
+    expect(check).toHaveBeenCalledTimes(1);
+    release(); // the save's finally after the unmount cleanup already released it
+    vi.advanceTimersByTime(HOLD_MAX_MS * 2);
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks only when the last hold ends", () => {
+    const check = vi.fn();
+    const holds = watcherHolds();
+    holds.whenIdle(check);
+    const first = holds.hold();
+    vi.advanceTimersByTime(10_000);
+    const second = holds.hold();
+    first();
+    expect(holds.held()).toBe(true);
+    expect(check).not.toHaveBeenCalled();
+    // The first hold's timer was cleared; the second runs out on its own.
+    vi.advanceTimersByTime(HOLD_MAX_MS - 1);
+    expect(check).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(check).toHaveBeenCalledTimes(1);
+    second();
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("a hold after the last one ended starts over", () => {
+    const check = vi.fn();
+    const holds = watcherHolds(1000);
+    holds.whenIdle(check);
+    holds.hold()();
+    holds.hold();
+    expect(holds.held()).toBe(true);
+    vi.advanceTimersByTime(1000);
+    expect(check).toHaveBeenCalledTimes(2);
+  });
+
+  it("a watcher that stopped (the provider unmounted) is not called", () => {
+    const check = vi.fn();
+    const holds = watcherHolds();
+    const stop = holds.whenIdle(check);
+    holds.hold();
+    stop();
+    vi.advanceTimersByTime(HOLD_MAX_MS);
+    expect(holds.held()).toBe(false);
+    expect(check).not.toHaveBeenCalled();
   });
 });
 
@@ -228,7 +346,7 @@ describe("GET /api/modules (what the watcher reads)", () => {
     expect(after.modules).not.toContain("meals");
     expect(after.tabs.map((t: { id: string }) => t.id)).not.toContain("meals");
     // The watcher on a screen still showing `before` reloads.
-    expect(watcherAction(before, after)).toBe("reload");
+    expect(moduleStateAction(before, after)).toBe("reload");
   });
 
   it("is never cached", () => {

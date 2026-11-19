@@ -75,9 +75,12 @@ export async function POST(req: NextRequest) {
   const deadline = setTimeout(() => ctrl.abort(), BRIDGE_TIMEOUT_MS);
   try {
     // Checked again as the request starts: Ask can have been switched off
-    // while the question was read.
+    // while the question was read. The bridge answers on this machine and
+    // never redirects, so a redirect is refused instead of followed: the
+    // question goes nowhere else.
     const res = await moduleFetch("ask", `${bridgeUrl}/ask`, {
       method: "POST",
+      redirect: "error",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
