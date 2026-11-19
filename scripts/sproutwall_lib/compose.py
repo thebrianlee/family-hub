@@ -14,9 +14,11 @@ Two sources must agree:
    Docker's environment, so only this file is read (the start command passes
    the same `-f`, which takes precedence over COMPOSE_FILE).
 
-The tag is only for readability; Docker selects by the digest. Until the
-first preview is published, the file carries PLACEHOLDER_TOKEN instead of the
-hex digest; every reader refuses it, and Docker rejects it as a reference.
+The tag is only for readability; Docker selects by the digest. As committed,
+the file always carries PLACEHOLDER_TOKEN instead of the hex digest (a commit
+cannot contain the digest of the image built from it); every reader refuses
+it, and Docker rejects it as a reference. The install guide writes the real
+digest into the checkout on the device.
 """
 
 import json
