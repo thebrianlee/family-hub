@@ -37,6 +37,9 @@ yarn-error.log*
 # private word list for scripts/check-pii.mjs (never commit it)
 /scripts/pii-hashes.txt
 
+# python (scripts/sproutwall and its tests)
+__pycache__/
+
 # household data and local photos
 /data
 /photos/*

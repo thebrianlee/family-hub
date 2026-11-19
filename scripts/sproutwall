@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Sproutwall install helper: `doctor` and `verify-image`. See docs/install-cli.md.
+
+This file is only a bootstrap. It installs the redaction guard before
+anything else can fail: every import, and the whole command, run inside it.
+On any unexpected failure, a run with --json still prints exactly one
+closed-schema JSON object (result unknown, every check unknown/retry_local,
+exit 2), and a run without --json prints one fixed line to stderr. Never a
+traceback, path or error text. It needs only the Python 3.11+ standard
+library and sends nothing anywhere.
+"""
+
+import sys
+
+sys.dont_write_bytecode = True
+
+# Kept in step with sproutwall_lib/schema.py (a unit test compares them). The
+# bootstrap must not import that package to build its fallback.
+_PHASES = ("running", "configured", "final")
+_CHECK_IDS = (
+    "platform",
+    "docker",
+    "image_identity",
+    "storage",
+    "health",
+    "app_bind",
+    "bridge_bind",
+    "ssh_policy",
+    "setup",
+    "read_guard",
+    "kiosk",
+    "temporary_access",
+)
+_FAILED = "sproutwall: stopped by an unexpected error. Nothing was changed.\n"
+
+
+def _phase(argv):
+    for index, arg in enumerate(argv):
+        value = None
+        if arg == "--phase" and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif arg.startswith("--phase="):
+            value = arg.partition("=")[2]
+        if value in _PHASES:
+            return value
+    return _PHASES[0]
+
+
+def _fallback_json(argv):
+    checks = ",".join('{"id":"%s","status":"unknown","action":"retry_local"}' % i for i in _CHECK_IDS)
+    return '{"schema":1,"phase":"%s","result":"unknown","checks":[%s]}' % (_phase(argv), checks)
+
+
+def _fail_safe():
+    """Fixed output for an unexpected failure. Returns exit code 2."""
+    argv = sys.argv[1:]
+    try:
+        if "--json" in argv:
+            sys.stdout.write(_fallback_json(argv) + "\n")
+            sys.stdout.flush()
+        else:
+            sys.stderr.write(_FAILED)
+            sys.stderr.flush()
+    except BaseException:  # noqa: BLE001 - nothing more can be said safely
+        pass
+    return 2
+
+
+def _exit_now(*_args):
+    _fail_safe()
+    import os
+
+    os._exit(2)
+
+
+def _install_guards():
+    sys.excepthook = _exit_now
+    sys.unraisablehook = lambda _unraisable: None
+    import warnings
+
+    warnings.simplefilter("ignore")
+    import threading
+
+    threading.excepthook = _exit_now
+
+
+def _run():
+    import os
+
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    from sproutwall_lib.cli import main
+
+    return main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    try:
+        _install_guards()
+        code = _run()
+    except SystemExit as exit_request:
+        code = exit_request.code
+    except BaseException:  # noqa: BLE001 - fixed output only
+        code = _fail_safe()
+    if code is not None and not isinstance(code, int):
+        code = _fail_safe()  # a text exit code would be printed by Python
+    sys.exit(code)
