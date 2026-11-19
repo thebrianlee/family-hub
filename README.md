@@ -1,5 +1,7 @@
 # Sproutwall
 
+**Install:** [guided, with or without an AI assistant](INSTALL-WITH-AI.md) · [manual install](#install-at-home)
+
 Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitchen. It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. It runs on a computer in your home, such as a Raspberry Pi, and keeps the household's data on that computer. There is no cloud account and no subscription.
 
 Turn features on or off in Settings → Modules.

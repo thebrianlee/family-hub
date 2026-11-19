@@ -4,11 +4,13 @@ This guide sets up Sproutwall on a Raspberry Pi, with an optional touchscreen th
 
 Plan for an evening. Most of the time is waiting for downloads and the first build.
 
+To install the published, pre-built image instead of building on the Pi, with or without an AI assistant, see [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md).
+
 ## What works
 
 **Supported:**
 
-- Raspberry Pi 4 or Raspberry Pi 5, with 4 GB of memory or more.
+- Raspberry Pi 4 or Raspberry Pi 5. Building the app on the Pi, as this page does, needs about 4 GB of memory (see "The build runs out of memory" below). The prebuilt preview image in [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) needs no build; its minimum memory is not measured yet. That guide also lists the other supported devices.
 - Raspberry Pi OS **64-bit**, Bookworm or later.
 - An SSD on USB (best), or a good microSD card rated **A2**. Cheap cards make the Pi slow and can wear out. 32 GB or larger leaves room for updates and photos.
 - The official power supply for your Pi model. A weak supply causes strange crashes.
