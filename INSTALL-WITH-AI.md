@@ -1,17 +1,28 @@
 <!--
 MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip this block.
 
-1. Fill the published pair after each preview build. Open Actions, then "Preview image",
-   then the run, then Summary. The job summary shows "Source commit" and "Image index
-   digest". Replace every occurrence of the two placeholders in this file:
+1. Fill the pair after each preview build. Open Actions, then "Preview image", then the
+   run, then Summary. The job summary shows "Source commit" and "Image index digest".
+   Replace every occurrence of the two placeholders in this file:
    - SOURCE_SHA in angle brackets: the full 40-character source commit.
    - INDEX_DIGEST in angle brackets: the multi-arch index digest, with its sha256: prefix.
    Leave the token published-index-digest-hex (in angle brackets, in step 4) as it is:
    it is the template token in docker-compose.preview.yml that the sed command in step 4
    replaces on the device. Never write a tag such as :preview in place of the digest.
-   There are no release tags in stage 1.
+   There are no release tags in stage 1. Until a pair is filled, the guide is not usable;
+   the unfilled placeholders make its commands fail closed.
 
-2. Not yet verified on real hardware or live services [미확인]:
+2. Open decisions:
+   - Docker group. Spec 4.2 step 3 says the agent gets no membership in the docker group.
+     In tiers A and B the person's account joins it and the agent runs as that account,
+     so the agent can control Docker while it is installed. The guide states this as a
+     known exception ("Known gap" under the install plan). Pending a maintainer decision.
+   - Scope. The guided commands assume a Debian-family system (dpkg, apt, GitHub's Debian
+     package repository). Supported: Raspberry Pi OS on Pi 4/5, and Debian or Ubuntu on
+     amd64. Other 64-bit distributions are listed as should-work, with the tools installed
+     from their own instructions.
+
+3. Not yet verified on real hardware or live services [미확인]:
    - Anonymous GHCR access for verify-image: pull token, referrers, bundle blob and its one
      redirect; gh reading the image from the registry with no account (docs/install-cli.md,
      "Still to verify once the first preview image exists").
@@ -25,7 +36,8 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
    - Whether Raspberry Pi OS gives the first user sudo without a password. If it does,
      tier A relies on the assistant's rule never to run sudo.
    - sudo raspi-config nonint do_ssh 1 turns SSH fully off on current Raspberry Pi OS,
-     including any socket activation, so doctor ssh_policy passes.
+     including any socket activation, so doctor ssh_policy passes. On Debian and Ubuntu,
+     the systemctl command in step 8 for ssh.socket and ssh.service does the same.
    - Tier A memory: the spec says an agent CLI on the device needs about 4 GB; confirm
      against the vendors' docs. Minimum RAM for the hub itself is not measured yet.
    - Agent removal (step 8, tier A) is not tested per CLI. The folder list comes from
@@ -34,24 +46,40 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
    - The kiosk items in docs/install-cli.md, "Still to verify on real hardware".
    - Doctor's GET to the container address over Docker's bridge on the Pi.
    - The preview backup command in "Existing install / update" (stage 0.3 restore drill).
-   - The supported-device list: Pi 4/5 are the intended tested path; the stage 1 hardware trials (T1, T2)
-     have not run yet.
+   - The supported-device list: Pi 4/5 are the intended path; the stage 1 hardware trials
+     (T1, T2) have not run yet. Say "tested" only after they pass.
 -->
 
 # Install Sproutwall with an AI assistant
 
-This guide puts Sproutwall on a Raspberry Pi (or another 64-bit Linux computer) and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
+This guide puts Sproutwall on a Raspberry Pi, or on another 64-bit computer running Debian or Ubuntu, and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
 
 The hub needs no cloud account and no subscription. Nothing in this guide signs in to anything. The only GitHub tool used, `gh`, runs without an account.
 
-**This guide installs one published preview:**
+**The preview this guide pins.** The guide installs one preview build, named by two values. The maintainers fill them in after each preview build:
 
 | | |
 | --- | --- |
 | Source commit | `<SOURCE_SHA>` |
 | Image index digest | `<INDEX_DIGEST>` |
 
-If those two values still show as `<SOURCE_SHA>` and `<INDEX_DIGEST>`, no preview has been published yet. Stop here and use the [manual install in the README](README.md#install-at-home) instead.
+While these still read `<SOURCE_SHA>` and `<INDEX_DIGEST>`, this guide cannot be used yet. The commands that need them fail on purpose, and nothing starts. Use the [manual install in the README](README.md#install-at-home) instead.
+
+## First: is Sproutwall already on this device?
+
+Step 1 erases the card. Never erase a card or disk that may hold a hub's household.
+
+- **A new Pi, or a blank card:** carry on with this guide.
+- **This device already runs Sproutwall or Family Hub:** don't put a new system on it, and don't use this guide on it. Back up, then update in place, as [Existing install / update](#existing-install--update) says. Keep the data volume.
+- **Not sure:** check first, without erasing anything. Start the device as it is. If it starts to a desktop or a login prompt, open a terminal and run:
+
+  ```bash
+  ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker ps -a --format '{{.Names}}'; docker volume ls -q
+  ```
+
+  A hub is there if any line mentions `sproutwall`, `family-hub` or `familyhub-data`: follow the existing-install path. If `docker` says permission denied, Docker is installed and a hub may be there: erase nothing until it has been checked and backed up. If `docker` is not found and neither folder exists, there is no hub on this system.
+
+Before you ever put a new system on a card that holds a hub, back it up with the README's [Back up](README.md#back-up) steps and copy the backup file off the device.
 
 ## Start here: what to tell your AI
 
@@ -65,28 +93,32 @@ A chat-only AI cannot open your Pi. Give it the repository address too, `https:/
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
 
-1. **Questions.** Ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
-2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group.
+1. **Questions.** Before step 1, make sure the device holds no hub ([First](#first-is-sproutwall-already-on-this-device)). Check it yourself when you can, and ask only if you cannot; this safety check is not one of the five decisions. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
+2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
 5. **The image.** Start only the image that `verify-image` verified, and only after it exits 0. Never skip verification. Never pull or run the `:preview` tag. Never sign in to `gh` and never set a GitHub token. In this install, always run `docker compose` with `-f docker-compose.preview.yml`. The only change to the checkout is the one image line in step 4.
 6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and the short status each step names, such as an exit code, `healthy` or `Result: ok`. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
 7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
 8. **Data.** Never run `docker compose down -v` or `docker volume rm`, and never delete the `sproutwall` folder. The household lives in the Docker volume.
-9. **Leave.** At the end, remove yourself as step 8 shows for your tier, and say that you did.
+9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: the temporary key is removed at both ends, and SSH is closed and turned off. Tier C: nothing to remove. Show the person how, and say when it is done.
 
 With a chat-only AI (tier C), give one block at a time and wait for its short result before the next.
 
 ## Supported devices
 
-**Supported (the tested path):**
+The guided steps cover 64-bit Debian-family systems: Raspberry Pi OS, Debian and Ubuntu.
+
+**Supported (the intended path; its hardware trials have not run yet):**
 
 - Raspberry Pi 5 and Raspberry Pi 4, running Raspberry Pi OS (64-bit) with desktop. This is the path this guide describes, including the screen setup tool.
-- amd64 mini PCs and laptops with a 64-bit Linux and Docker. The hub only: set up the screen by hand ([Kiosk on other devices](docs/raspberry-pi.md#kiosk-on-other-devices)).
+- amd64 mini PCs and laptops running 64-bit Debian or Ubuntu, with Docker. The hub only: set the screen up by hand ([Kiosk on other devices](docs/raspberry-pi.md#kiosk-on-other-devices)).
 
 **Should work, not tested yet:**
 
-- Raspberry Pi 400 and 500, screens built on Compute Module 4 or 5, and other arm64 boards with a 64-bit Linux.
+- Raspberry Pi 400 and 500, and screens built on Compute Module 4 or 5, with Raspberry Pi OS (64-bit).
+- Other arm64 boards with 64-bit Debian or Ubuntu.
+- Other 64-bit Linux distributions, arm64 or amd64. The hub image runs there, but this guide's install commands do not. Install Git, Docker Engine with Compose, and `gh` 2.68.0 or newer with your distribution's own instructions and each vendor's official docs. Then continue at [Get the code at the pinned commit](#get-the-code-at-the-pinned-commit).
 
 **Not supported:**
 
@@ -94,7 +126,7 @@ With a chat-only AI (tier C), give one block at a time and wait for its short re
 
 **Memory.** The minimum memory for the hub is not measured yet. Tier A runs the AI tool on the device itself, which needs more memory: plan for about 4 GB or more.
 
-The hub itself runs on any 64-bit Linux with Docker. Only `setup kiosk` (step 7) is specific to Raspberry Pi OS with its standard desktop (labwc). On other devices, set up the screen by hand.
+The hub itself runs on any 64-bit Linux with Docker. Only `setup kiosk` (step 7) is specific to Raspberry Pi OS with its standard desktop (labwc). On other devices, set the screen up by hand.
 
 ## The five decisions
 
@@ -103,7 +135,7 @@ These are the only questions the install asks.
 1. **Who runs the commands?**
    - **A:** an AI tool runs in the device's own Terminal. SSH stays off.
    - **B:** an AI tool on your laptop connects to the device over SSH, with a temporary key, on your home network. The commands still run on the device.
-   - **C:** a chat-only AI. You paste one block at a time into the device's Terminal and tell it only the short result. Nothing is installed for the AI.
+   - **C:** a chat-only AI. You paste one block at a time into the device's Terminal and tell it only the short result. Nothing is installed for the AI, and no AI runs as your account on the device.
 2. **How does the screen hang?** Portrait is the default and the usual choice for a kitchen wall. You can also pick portrait turned the other way (`portrait-flipped`), `landscape`, `landscape-flipped`, or no kiosk (the hub then serves phones and tablets only). You don't need the screen's model number: the setup tool finds the one connected screen.
 3. **Do you approve the install plan?** The AI shows the [whole plan](#the-install-plan-decision-3) once before anything needs your password. It also asks you to confirm the home-network rule below. Your yes covers that plan only.
 4. **Your household.** On the hub's own screen, try it with the sample family (the Calders, a made-up family) or set up your own. You accept the device's time zone and choose the parent PIN yourself, privately. If you test a calendar, use a made-up one. The AI looks away during this step.
@@ -113,27 +145,37 @@ These are the only questions the install asks.
 
 ### The install plan (decision 3)
 
-You type each of these yourself in the device's Terminal; `sudo` asks for your password there. Steps 3, 7 and 8 show them in place.
+These are all the `sudo` commands this guide can lead to. You type each one yourself in the device's Terminal; `sudo` asks for your password there. The steps show them in place.
 
-| Command | Why | Undo |
-| --- | --- | --- |
-| `sudo apt update && sudo apt full-upgrade -y` | Bring the system up to date. | None needed (normal updates). |
-| `sudo apt install -y git` | Download the code. | `sudo apt remove git` |
-| Docker Engine and Compose from Docker's apt repository (step 3) | Runs the hub. | The Uninstall section of Docker's install page. Removing Docker's data folders also deletes the household. |
-| `sudo usermod -aG docker $USER` | Lets your user run Docker and the checks without `sudo`. Membership in this group is equal to administrator rights. | `sudo gpasswd -d $USER docker` |
-| GitHub CLI (`gh`) from GitHub's apt repository (step 3) | Checks the image's signature. No sign-in. | `sudo apt remove gh`, then delete `/etc/apt/sources.list.d/github-cli.list` and `/etc/apt/keyrings/githubcli-archive-keyring.gpg` |
-| `sudo reboot` (after step 3) | The `docker` group takes effect. | |
-| `sudo raspi-config nonint do_boot_behaviour B4` (step 7, only if `setup kiosk` prints it) | The desktop logs in by itself, so the screen comes back after a power cut. | `sudo raspi-config nonint do_boot_behaviour B3` |
-| `sudo reboot` (steps 7 and 8) | Check that everything starts by itself. | |
-| Tier B only: `sudo raspi-config nonint do_ssh 1` (step 8) | Turns the temporary SSH access off. | `sudo raspi-config nonint do_ssh 0` |
+| Command | Step | Why | Undo |
+| --- | --- | --- | --- |
+| `sudo apt update && sudo apt full-upgrade -y` | 3 | The normal system update. | Not reversible: updated packages are not rolled back. |
+| `sudo apt install -y git` | 3 | Download the code. | `sudo apt remove git` |
+| Docker's own apt commands, copied from Docker's install page: add Docker's signing key and package source, then install Docker Engine and the Compose plugin | 3 | Runs the hub. | The Uninstall section of the same Docker page. Deleting Docker's data folders, as that section shows, also deletes the household. |
+| `sudo usermod -aG docker $USER` | 3 | Lets your account run Docker and the checks without `sudo`. This group is equal to administrator rights (see the known gap below). | `sudo gpasswd -d $USER docker` |
+| The GitHub CLI block: installs `wget` if it is missing, adds GitHub's signing key `/etc/apt/keyrings/githubcli-archive-keyring.gpg` and package source `/etc/apt/sources.list.d/github-cli.list`, then installs `gh` | 3 | Checks the image's signature, with no sign-in. | `sudo apt remove gh`, then `sudo rm /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg` |
+| `sudo reboot` | 3, 7, 8 | After step 3, so the `docker` group takes effect; later, to check that everything starts by itself. | Nothing to undo. |
+| `sudo raspi-config nonint do_boot_behaviour B4` | 7, only if `setup kiosk` prints it | The desktop logs in by itself, so the screen comes back after a power cut. | `sudo raspi-config nonint do_boot_behaviour B3` (`setup kiosk --undo` prints it). |
+| `sudo raspi-config` menus for screen blanking and desktop autologin | 7, only if you set the screen up [by hand](docs/raspberry-pi.md#set-it-up-by-hand) | Keeps the screen lit and logs in by itself. | The same menus. |
+| `sudo raspi-config nonint do_ssh 1` | Tier B on Raspberry Pi OS: 8, or on an early stop | Turns the temporary SSH access off. | `sudo raspi-config nonint do_ssh 0` |
+| `sudo systemctl disable --now ssh.socket ssh.service` | Tier B on Debian or Ubuntu: 8, or on an early stop | The same, on those systems. | `sudo systemctl enable --now ssh.service` (or `ssh.socket` on a system that used it) |
+| The AI tool's own uninstall command, only if its maker's instructions use `sudo` | Tier A: 8, or on an early stop | Removes the install-only AI tool. | Nothing to undo. |
+
+Installing the AI tool itself (tier A, step 2) comes before this plan, with its maker's own instructions.
 
 Other changes, without `sudo`:
 
 - The `sproutwall` folder in your home folder, and the household's Docker volume. Keep both.
 - The screen setup (step 7) writes a few files in your home folder. `./scripts/sproutwall setup kiosk --undo` puts them back ([Undo the kiosk](#undo-the-kiosk)).
-- Temporary access, removed in step 8: tier A, the AI tool and its settings folders; tier B, the temporary SSH key at both ends and SSH itself; tier C, nothing on the device.
+- Temporary access, removed in step 8 or on an early stop: tier A, the AI tool and its settings folders; tier B, the temporary SSH key at both ends and SSH itself; tier C, nothing on the device.
+
+#### Known gap: the AI and the docker group
+
+This is a known exception to the install spec, pending a decision by the maintainers. The spec says the assistant gets no membership in the `docker` group. But `doctor` needs your own account to reach Docker, so step 3 adds your account to that group, and anyone who can use that group can control Docker, which is the same as administrator rights. In tiers A and B the AI runs as your account, so it has that power too for as long as it is installed, also after a reboot. Tier C avoids this: no AI runs on the device. Removing the AI in step 8, or whenever the install stops, ends it.
 
 ## Step 1: Put the system on the card
+
+Do this only on a card with no hub on it ([First](#first-is-sproutwall-already-on-this-device)).
 
 1. On another computer, install [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 2. **Tier B only, first:** on your laptop, make a temporary key. It asks for a passphrase; you may leave it empty, because the key is deleted at the end.
@@ -153,7 +195,7 @@ Other changes, without `sudo`:
 5. Let Imager write and verify the card, then eject it.
 6. With the Pi switched off, connect the screen and its touch connection following the screen's own instructions. Insert the card and switch on. The first start takes a few minutes.
 
-**Other devices:** install a 64-bit Linux with its own installer, with SSH off unless you use tier B.
+**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, on a disk with no hub on it, with SSH off unless you use tier B.
 
 ## Step 2: Open the session
 
@@ -175,16 +217,33 @@ Answer `yes` only if the `ED25519 key fingerprint` it shows is exactly the one t
 
 **Tier C.** On the Pi's desktop, open **Terminal**. Open your chat AI in the Pi's web browser, so you can copy each block into the Terminal.
 
-**All tiers.** Check that this is a 64-bit system:
+**All tiers: check that this is a 64-bit system.** On a Raspberry Pi:
 
 ```bash
 test "$(dpkg --print-architecture)" = arm64 && test "$(uname -m)" = aarch64 && echo "64-bit OK"
 tr -d '\0' </proc/device-tree/model; echo
 ```
 
-It must print `64-bit OK` and a model that starts with `Raspberry Pi 4` or `Raspberry Pi 5`. A Pi 400, 500 or Compute Module is untested. On an amd64 computer, check `amd64` and `x86_64` instead, and skip the model line.
+It must print `64-bit OK` and a model that starts with `Raspberry Pi 4` or `Raspberry Pi 5`. A Pi 400, 500 or Compute Module is untested.
+
+On an amd64 computer with Debian or Ubuntu:
+
+```bash
+test "$(dpkg --print-architecture)" = amd64 && test "$(uname -m)" = x86_64 && echo "64-bit OK"
+```
+
+On a Linux without `dpkg` (another distribution), check the same two things that `doctor` checks there:
+
+```bash
+uname -m
+python3 -c 'import platform; print(platform.architecture()[0])'
+```
+
+The first line must be `aarch64` or `x86_64`, and the second `64bit`.
 
 ## Step 3: Install the tools and get the code
+
+### Install the tools
 
 You run these `sudo` commands yourself, as approved in decision 3. Tier A: open a second Terminal window for them.
 
@@ -193,13 +252,13 @@ sudo apt update && sudo apt full-upgrade -y
 sudo apt install -y git
 ```
 
-**Docker.** Install Docker Engine and Compose from Docker's own apt repository, as described in [Step 3 of the Pi guide](docs/raspberry-pi.md#step-3-install-docker). 64-bit Raspberry Pi OS uses Docker's [Debian instructions](https://docs.docker.com/engine/install/debian/), "Install using the `apt` repository". Don't use Docker's convenience script. On another Linux, use Docker's page for your distribution. Then:
+**Docker.** Install Docker Engine and Compose from Docker's own apt repository, as described in [Step 3 of the Pi guide](docs/raspberry-pi.md#step-3-install-docker). 64-bit Raspberry Pi OS and Debian use Docker's [Debian instructions](https://docs.docker.com/engine/install/debian/), "Install using the `apt` repository". On Ubuntu, use Docker's page for Ubuntu, linked from [Docker's install overview](https://docs.docker.com/get-docker/). Don't use Docker's convenience script. Then:
 
 ```bash
 sudo usermod -aG docker $USER
 ```
 
-**GitHub CLI (`gh`).** The image check needs `gh` 2.68.0 or newer. Debian's and Raspberry Pi OS's own `gh` packages are too old, so install it from GitHub's own apt repository. GitHub's Linux install page is linked from <https://cli.github.com>, and the steps are in [install_linux.md](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), section Debian. Check the current instructions there. At the time of writing they are:
+**GitHub CLI (`gh`).** The image check needs `gh` 2.68.0 or newer. The `gh` packages that Debian, Ubuntu and Raspberry Pi OS ship are too old, so install it from GitHub's own apt repository. GitHub's Linux install page is linked from <https://cli.github.com>, and the steps are in [install_linux.md](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), section Debian, which covers Debian, Ubuntu and Raspberry Pi OS. Check the current instructions there. At the time of writing they are:
 
 ```bash
 (type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
@@ -223,7 +282,7 @@ sudo reboot
 
 After the restart, open the Terminal again. Tier A: start the AI tool again and say "Continue the Sproutwall install at step 3, the checks." Tier B: connect with the same `ssh` command.
 
-**Check the tools:**
+### Check the tools
 
 ```bash
 python3 --version
@@ -235,7 +294,7 @@ gh attestation verify --help >/dev/null && echo "gh attestation OK"
 
 You need Python 3.11 or newer, Docker Compose v2 or newer, `Docker OK`, `gh` 2.68.0 or newer and `gh attestation OK`.
 
-**Check for an existing hub.** This must print nothing:
+**Check again for an existing hub,** now that Docker is installed. This must print nothing:
 
 ```bash
 ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker volume ls -q | grep familyhub-data
@@ -243,7 +302,7 @@ ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker volume ls -q | grep familyhu
 
 If it prints anything, this device already has a hub. Stop and read [Existing install / update](#existing-install--update).
 
-**Get the code at the published commit:**
+### Get the code at the pinned commit
 
 ```bash
 cd ~
@@ -257,7 +316,7 @@ It must print `Source OK`. Don't run anything from the checkout until it does.
 
 ## Step 4: Check the image before starting it
 
-The code at this commit holds a template in place of the image digest, because a commit cannot contain the digest of the image built from it. This writes the published digest into that one line:
+The code at this commit holds a template in place of the image digest, because a commit cannot contain the digest of the image built from it. This writes the pinned digest into that one line:
 
 ```bash
 cd ~/sproutwall
@@ -274,13 +333,13 @@ Now check the image. Run it from this folder, the checkout's top folder:
 echo "exit $?"
 ```
 
-It reads the image that `docker-compose.preview.yml` would start, confirms it is the published digest, downloads the image's signed build record (attestation) without an account, and has `gh` check that GitHub built it from the published commit with this repository's workflow. It starts nothing.
+It reads the image that `docker-compose.preview.yml` would start, confirms it is the pinned digest, downloads the image's signed build record (attestation) without an account, and has `gh` check that GitHub built it from the pinned commit with this repository's workflow. It starts nothing.
 
 | Exit | Meaning | What to do |
 | --- | --- | --- |
 | 0 | Verified. It prints the digest, the workflow, the commit and the start command. | Go to step 5. |
 | 1 | Not verified: the signature check failed or timed out. | Stop. Don't start the hub. |
-| 2 | Refused before checking: wrong folder, a mistyped value, or the compose file does not match the published digest. | Check that you are in `~/sproutwall` and copied both values exactly. |
+| 2 | Refused before checking: wrong folder, a mistyped value, or the compose file does not match the pinned digest. | Check that you are in `~/sproutwall` and copied both values exactly. |
 | 3 | `gh` is missing or older than 2.68.0. | Install `gh` from GitHub's repository (step 3). |
 | 4 | The signed build record could not be downloaded, or failed its own checks. | Check the internet connection, wait, run it again. |
 | 5 | Its temporary files could not be removed. The image counts as not verified. | Delete the `sproutwall-verify-*` folders in the system's temporary folder (usually `/tmp`), then run it again. |
@@ -344,7 +403,7 @@ Same rule as before: exit 0, or exit 2 with only `app_bind` / `confirm_trusted_l
 
 ## Step 7: Set up the screen
 
-Skip this step if you chose no kiosk in decision 2, or on a device other than a Raspberry Pi (set the screen up [by hand](docs/raspberry-pi.md#kiosk-on-other-devices) instead).
+Skip this step if you chose no kiosk in decision 2, or on a device other than a Raspberry Pi with Raspberry Pi OS (set the screen up [by hand](docs/raspberry-pi.md#kiosk-on-other-devices) instead).
 
 Run it as yourself, without `sudo`, while you are logged in to the Pi's desktop:
 
@@ -378,7 +437,7 @@ If `setup kiosk` stops, it prints one line saying why. Exit 1 after setup means 
 
 ## Step 8: Remove the assistant and check once more
 
-The AI's last job is to show you this step for your tier. Then it ends its session, and you run the rest yourself.
+The AI's last job is to show you this step for your tier. Then it ends its session, and you run the rest yourself. The same removal applies whenever the install stops early: on a doctor `fail`, on an unexpected `unknown`, or when you end the session.
 
 **Tier A.** In the Pi's Terminal:
 
@@ -407,7 +466,7 @@ The final check below looks for these tools, their folders and any autostart ent
    sudo raspi-config nonint do_ssh 1
    ```
 
-   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay. On another Linux, turn SSH off with `sudo systemctl disable --now ssh`.
+   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay. On Debian or Ubuntu, turn SSH off with `sudo systemctl disable --now ssh.socket ssh.service` instead of the `raspi-config` line.
 3. On the laptop, confirm the old key no longer gets in. This must fail:
 
    ```bash
@@ -422,7 +481,7 @@ The final check below looks for these tools, their folders and any autostart ent
 
 **Tier C.** Nothing was installed for the AI. You may paste the final check's output into the chat, then close the chat.
 
-**The final check, all tiers.** In the Pi's own Terminal, with your tier letter. Use `--kiosk off` instead of `--kiosk on` if you chose no kiosk or set the screen up by hand:
+**The final check, all tiers.** In the device's own Terminal, with your tier letter. Use `--kiosk off` instead of `--kiosk on` if you chose no kiosk or set the screen up by hand:
 
 ```bash
 cd ~/sproutwall
@@ -431,24 +490,44 @@ cd ~/sproutwall
 
 It passes with `"result":"pass"` (exit 0), or with `"result":"unknown"` (exit 2) when the only unknown is `app_bind` / `confirm_trusted_lan`. Without `--json` it prints the same result as readable text, ending with `Result:`.
 
-Finally, restart with `sudo reboot`. The hub must come back on the screen by itself, with no assistant. You are done. Keep the `sproutwall` folder: it is the hub's folder.
+Finally, restart with `sudo reboot`, then check once more, with no assistant:
+
+- **With the kiosk:** the hub comes back on the screen by itself.
+- **Without the kiosk** (no kiosk, or a screen set up by hand): in the Terminal, run the two checks below. `ps` must show `healthy`, and the health check must print `"ok":true`. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
+
+  ```bash
+  cd ~/sproutwall
+  docker compose -f docker-compose.preview.yml ps
+  curl -fsS --max-time 3 http://127.0.0.1:3847/api/health
+  ```
+
+You are done. Keep the `sproutwall` folder: it is the hub's folder.
 
 ## If something goes wrong
 
-Each doctor check that is not `pass` names one action:
+Each doctor check that is not `pass` names one action. The same action can come from different checks, so read both the check `id` and its `action` in the output:
 
-| Action | What it means | What to do |
-| --- | --- | --- |
-| `use_supported_os` | Not a 64-bit Linux the image supports. | Put a 64-bit system on the card ([Supported devices](#supported-devices)). |
-| `verify_release` | The running image is not the verified preview. | `docker compose -f docker-compose.preview.yml stop`, repeat step 4, start again only after exit 0. |
-| `restore_storage` | The data volume or database is not as expected. | Don't start a new volume and don't delete anything. Use the README's [backup and restore](README.md#back-up-and-update), or get help. |
-| `restrict_ports` | A port is reachable beyond the home network. | Stop the hub now with `docker compose -f docker-compose.preview.yml stop`. Check the router for port forwards and tunnels. Get help. Don't change the port or turn the check off. |
-| `confirm_trusted_lan` | The hub is on your home network, and the device cannot prove the router forwards nothing. | Expected. Continue only if it is the only unknown and you confirmed the home-network rule in decision 3. |
-| `review_ssh` | SSH is on, or it allows passwords. | Stop. Tiers A and C expect SSH off; tier B, key-only until step 8, then off. Turning SSH off (`sudo raspi-config nonint do_ssh 1`) is a privileged change outside the approved plan for A and C, so it needs your own new decision. |
-| `open_hub` | First-run setup is not finished. | Open the hub on the Pi and finish setup (step 6). |
-| `repair_kiosk` | The screen launcher is not in the state you chose. | `./scripts/sproutwall setup kiosk --check`, then `setup kiosk` (on) or `setup kiosk --off`. Check that `--kiosk` matches your choice. |
-| `remove_agent` | The AI tool, its folders or autostart entry, or an SSH session is still there. | Repeat step 8 for your tier, and close every SSH session. |
-| `retry_local` | The check could not finish. | Wait a minute and run it again in the Pi's own Terminal, as your user. If it repeats, stop and get help. Don't work around it. |
+| Check | Action | What it means | What to do |
+| --- | --- | --- | --- |
+| `platform` | `use_supported_os` | The system or CPU is not 64-bit Linux (for example a 32-bit system). | Put a 64-bit system on the card ([Supported devices](#supported-devices)), but only on a card with no hub data, or only after a [backup](README.md#back-up). |
+| `docker` | `use_supported_os` | Docker Compose is missing or older than v2. | Install or upgrade Docker Engine and Compose (step 3). Never put a new system on the card for this. |
+| `docker` | `retry_local` | Docker is not running, or your account cannot reach it yet. | Check `docker info`. If you just joined the `docker` group, restart first (step 3). Then run the check again. |
+| `image_identity` | `verify_release` | The running image, or the compose file, is not the verified preview. | `docker compose -f docker-compose.preview.yml stop`, repeat step 4, and start again only after exit 0. |
+| `storage` | `restore_storage` | The data volume, photos folder or database is not as expected. | Don't start a new volume and don't delete anything. Use the README's [backup and restore](README.md#back-up-and-update), or get help. |
+| `health` | `restore_storage` | The database is blocked (the hub answers 503 with a reason). | Stop. Don't start a new volume. Read `docker compose -f docker-compose.preview.yml logs` yourself, then get help. |
+| `health` | `retry_local` | The hub is not healthy yet, or answered in an unexpected way. | Wait a minute and run it again. If it repeats, stop and get help. |
+| `app_bind` | `restrict_ports` | Port 3847 is reachable beyond the home network. | Stop the hub now with `docker compose -f docker-compose.preview.yml stop`. Check the router for port forwards and tunnels. Get help. Don't change the port or turn the check off. |
+| `app_bind` | `confirm_trusted_lan` | The hub is on your home network, and the device cannot prove the router forwards nothing. | Expected. Continue only if it is the only unknown and you confirmed the home-network rule in decision 3. |
+| `bridge_bind` | `restrict_ports` | The Ask bridge port 8787 is published or listens beyond the container. | Stop the hub now. `git status --short` must show only the one image line changed (step 4). Get help. |
+| `ssh_policy` | `review_ssh` | SSH is on, allows passwords, or its settings could not be read. | Stop. Tiers A and C expect SSH off; tier B, key-only until step 8, then off. Turning SSH off (`sudo raspi-config nonint do_ssh 1`) is a privileged change outside the approved plan for A and C, so it needs your own new decision. |
+| `setup` | `open_hub` | First-run setup is not finished. | Open the hub on the device and finish setup (step 6). |
+| `read_guard` | `open_hub` | Setup is not finished, so the hub still answers without a PIN. | Finish setup now (step 6). |
+| `read_guard` | `verify_release` | Setup is finished, but the hub answers without a PIN: the screen lock is off. | Stop the hub. `git status --short` must show only the one image line changed. Repeat step 4. Never set `REQUIRE_AUTH_FOR_READS` to `0`. |
+| `kiosk` | `repair_kiosk` | The screen launcher is not in the state you chose. | `./scripts/sproutwall setup kiosk --check`, then `setup kiosk` (on) or `setup kiosk --off`. Check that `--kiosk` matches your choice. |
+| `temporary_access` | `remove_agent` | The AI tool, its folders or autostart entry, or an SSH session is still there. | Repeat step 8 for your tier, and close every SSH session. |
+| any check | `retry_local` | The check could not finish. | Wait a minute and run it again in the device's own Terminal, as your user. If it repeats, stop and get help. Don't work around it. |
+
+When the install stops here, the AI still removes itself as step 8 shows.
 
 To get help, open an issue in the repository with the `doctor --json` output only: no logs, names or links. Report security problems privately as [SECURITY.md](SECURITY.md) says.
 
@@ -478,6 +557,6 @@ If `--undo` refuses because a file was changed after setup (for example in Contr
 
 ## Without AI
 
-Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the Pi's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
+Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
 
-For a hub that builds on the device instead of using the published image, see the [Raspberry Pi guide](docs/raspberry-pi.md).
+For a hub that builds on the device instead of using the prebuilt image, see the [Raspberry Pi guide](docs/raspberry-pi.md).
