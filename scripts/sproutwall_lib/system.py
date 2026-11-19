@@ -219,12 +219,15 @@ class System:
         return env
 
     def kill(self, pid, sig):
-        """Send sig to pid. False when the process is gone or not ours."""
+        """Send sig to pid: "sent", "gone" (ESRCH: it has exited) or
+        "denied" (EPERM or any other failure)."""
         try:
             os.kill(int(pid), sig)
+        except ProcessLookupError:
+            return "gone"
         except OSError:
-            return False
-        return True
+            return "denied"
+        return "sent"
 
     def sleep(self, seconds):
         time.sleep(seconds)

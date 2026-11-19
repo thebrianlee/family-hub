@@ -34,7 +34,6 @@ Sources for the Raspberry Pi OS desktop facts used below:
 """
 
 import fnmatch
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -143,14 +142,22 @@ def _overrides_config(argv, options):
     return False
 
 
+DEFAULT_CONFIG_DIRS = "/etc/xdg"
+
+
 def _config_env_ok(env, home):
-    """The session environment uses this home folder and the default
-    ~/.config (no XDG_CONFIG_HOME, or exactly ~/.config)."""
+    """The session environment uses this home folder and the default config
+    places: XDG_CONFIG_HOME unset or exactly ~/.config, and XDG_CONFIG_DIRS
+    unset, empty (the XDG default) or exactly /etc/xdg, where this tool
+    reads the system labwc files."""
     session_home = env.get("HOME")
     if not isinstance(session_home, str) or os.path.normpath(session_home) != os.path.normpath(home):
         return False
     config = env.get("XDG_CONFIG_HOME")
-    return config is None or os.path.normpath(config) == os.path.join(os.path.normpath(home), ".config")
+    if config is not None and os.path.normpath(config) != os.path.join(os.path.normpath(home), ".config"):
+        return False
+    dirs = env.get("XDG_CONFIG_DIRS")
+    return dirs is None or dirs == "" or (":" not in dirs and os.path.normpath(dirs) == DEFAULT_CONFIG_DIRS)
 
 
 def find_session(system):
@@ -314,7 +321,9 @@ def parse_wlr_randr_json(text):
     authoring sandbox could not reach the upstream repository, so a ValueError
     here makes the caller use the plain-text output instead.
     """
-    data = json.loads(text)
+    from .kiosk import loads_strict
+
+    data = loads_strict(text)  # duplicate keys or NaN: AmbiguousJSON (a ValueError)
     if not isinstance(data, list):
         raise ValueError("not a list")
     outputs = []
@@ -413,6 +422,7 @@ def read_outputs(system, session):
     plain output of `wlr-randr`. Raises OutputsUnreadable("missing") when
     wlr-randr is not installed and CannotTell when it fails or its answer
     does not parse."""
+    from .kiosk import AmbiguousJSON
     from .system import command_env
 
     env = command_env()
@@ -423,6 +433,8 @@ def read_outputs(system, session):
     if result.rc == 0:
         try:
             return parse_wlr_randr_json(result.out)
+        except AmbiguousJSON as error:
+            raise CannotTell("wlr-randr") from error  # a duplicate key: never guessed
         except (ValueError, TypeError):
             pass  # an older wlr-randr without --json, or an unexpected shape
     result = system.run(["wlr-randr"], timeout=10.0, env=env)

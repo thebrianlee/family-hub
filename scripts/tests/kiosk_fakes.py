@@ -5,13 +5,22 @@ fakes; the user's own files live in a real temporary home folder. Only the
 fictional sample household is used.
 """
 
+import errno
 import json
 import os
 import re
+import secrets
 import signal
+import sys
 import tempfile
+from unittest import mock
+
+from sproutwall_lib import kiosk_files as kf
 
 from .fakes import FakeSystem, ok
+
+LINUX = sys.platform.startswith("linux")
+LINUX_ONLY = "needs Linux (renameat2, listxattr and /proc), as the kiosk itself does"
 
 UID = 1000
 LABWC_PID = 900
@@ -218,7 +227,9 @@ class KioskPi(FakeSystem):
         return ok(wlr_randr_text(self.outputs))
 
     def kill(self, pid, sig):
-        super().kill(pid, sig)
+        result = super().kill(pid, sig)
+        if result != "sent":
+            return result
         if pid == KANSHI_PID and sig == signal.SIGHUP:
             path = os.path.join(self.home_dir, ".config", "kanshi", "config")
             try:
@@ -238,7 +249,52 @@ class KioskPi(FakeSystem):
             else:
                 for item in self.outputs:
                     item["transform"] = "normal"
+        return "sent"
+
+
+def _exists(dir_fd, name):
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
         return True
+    except FileNotFoundError:
+        return False
+
+
+def fake_renameat2(src_dir_fd, src, dst_dir_fd, dst, flags):
+    """renameat2(2) for test runs on systems without it (macOS): the same
+    results and errors as the real call for one process at a time
+    (RENAME_NOREPLACE: FileExistsError if dst exists; RENAME_EXCHANGE: both
+    names must exist, FileNotFoundError otherwise), but not atomic.
+    tests/test_kiosk_files.py compares it with the real call on Linux."""
+    if not _exists(src_dir_fd, src):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+    if flags == kf.RENAME_NOREPLACE:
+        if _exists(dst_dir_fd, dst):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST))
+        os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    elif flags == kf.RENAME_EXCHANGE:
+        if not _exists(dst_dir_fd, dst):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT))
+        tmp = ".fake-exchange-" + secrets.token_hex(6)
+        os.rename(src, tmp, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
+        os.rename(dst, src, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
+        os.rename(tmp, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    else:
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+
+
+def portable(test):
+    """Where renameat2 or listxattr is missing (macOS), use fake_renameat2
+    and "no extended attributes", so the logic runs there too. On Linux the
+    real calls run."""
+    if kf._renameat2_function() is None:
+        patch = mock.patch.object(kf, "renameat2", side_effect=fake_renameat2)
+        patch.start()
+        test.addCleanup(patch.stop)
+    if not hasattr(os, "listxattr"):
+        patch = mock.patch.object(kf, "_xattrs", return_value=())
+        patch.start()
+        test.addCleanup(patch.stop)
 
 
 def temp_home(test, name="home"):
@@ -250,7 +306,7 @@ def temp_home(test, name="home"):
 
 
 def tree(root):
-    """{relative path: (kind, mode, bytes or link target)} for everything under root."""
+    """{relative path: (kind, mode, bytes or link target, uid, gid)} for everything under root."""
     found = {}
     for base, dirs, files in os.walk(root):
         for name in dirs + files:
@@ -258,12 +314,12 @@ def tree(root):
             rel = os.path.relpath(path, root)
             st = os.lstat(path)
             if os.path.islink(path):
-                found[rel] = ("link", 0, os.readlink(path))
+                found[rel] = ("link", 0, os.readlink(path), st.st_uid, st.st_gid)
             elif os.path.isdir(path):
-                found[rel] = ("dir", st.st_mode & 0o7777, None)
+                found[rel] = ("dir", st.st_mode & 0o7777, None, st.st_uid, st.st_gid)
             else:
                 with open(path, "rb") as handle:
-                    found[rel] = ("file", st.st_mode & 0o7777, handle.read())
+                    found[rel] = ("file", st.st_mode & 0o7777, handle.read(), st.st_uid, st.st_gid)
     return found
 
 

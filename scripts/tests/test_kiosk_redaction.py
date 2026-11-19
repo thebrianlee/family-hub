@@ -47,13 +47,17 @@ EXPECTED_VALUES = {
     "running": {"yes", "no", "unknown"},
     "output": {"one", "none", "several", "unsupported_connector", "unknown"},
     "orientation": {"portrait", "portrait-flipped", "landscape", "landscape-flipped", "none", "unknown"},
-    "rotation": {"applied", "not_applied", "unknown"},
-    "touch": {"mapped", "not_mapped", "unknown"},
+    "rotation": {"applied", "not_applied", "none", "unknown"},
+    "touch": {"mapped", "not_mapped", "none", "unknown"},
     "blanking": {"off", "on", "system", "unknown"},
     "autologin": {"on", "off", "other_user", "unknown"},
 }
 LAUNCHER_FAILED = "sproutwall-kiosk: stopped by an unexpected error.\n"
 LAUNCHER_NOT_SET_UP = "sproutwall-kiosk: the kiosk is not set up here. Run ./scripts/sproutwall setup kiosk.\n"
+LAUNCHER_UNSAFE = (
+    "sproutwall-kiosk: the kiosk's state folder holds a link or a file setup did not make; not starting. "
+    "Run ./scripts/sproutwall setup kiosk --check.\n"
+)
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(SCRIPTS)
 BOOTSTRAP = os.path.join(SCRIPTS, "sproutwall")
@@ -61,10 +65,12 @@ ACTIONS = ([], ["--check"], ["--check", "--json"], ["--off"], ["--check"], [], [
 
 
 class SeededPi(kfk.KioskPi):
-    """The fake desktop, with the seed in every input it hands out."""
+    """The fake desktop, with the seed in every input it hands out. stages
+    records the steps a run reached that reads and calls do not show."""
 
     def __init__(self, home):
         super().__init__(home, touch=kfk.usb_touch(TOUCH))
+        self.stages = []
         self.user = USER
         self.files["/etc/lightdm/lightdm.conf"] = kfk.lightdm(USER) + "# " + SEED + "\n"
         self.files["/etc/xdg/labwc/rc.xml"] = kfk.SYSTEM_RC.replace("</openbox_config>", "<!-- %s -->\n</openbox_config>" % SEED)
@@ -75,6 +81,58 @@ class SeededPi(kfk.KioskPi):
     def run(self, argv, timeout=15.0, env=None):
         result = super().run(argv, timeout, env)
         return CommandResult(result.rc, result.out, SEED + " " + self.home_dir, result.missing, result.timed_out)
+
+    def euid(self):
+        self.stages.append("euid")
+        return super().euid()
+
+    def log(self):
+        """What the run reached, as plain data (also written by the subprocess harness)."""
+        return {"reads": list(self.reads), "calls": [list(argv) for argv, _ in self.calls], "stages": list(self.stages)}
+
+
+def _crash(system):
+    def processes():
+        system.stages.append("processes")
+        raise RuntimeError(SEED + system.home_dir)
+
+    system.processes = processes
+
+
+RANDR = ["wlr-randr", "--json"]
+INPUT = "/proc/bus/input/devices"
+# The seeded fault matrix: (change, what a setup run must have reached, what
+# a --check run must have reached). --check never reads the input devices.
+SCENARIOS = {
+    "two touch inputs": (
+        lambda s: s.files.__setitem__(INPUT, kfk.usb_touch(TOUCH) + "\n" + kfk.usb_touch("Quinn B")),
+        lambda log: INPUT in log["reads"],
+        lambda log: "/etc/lightdm/lightdm.conf" in log["reads"],
+    ),
+    "no screen": (lambda s: setattr(s, "outputs", []), lambda log: RANDR in log["calls"], lambda log: RANDR in log["calls"]),
+    "two screens": (
+        lambda s: setattr(s, "outputs", [kfk.output_json("HDMI-A-1"), kfk.output_json("DSI-1")]),
+        lambda log: RANDR in log["calls"],
+        lambda log: RANDR in log["calls"],
+    ),
+    "root": (
+        lambda s: setattr(s, "euid_value", 0),
+        lambda log: log["stages"] == ["euid"] and log["calls"] == [],
+        lambda log: log["stages"] == ["euid"] and log["calls"] == [],
+    ),
+    "unreadable touch": (
+        lambda s: s.files.__setitem__(INPUT, PermissionError(13, SEED, s.home_dir)),
+        lambda log: INPUT in log["reads"],
+        lambda log: "/etc/lightdm/lightdm.conf" in log["reads"],
+    ),
+    "garbled screens": (
+        lambda s: (s.set(RANDR, CommandResult(0, SEED, SEED)), s.set(["wlr-randr"], CommandResult(0, SEED, SEED))),
+        lambda log: RANDR in log["calls"],
+        lambda log: RANDR in log["calls"],
+    ),
+    "crash": (_crash, lambda log: "processes" in log["stages"], lambda log: "processes" in log["stages"]),
+}
+MATRIX_ARGS = ([], ["--check"], ["--check", "--json"])
 
 
 def seeded_home(test):
@@ -129,6 +187,9 @@ class Assertions:
 
 
 class InProcessTests(Assertions, unittest.TestCase):
+    def setUp(self):
+        kfk.portable(self)
+
     def test_every_action(self):
         home = seeded_home(self)
         system = SeededPi(home)
@@ -148,41 +209,59 @@ class InProcessTests(Assertions, unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(home, kiosk.KIOSK_STATE_DIR)))
 
     def test_refusals_and_failures(self):
-        scenarios = {
-            "two touch inputs": lambda s: s.files.__setitem__("/proc/bus/input/devices", kfk.usb_touch(TOUCH) + "\n" + kfk.usb_touch("Quinn B")),
-            "no screen": lambda s: setattr(s, "outputs", []),
-            "two screens": lambda s: setattr(s, "outputs", [kfk.output_json("HDMI-A-1"), kfk.output_json("DSI-1")]),
-            "root": lambda s: setattr(s, "euid_value", 0),
-            "unreadable touch": lambda s: s.files.__setitem__("/proc/bus/input/devices", PermissionError(13, SEED, s.home_dir)),
-            "garbled screens": lambda s: (s.set(["wlr-randr", "--json"], CommandResult(0, SEED, SEED)), s.set(["wlr-randr"], CommandResult(0, SEED, SEED))),
-            "crash": lambda s: setattr(s, "processes", lambda: (_ for _ in ()).throw(RuntimeError(SEED + s.home_dir))),
-        }
-        for name, change in scenarios.items():
-            for args in ([], ["--check"], ["--check", "--json"]):
+        for name, (change, reached_setup, reached_check) in SCENARIOS.items():
+            for args in MATRIX_ARGS:
                 with self.subTest(name=name, args=args):
                     home = seeded_home(self)
                     system = SeededPi(home)
                     change(system)
+                    before = kfk.tree(home)
                     code, out, err, stray = run_in_process(["setup", "kiosk"] + args, system)
                     self.assertNotEqual(code, 0)
                     self.assert_clean(home, out, err, stray)
                     self.assertEqual(stray, "")
+                    self.assertEqual(kfk.tree(home), before)
                     if "--json" in args:
                         self.assert_check_json(out)
+                    reached = reached_check if "--check" in args else reached_setup
+                    self.assertTrue(reached(system.log()), ("stage not reached", name, args, system.log()))
 
 
 HARNESS = r'''
-import os, sys, logging, warnings
-repo, scripts, home, touch, user, seed, boot = sys.argv[1:8]
+import atexit, json, os, sys, logging, warnings
+repo, scripts, home, touch, user, seed, boot, scenario, log_file = sys.argv[1:10]
 sys.path.insert(0, scripts)
 sys.path.insert(0, repo)
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
 warnings.simplefilter("always")
 from scripts.tests import kiosk_fakes as kfk
-from scripts.tests.test_kiosk_redaction import SeededPi
+from scripts.tests.test_kiosk_redaction import SCENARIOS, SeededPi
+from sproutwall_lib import kiosk_files as kf
 import sproutwall_lib.cli as cli
-cli.System = lambda: SeededPi(home)
-sys.argv = [boot] + sys.argv[8:]
+
+if kf._renameat2_function() is None:  # as kfk.portable: macOS has no renameat2
+    kf.renameat2 = kfk.fake_renameat2
+if not hasattr(os, "listxattr"):
+    kf._xattrs = lambda fd: ()
+made = []
+
+
+def system():
+    pi = SeededPi(home)
+    if scenario != "none":
+        SCENARIOS[scenario][0](pi)
+    made.append(pi)
+    return pi
+
+
+def dump():
+    with open(log_file, "w", encoding="utf-8") as handle:
+        json.dump([pi.log() for pi in made], handle)
+
+
+atexit.register(dump)
+cli.System = system
+sys.argv = [boot] + sys.argv[10:]
 import runpy
 runpy.run_path(boot, run_name="__main__")
 '''
@@ -193,10 +272,19 @@ class EndToEndTests(Assertions, unittest.TestCase):
     its host: the process's real stdout and stderr, a DEBUG root logger on
     stderr and warnings switched on. The files are real, under HOME."""
 
-    def run_script(self, home, harness, *args):
+    def harness(self, home):
+        harness = os.path.join(os.path.dirname(os.path.dirname(home)), "harness.py")
+        with open(harness, "w", encoding="utf-8") as handle:
+            handle.write(HARNESS)
+        return harness
+
+    def run_script(self, home, harness, *args, scenario="none"):
         env = dict(os.environ, HOME=home, USER=USER, PYTHONDONTWRITEBYTECODE="1", SEED=SEED)
+        self.log_file = os.path.join(os.path.dirname(os.path.dirname(home)), "stages.json")
+        if os.path.exists(self.log_file):
+            os.unlink(self.log_file)
         proc = subprocess.run(
-            [sys.executable, harness, REPO, SCRIPTS, home, TOUCH, USER, SEED, BOOTSTRAP, "setup", "kiosk"] + list(args),
+            [sys.executable, harness, REPO, SCRIPTS, home, TOUCH, USER, SEED, BOOTSTRAP, scenario, self.log_file, "setup", "kiosk"] + list(args),
             env=env,
             cwd=REPO,
             stdin=subprocess.DEVNULL,
@@ -207,11 +295,15 @@ class EndToEndTests(Assertions, unittest.TestCase):
         )
         return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
+    def stages(self):
+        with open(self.log_file, encoding="utf-8") as handle:
+            logs = json.load(handle)
+        self.assertEqual(len(logs), 1, "one System per run")
+        return logs[0]
+
     def test_every_action_through_the_bootstrap(self):
         home = seeded_home(self)
-        harness = os.path.join(os.path.dirname(os.path.dirname(home)), "harness.py")
-        with open(harness, "w", encoding="utf-8") as handle:
-            handle.write(HARNESS)
+        harness = self.harness(home)
         results = []
         for args in ACTIONS:
             code, out, err = self.run_script(home, harness, *args)
@@ -227,6 +319,30 @@ class EndToEndTests(Assertions, unittest.TestCase):
         code, out, err = self.run_script(home, harness)
         self.assertEqual(code, 0, err)
         self.assertTrue(os.path.exists(os.path.join(home, kiosk.KIOSK_LAUNCHER)))
+        log = self.stages()
+        self.assertIn(INPUT, log["reads"])
+        self.assertIn(RANDR, log["calls"])
+
+    def test_the_fault_matrix_through_the_bootstrap(self):
+        """The same seeded faults as InProcessTests, through the real
+        bootstrap and cli in a subprocess; each run must reach the step
+        whose input it seeds, write nothing and leak nothing."""
+        for name, (_change, reached_setup, reached_check) in SCENARIOS.items():
+            for args in MATRIX_ARGS:
+                with self.subTest(name=name, args=args):
+                    home = seeded_home(self)
+                    harness = self.harness(home)
+                    before = kfk.tree(home)
+                    code, out, err = self.run_script(home, harness, *args, scenario=name)
+                    self.assertNotEqual(code, 0, (name, args))
+                    self.assertNotIn("Traceback", err)
+                    self.assert_clean(home, out, err)
+                    self.assertEqual(kfk.tree(home), before)
+                    if "--json" in args:
+                        self.assert_check_json(out)
+                    reached = reached_check if "--check" in args else reached_setup
+                    log = self.stages()
+                    self.assertTrue(reached(log), ("stage not reached", name, args, log))
 
     def test_the_real_host_refuses_cleanly(self):
         """No fake at all: this machine is not a Raspberry Pi OS desktop
@@ -248,29 +364,23 @@ class EndToEndTests(Assertions, unittest.TestCase):
 
 
 LAUNCHER_HARNESS = r'''
-import os, sys, threading, subprocess, time, runpy, http.client
+import os, sys, socket, subprocess, time, runpy
 launcher, pid_file, mode = sys.argv[1:4]
 home = os.environ["HOME"]
 os.geteuid = lambda: 1000  # the sandbox may run as root; the launcher refuses root
+calls = [0]
 
 
-class Connection:
-    calls = 0
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def request(self, *args, **kwargs):
-        Connection.calls += 1
-        if mode == "crash_after_child" and Connection.calls >= 3:
-            raise RuntimeError("unexpected in " + home)
-        raise ConnectionRefusedError(111, "refused at " + home)
-
-    def close(self):
-        pass
+def create_connection(address, timeout=None):
+    """Never the real port 3847: the hub is not ready, and in crash mode
+    the third check fails unexpectedly."""
+    calls[0] += 1
+    if mode == "crash" and calls[0] >= 3:
+        raise RuntimeError("unexpected in " + home)
+    raise ConnectionRefusedError(111, "refused at " + home)
 
 
-http.client.HTTPConnection = Connection  # never the real port 3847
+socket.create_connection = create_connection
 clock = [0.0]
 
 
@@ -284,9 +394,9 @@ time.sleep = lambda seconds: None
 real_isfile, real_access, real_open = os.path.isfile, os.access, os.open
 os.path.isfile = lambda p: p.startswith("/usr/bin/chromium") or real_isfile(p)
 os.access = lambda p, m: p.startswith("/usr/bin/chromium") or real_access(p, m)
-if mode == "unwritable":
+if mode == "unreadable":
     def denied(path, *args, **kwargs):
-        if "/run/" in str(path):
+        if path == "run":
             raise PermissionError(13, "Permission denied", str(path))
         return real_open(path, *args, **kwargs)
     os.open = denied
@@ -318,6 +428,13 @@ class LauncherGuardTests(Assertions, unittest.TestCase):
         self.state = os.path.join(self.home, kiosk.KIOSK_STATE_DIR)
         for sub in ("run", "browser"):
             os.makedirs(os.path.join(self.state, sub), 0o700)
+        for rel, data in (
+            ("manifest.json", b"{}"),
+            ("setup.lock", b""),
+            (os.path.join("run", "launcher.lock"), b""),
+            (os.path.join("run", "starting.html"), kf.wait_page_bytes()),
+        ):
+            kfk.write(self.state, rel, data, mode=0o600)
         self.harness = os.path.join(os.path.dirname(os.path.dirname(self.home)), "launcher_harness.py")
         with open(self.harness, "w", encoding="utf-8") as handle:
             handle.write(LAUNCHER_HARNESS)
@@ -347,27 +464,41 @@ class LauncherGuardTests(Assertions, unittest.TestCase):
             return [int(line) for line in handle if line.strip()]
 
     def test_state_folder_problems(self):
-        os.rmdir(os.path.join(self.state, "run"))
+        import shutil
+
+        shutil.rmtree(os.path.join(self.state, "run"))
         self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_NOT_SET_UP))
         kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "run"), b"a file, not a folder")
-        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_NOT_SET_UP))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_UNSAFE))
+        os.unlink(os.path.join(self.state, "run"))
+        os.symlink(self.home, os.path.join(self.state, "run"))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_UNSAFE))
 
-    def test_unwritable_run_folder(self):
-        self.assertEqual(self.run_launcher("unwritable"), (1, LAUNCHER_FAILED))
+    def test_unreadable_run_folder(self):
+        self.assertEqual(self.run_launcher("unreadable"), (1, LAUNCHER_FAILED))
 
     def test_lock_file_error(self):
+        os.unlink(os.path.join(self.state, "run", "launcher.lock"))
         os.mkdir(os.path.join(self.state, "run", "launcher.lock"))
-        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_FAILED))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_UNSAFE))
         self.assertEqual(self.children(), [])
 
-    def test_waiting_page_write_fails(self):
+    @unittest.skipUnless(kfk.LINUX, "the launcher reads /proc before it starts a browser; " + kfk.LINUX_ONLY)
+    def test_a_waiting_page_that_is_not_a_file_is_not_shown(self):
+        before = kfk.tree(self.home)
+        os.unlink(os.path.join(self.state, "run", "starting.html"))
         os.mkdir(os.path.join(self.state, "run", "starting.html"))
-        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_FAILED))
-        self.assertTrue(os.path.isfile(os.path.join(self.state, "run", "launcher.lock")))  # got past the lock
-        self.assertEqual(self.children(), [])  # failed before any browser started
+        self.assertEqual(self.run_launcher("crash"), (1, LAUNCHER_FAILED))
+        self.assertEqual(self.children(), [])  # no browser for a page setup did not make
+        os.rmdir(os.path.join(self.state, "run", "starting.html"))
+        kfk.write(self.state, os.path.join("run", "starting.html"), kf.wait_page_bytes(), mode=0o600)
+        self.assertEqual(sorted(kfk.tree(self.home)), sorted(before))
 
+    @unittest.skipUnless(kfk.LINUX, "the launcher reads /proc before it starts a browser; " + kfk.LINUX_ONLY)
     def test_a_crash_stops_the_browser_it_started(self):
-        self.assertEqual(self.run_launcher("crash_after_child"), (1, LAUNCHER_FAILED))
+        before = kfk.tree(self.home)
+        self.assertEqual(self.run_launcher("crash"), (1, LAUNCHER_FAILED))
+        self.assertEqual(kfk.tree(self.home), before)  # the launcher wrote nothing
         pids = self.children()
         self.assertEqual(len(pids), 1)  # the waiting page's browser was started
         with self.assertRaises(ProcessLookupError):
@@ -376,7 +507,9 @@ class LauncherGuardTests(Assertions, unittest.TestCase):
     def test_the_real_file_on_this_host(self):
         """No harness: as root it refuses silently; otherwise, with no desktop
         state around it, it says the kiosk is not set up."""
-        os.rmdir(os.path.join(self.state, "run"))
+        import shutil
+
+        shutil.rmtree(os.path.join(self.state, "run"))
         code, err = self.run_launcher("plain", harness=False)
         self.assertEqual(code, 1)
         self.assertIn(err, ("", LAUNCHER_NOT_SET_UP))

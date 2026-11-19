@@ -4,6 +4,8 @@ the step it is about), the files written, --check, --off and re-enable,
 --undo back to the original bytes, edits made after setup to each managed
 file, unreadable sources, and doctor's kiosk check on the result."""
 
+import ctypes
+import errno
 import io
 import json
 import os
@@ -54,6 +56,7 @@ def doctor_kiosk(system, wanted):
 
 class Base(unittest.TestCase):
     def setUp(self):
+        kfk.portable(self)
         self.home = kfk.temp_home(self)
         # labwc-pi creates an empty kanshi config at login; the user has an
         # autostart with blanking on and an rc.xml of their own.
@@ -211,16 +214,15 @@ class CannotTellTests(Base):
     def test_home_files_and_state(self):
         real_observe = kf.observe
         for rel in MANAGED:
-            target = os.path.join(self.home, rel)
 
-            def failing(path, target=target):
+            def failing(home, path, target=rel):
                 if path == target:
                     raise PermissionError(13, "denied")
-                return real_observe(path)
+                return real_observe(home, path)
 
             with self.subTest(rel), mock.patch.object(kf, "observe", side_effect=failing) as observer:
                 self.cannot_tell(self.pi())
-                self.assertIn(mock.call(target), observer.call_args_list)
+                self.assertIn(mock.call(self.home, rel), observer.call_args_list)
         with mock.patch.object(kf.State, "classify", side_effect=PermissionError(13, "denied")) as classify:
             self.cannot_tell(self.pi())
             self.cannot_tell(self.pi(), "--off")
@@ -245,7 +247,9 @@ class CannotTellTests(Base):
         code, out, _ = main(s, "--check", "--json")
         data = json.loads(out)
         self.assertEqual((data["output"], data["autologin"], data["installed"]), ("unknown", "unknown", "no"))
-        self.assertEqual(code, ks.EXIT_ATTENTION)  # not installed
+        self.assertEqual((data["rotation"], data["touch"], data["files"]), ("none", "none", "none"))
+        # Any field not read makes the whole result unknown, never not_installed or ok.
+        self.assertEqual((code, data["result"]), (ks.EXIT_CANNOT_TELL, "unknown"))
         self.assertTrue(self.randr_called(s))
 
 
@@ -324,7 +328,7 @@ class SetupTests(Base):
 
     def test_rotation_not_confirmed(self):
         s = self.pi()
-        s.kill = lambda pid, sig: s.kills.append((pid, sig)) or True  # kanshi does not react
+        s.kill = lambda pid, sig: s.kills.append((pid, sig)) or "sent"  # kanshi does not react
         code, out, _ = main(s)
         self.assertEqual(code, 0)
         self.assertIn("not confirmed yet", out)
@@ -424,7 +428,40 @@ class CheckTests(Base):
         main(s)
         kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "manifest.json"), "{}", mode=0o600)
         code, data = self.report(s)
-        self.assertEqual((code, data["installed"], data["result"]), (1, "damaged", "attention"))
+        # Without a usable record, files, rotation and touch cannot be judged: unknown.
+        self.assertEqual((code, data["installed"], data["result"], data["files"]), (6, "damaged", "unknown", "unknown"))
+
+    def test_any_unknown_field_is_never_ok(self):
+        s = self.pi()
+        s.files["/etc/lightdm/lightdm.conf"] = kfk.lightdm("pi")
+        main(s)
+        self.assertEqual(self.report(s)[1]["result"], "ok")
+        real = ks.launcher_processes
+
+        def unreadable(system, state):
+            raise det.CannotTell("process table")
+
+        with mock.patch.object(ks, "launcher_processes", side_effect=unreadable) as reader:
+            code, data = self.report(s)
+        self.assertTrue(reader.called)
+        self.assertEqual((code, data["running"], data["result"]), (ks.EXIT_CANNOT_TELL, "unknown", "unknown"))
+        self.assertIs(ks.launcher_processes, real)
+
+    def test_duplicate_keys_in_the_record(self):
+        s = self.pi()
+        main(s)
+        path = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "manifest.json")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        kfk.write(self.home, os.path.relpath(path, self.home), text.replace('"enabled": true', '"enabled": true, "enabled": false'), mode=0o600)
+        self.assertIn('"enabled": false', kfk.read(self.home, os.path.relpath(path, self.home)).decode())
+        self.assertEqual(self.report(s)[1]["installed"], "damaged")
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",)):
+            code, _, err = main(s, *args)
+            self.assertEqual(code, ks.EXIT_CHANGED, args)
+            self.assertIn("damaged", err)
+            self.assertEqual(kfk.tree(self.home), snapshot)
 
     def test_json_usage_errors(self):
         for args in (["--check", "--json", "--off"], ["--json"], ["--orientation", "Riley", "--check", "--json"], ["--help", "--json"]):
@@ -489,8 +526,39 @@ class OffTests(Base):
         profile = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "browser")
         s.procs.append((1201, kfk.UID, "chromium", ["chromium", "--user-data-dir=" + profile]))
         s.kills.clear()
+        real_kill = s.kill
+
+        def kill(pid, sig):
+            if sig == signal.SIGKILL:
+                s.procs = [p for p in s.procs if p[0] != pid]
+            return real_kill(pid, sig)
+
+        s.kill = kill
         self.assertEqual(main(s, "--off")[0], 0)
         self.assertEqual(s.kills, [(1201, signal.SIGTERM), (1201, signal.SIGKILL)])
+
+    def test_a_process_that_cannot_be_stopped(self):
+        """A signal that is refused, or a process still there after SIGKILL,
+        stops --off and --undo before they write anything (exit 4)."""
+        for action in ("--off", "--undo"):
+            for case in ("denied", "survives"):
+                with self.subTest(action=action, case=case):
+                    self.setUp()
+                    s = self.pi()
+                    self.assertEqual(main(s)[0], 0)
+                    profile = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "browser")
+                    s.procs.append((1201, kfk.UID, "chromium", ["chromium", "--user-data-dir=" + profile]))
+                    if case == "denied":
+                        s.kill_results[1201] = "denied"
+                    s.kills.clear()
+                    snapshot = kfk.tree(self.home)
+                    code, _, err = main(s, action)
+                    self.assertEqual(code, ks.EXIT_NOT_READY, err)
+                    self.assertIn("could not be stopped", err)
+                    self.assertIn("Nothing was changed.", err)
+                    self.assertEqual(kfk.tree(self.home), snapshot)
+                    expected = [(1201, signal.SIGTERM)] if case == "denied" else [(1201, signal.SIGTERM), (1201, signal.SIGKILL)]
+                    self.assertEqual(s.kills, expected)
 
     def test_orientation_is_kept_on_re_enable(self):
         s = self.pi()
@@ -504,6 +572,13 @@ class OffTests(Base):
         main(s)
         launcher = os.path.join(self.home, LAUNCHER)
         s.procs.append((1200, kfk.UID, "python3", ["/usr/bin/python3", "-I", launcher]))
+        real_kill = s.kill
+
+        def kill(pid, sig):
+            s.procs = [p for p in s.procs if p[0] != pid]  # the launcher exits on SIGTERM
+            return real_kill(pid, sig)
+
+        s.kill = kill
         with open(os.path.join(self.home, AUTOSTART), "a", encoding="utf-8") as handle:
             handle.write("my-new-app &\n")
         snapshot = kfk.tree(self.home)
@@ -574,14 +649,16 @@ class InterruptedRunTests(Base):
     while the manifest says a run was in progress."""
 
     def fail_on_second_write(self):
+        """write_atomic fails (no space) on its second managed file, before
+        writing it; the wrapper takes the real signature, expect included."""
         real = kf.write_atomic
         calls = []
 
-        def write(path, data, mode):
-            calls.append(path)
-            if len([c for c in calls if not c.endswith("manifest.json") and "/original/" not in c]) == 2:
+        def write(home, rel, data, mode, expect):
+            calls.append(rel)
+            if len(calls) == 2:
                 raise OSError(28, "No space left on device")
-            return real(path, data, mode)
+            return real(home, rel, data, mode, expect)
 
         return mock.patch.object(kf, "write_atomic", side_effect=write), calls
 
@@ -591,7 +668,7 @@ class InterruptedRunTests(Base):
         with patch:
             code, _, err = main(s)
         self.assertEqual((code, err), (2, ks.CRASH_DURING + "\n"))
-        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls, [LAUNCHER, KANSHI])  # the failure point was reached
         code, _, err = main(s)  # finishes setup
         self.assertEqual(code, 0, err)
         self.assertEqual(main(s, "--undo")[0], 0)
@@ -604,6 +681,7 @@ class InterruptedRunTests(Base):
         with patch:
             code, _, err = main(s, "--undo")
         self.assertEqual((code, err), (2, ks.CRASH_DURING + "\n"))
+        self.assertEqual(calls, [AUTOSTART, RC])  # the failure point was reached
         self.assertNotEqual(kfk.tree(self.home), self.before)
         code, _, err = main(s, "--undo")  # finishes the undo
         self.assertEqual(code, 0, err)
@@ -666,9 +744,11 @@ def managed(tree):
 
 
 class TransactionTests(Base):
-    """Blocker 2: a failure right after any single file write (manifest,
-    snapshot copy or managed file) leaves a state the same command finishes,
-    and --undo restores the original exactly, for every operation."""
+    """A failure right after any single file write (the record, a snapshot
+    copy, a launcher run file or a managed file, or a managed file removed)
+    leaves a state the same command finishes, and --undo restores the
+    original exactly (bytes, modes, owner and group), for every operation.
+    Each injected failure point is asserted to have been reached."""
 
     SCENARIOS = {
         "setup": ((), ()),
@@ -685,7 +765,6 @@ class TransactionTests(Base):
         return s
 
     def counting(self, fail_at):
-        real_write, real_remove = kf.write_atomic, kf.remove_file
         count = [0]
 
         def after(real):
@@ -698,7 +777,10 @@ class TransactionTests(Base):
 
             return wrapped
 
-        patches = [mock.patch.object(kf, "write_atomic", side_effect=after(real_write)), mock.patch.object(kf, "remove_file", side_effect=after(real_remove))]
+        patches = [
+            mock.patch.object(kf, name, side_effect=after(getattr(kf, name)))
+            for name in ("write_atomic", "remove_file", "write_state_file")
+        ]
         return patches, count
 
     def run_with(self, s, args, fail_at=None):
@@ -726,7 +808,8 @@ class TransactionTests(Base):
                     with self.subTest(operation=name, fail_after_write=fail_at, recovery=recovery):
                         self.setUp()
                         s = self.prepare(steps)
-                        code, err, _ = self.run_with(s, args, fail_at)
+                        code, err, reached = self.run_with(s, args, fail_at)
+                        self.assertEqual(reached, fail_at, "the failure point was reached")
                         self.assertEqual((code, err), (2, ks.CRASH_DURING + "\n"))
                         if recovery == "same command":
                             code, _, err = main(s, *args)
@@ -811,28 +894,127 @@ class RaceTests(Base):
         for rel in (AUTOSTART, KANSHI, LAUNCHER):
             self.assertEqual(after[rel], before[rel])
 
-    def test_edit_between_the_last_check_and_the_write(self):
+    def save_by_user(self, rel, data, how):
+        """The person's editor saves rel: in place (same inode) or by
+        writing a new file and renaming it over (new inode)."""
+        path = os.path.join(self.home, rel)
+        if how == "in place":
+            with open(path, "r+b") as handle:
+                handle.truncate(0)
+                handle.write(data)
+        else:
+            kfk.write(self.home, rel + ".editor-tmp", data, mode=os.stat(path).st_mode & 0o7777)
+            os.rename(path + ".editor-tmp", path)
+
+    def inject(self, when):
+        """Wrap kf.renameat2 (the real call on Linux): when(src, dst, flags)
+        runs first, at the exact point between write_atomic's or
+        remove_file's last check and the swap. Returns the patch, the list
+        of points reached and the list of every (src, dst, flags) call."""
+        real = kf.renameat2
+        reached, calls = [], []
+
+        def renameat2(src_fd, src, dst_fd, dst, flags):
+            calls.append((src, dst, flags))
+            if when(src, dst, flags):
+                reached.append((src, dst, flags))
+            return real(src_fd, src, dst_fd, dst, flags)
+
+        self.calls = calls
+        return mock.patch.object(kf, "renameat2", side_effect=renameat2), reached
+
+    def no_hidden_files(self):
+        return [n for _, _, names in os.walk(self.home) for n in names if n.startswith(".") and "sproutwall" in n]
+
+    def test_a_save_between_the_last_check_and_the_exchange(self):
+        """The exchange moves the person's version aside; it is checked,
+        swapped back and kept; ours is removed (exit 5)."""
+        mine = b"<openbox_config><edited/></openbox_config>\n"
+        for how in ("in place", "new file"):
+            with self.subTest(how):
+                self.setUp()
+                s = self.pi()
+
+                saved = []
+
+                def when(src, dst, flags, how=how, saved=saved):
+                    if not saved and flags == kf.RENAME_EXCHANGE and dst == "rc.xml" and src.endswith(kf.TMP_SUFFIX):
+                        self.save_by_user(RC, mine, how)
+                        saved.append(src)
+                        return True
+                    return False
+
+                patch, reached = self.inject(when)
+                with patch:
+                    code, _, err = main(s)
+                self.assertEqual(len(reached), 1, "the injection point was reached")
+                swaps = [c for c in self.calls if c[2] == kf.RENAME_EXCHANGE and "rc.xml" in c[:2]]
+                self.assertEqual(len(swaps), 2, "exchanged, then exchanged back")
+                self.assertEqual(code, ks.EXIT_CHANGED, err)
+                self.assertIn("changed while it was being updated", err)
+                self.assertNotIn("Nothing was changed", err)
+                self.assertEqual(kfk.read(self.home, RC), mine)
+                self.assertEqual(self.no_hidden_files(), [])
+                self.assertEqual(kfk.tree(self.home)[AUTOSTART], self.before[AUTOSTART])  # nothing more was written
+                kfk.write(self.home, RC, USER_RC)  # put the change back: the same command finishes
+                self.assertEqual(main(s)[0], 0)
+                self.assertEqual(main(s, "--undo")[0], 0)
+                self.assertEqual(kfk.tree(self.home), self.before)
+
+    def test_a_save_between_the_last_check_and_a_removal(self):
+        """--undo removes the launcher by moving it to a quarantine name
+        first; the person's version found there is moved back (exit 5)."""
+        mine = b"#!/bin/sh\n# my own launcher\n"
+        for how in ("in place", "new file"):
+            with self.subTest(how):
+                self.setUp()
+                s = self.pi()
+                self.assertEqual(main(s)[0], 0)
+
+                def when(src, dst, flags, how=how):
+                    if flags == kf.RENAME_NOREPLACE and src == "sproutwall-kiosk" and dst.endswith(kf.QUARANTINE_SUFFIX):
+                        self.save_by_user(LAUNCHER, mine, how)
+                        return True
+                    return False
+
+                patch, reached = self.inject(when)
+                with patch:
+                    code, _, err = main(s, "--undo")
+                self.assertEqual(len(reached), 1, "the injection point was reached")
+                self.assertEqual(code, ks.EXIT_CHANGED, err)
+                self.assertIn("changed while it was being updated", err)
+                self.assertEqual(kfk.read(self.home, LAUNCHER), mine)
+                self.assertEqual(self.no_hidden_files(), [])
+
+    def test_a_name_taken_while_a_removal_is_undone(self):
+        """If a new file takes the name before the person's version can be
+        moved back, both are kept: theirs under a hidden name (exit 5)."""
         s = self.pi()
-        real = kf.write_atomic
-        target = os.path.join(self.home, RC)
-        edits = []
-
-        def write(path, data, mode, expect=None):
-            if path == target and not edits:
-                edits.append(path)
-                kfk.write(self.home, RC, b"<openbox_config><edited/></openbox_config>\n")
-            return real(path, data, mode, expect=expect)
-
-        with mock.patch.object(kf, "write_atomic", side_effect=write):
-            code, _, err = main(s)
-        self.assertEqual(edits, [target])
-        self.assertEqual(code, ks.EXIT_CHANGED)
-        self.assertIn("changed while it was being updated", err)
-        self.assertNotIn("Nothing was changed", err)
-        self.assertEqual(kfk.read(self.home, RC), b"<openbox_config><edited/></openbox_config>\n")
-        self.assertEqual(kfk.tree(self.home)[AUTOSTART], self.before[AUTOSTART])  # nothing more was written
-        kfk.write(self.home, RC, USER_RC)  # put the change back: the same command finishes
         self.assertEqual(main(s)[0], 0)
+        mine, newer = b"#!/bin/sh\n# mine\n", b"#!/bin/sh\n# newer\n"
+
+        def when(src, dst, flags):
+            if flags != kf.RENAME_NOREPLACE:
+                return False
+            if src == "sproutwall-kiosk" and dst.endswith(kf.QUARANTINE_SUFFIX):
+                self.save_by_user(LAUNCHER, mine, "in place")
+                return True
+            if src.endswith(kf.QUARANTINE_SUFFIX) and dst == "sproutwall-kiosk":
+                kfk.write(self.home, LAUNCHER, newer, mode=0o755)
+                return True
+            return False
+
+        patch, reached = self.inject(when)
+        with patch:
+            code, _, err = main(s, "--undo")
+        self.assertEqual(len(reached), 2, "both injection points were reached")
+        self.assertEqual(code, ks.EXIT_CHANGED, err)
+        self.assertIn(".sproutwall-removed", err)
+        self.assertEqual(kfk.read(self.home, LAUNCHER), newer)
+        kept = self.no_hidden_files()
+        self.assertEqual(len(kept), 1)
+        self.assertTrue(kept[0].endswith(kf.QUARANTINE_SUFFIX))
+        self.assertEqual(kfk.read(self.home, os.path.join(os.path.dirname(LAUNCHER), kept[0])), mine)
 
     def hold_lock(self):
         import fcntl
@@ -863,8 +1045,8 @@ class RaceTests(Base):
 
 
 class OwnershipTests(Base):
-    """Blocker 5: never take over or delete a state folder or launcher this
-    tool has no record of; undo removes only what setup created."""
+    """Never take over or delete a state folder or launcher this tool has
+    no record of; undo removes only what setup created."""
 
     def test_state_folder_without_a_record(self):
         kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "original", "rc_xml"), b"someone's snapshot")
@@ -882,15 +1064,51 @@ class OwnershipTests(Base):
         self.assertEqual(code, ks.EXIT_CHANGED)
         self.assert_unchanged()
 
-    def test_a_leftover_lock_from_an_interrupted_run_is_taken_over(self):
-        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "setup.lock"), b"", mode=0o600)
-        before = kfk.tree(self.home)
+    def test_a_folder_without_a_record_is_never_taken_over(self):
+        """Even an empty state folder, or one holding only setup.lock, is not
+        this tool's: refused (exit 5) and left as it is."""
+        cases = {
+            "empty": lambda: os.makedirs(os.path.join(self.home, kiosk.KIOSK_STATE_DIR)),
+            "only setup.lock": lambda: kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "setup.lock"), b"", mode=0o600),
+        }
+        for name, make in cases.items():
+            for args in ((), ("--off",), ("--undo",)):
+                with self.subTest(name, args=args):
+                    self.setUp()
+                    make()
+                    self.before = kfk.tree(self.home)
+                    code, out, err = main(self.pi(), *args)
+                    self.assertEqual(code, ks.EXIT_CHANGED, err)
+                    self.assertIn("without the record this tool writes", err)
+                    self.assert_unchanged()
+
+    def test_only_folders_setup_made_are_recorded(self):
+        os.makedirs(os.path.join(self.home, ".local", "state"))  # the person's own
+        self.before = kfk.tree(self.home)
         s = self.pi()
         self.assertEqual(main(s)[0], 0)
+        with open(os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "manifest.json"), encoding="utf-8") as handle:
+            dirs = json.load(handle)["created_dirs"]
+        self.assertNotIn(os.path.join(".local", "state"), dirs)
+        self.assertIn(os.path.join(".local", "state", "sproutwall"), dirs)
+        self.assertIn(kiosk.KIOSK_STATE_DIR, dirs)
         self.assertEqual(main(s, "--undo")[0], 0)
-        # The leftover folder and lock count as this tool's and go; their parents stay.
-        expected = {rel: v for rel, v in before.items() if not rel.startswith(kiosk.KIOSK_STATE_DIR)}
-        self.assertEqual(kfk.tree(self.home), expected)
+        self.assertEqual(kfk.tree(self.home), self.before)
+
+    def test_the_record_is_written_right_after_the_folder(self):
+        """The first write after mkdir is the record (phase "init"), through
+        the folder fd; nothing else is written before it."""
+        real_save = kf.State.save
+        phases = []
+
+        def save(state, manifest):
+            phases.append((manifest["phase"], sorted(os.listdir(state.dir))))
+            return real_save(state, manifest)
+
+        with mock.patch.object(kf.State, "save", autospec=True, side_effect=save):
+            self.assertEqual(main(self.pi())[0], 0)
+        self.assertEqual(phases[0], ("init", ["setup.lock"]))
+        self.assertEqual([phase for phase, _ in phases], ["init", "writing", "done"])
 
     def test_undo_keeps_files_it_did_not_create(self):
         s = self.pi()
@@ -907,6 +1125,205 @@ class OwnershipTests(Base):
         code, _, _ = main(s)  # the kept folder is not this tool's any more
         self.assertEqual(code, ks.EXIT_CHANGED)
 
+
+class MetadataTests(Base):
+    """Files this tool could not put back exactly (extra hard links, another
+    owner or group, extended attributes) are refused before any write
+    (exit 6, unsupported_metadata)."""
+
+    def faking(self, rel, **fields):
+        """observe_at reports fields (uid, gid, xattrs) for rel's file."""
+        real = kf.observe_at
+        name = os.path.basename(rel)
+        hits = []
+
+        def observe_at(dir_fd, entry):
+            seen = real(dir_fd, entry)
+            if entry == name and seen.exists:
+                hits.append(entry)
+                for key, value in fields.items():
+                    setattr(seen, key, value)
+            return seen
+
+        return mock.patch.object(kf, "observe_at", side_effect=observe_at), hits
+
+    def refused(self, system, *args):
+        code, out, err = main(system, *args)
+        self.assertEqual(code, ks.EXIT_CANNOT_TELL, err)
+        self.assertIn("could not put such a file back exactly", err)
+        self.assertIn("Nothing was changed.", err)
+        self.assertEqual(out, "")
+
+    def test_unsupported_originals(self):
+        cases = {
+            "hard link": None,
+            "another owner": {"uid": os.getuid() + 1},
+            "another group": {"gid": os.getgid() + 1},
+            "extended attribute": {"xattrs": ("system.posix_acl_access",)},
+        }
+        for case, fields in cases.items():
+            for rel in (AUTOSTART, RC, KANSHI):
+                with self.subTest(case, rel=rel):
+                    self.setUp()
+                    if fields is None:
+                        os.link(os.path.join(self.home, rel), os.path.join(self.home, "elsewhere"))
+                        self.before = kfk.tree(self.home)
+                        self.refused(self.pi())
+                    else:
+                        patch, hits = self.faking(rel, **fields)
+                        with patch:
+                            self.refused(self.pi())
+                        self.assertTrue(hits)
+                    self.assert_unchanged()
+
+    def test_after_setup(self):
+        """A hard link made after setup stops --off and --undo too."""
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        os.link(os.path.join(self.home, RC), os.path.join(self.home, "elsewhere"))
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",)):
+            self.refused(s, *args)
+            self.assertEqual(kfk.tree(self.home), snapshot)
+
+    @unittest.skipUnless(hasattr(os, "setxattr"), kfk.LINUX_ONLY)
+    def test_a_real_extended_attribute(self):
+        path = os.path.join(self.home, RC)
+        try:
+            os.setxattr(path, "user.sproutwall-test", b"1")
+        except OSError as error:
+            self.skipTest("this file system has no user extended attributes (%s)" % error.strerror)
+        self.before = kfk.tree(self.home)
+        self.refused(self.pi())
+        self.assert_unchanged()
+
+    def test_exact_restore_keeps_owner_and_group(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        with open(os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "manifest.json"), encoding="utf-8") as handle:
+            files = json.load(handle)["files"]
+        for key, entry in files.items():
+            if entry["original"]["exists"]:
+                self.assertEqual((entry["original"]["uid"], entry["original"]["gid"]), (os.getuid(), os.getgid()), key)
+        self.assertEqual(main(s, "--undo")[0], 0)
+        self.assertEqual(kfk.tree(self.home), self.before)  # uid and gid are part of the tree
+
+
+class RenameSupportTests(Base):
+    def test_no_atomic_exchange_refuses_before_any_write(self):
+        for code in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+            for args in ((), ("--undo",)):
+                with self.subTest(errno.errorcode[code], args=args):
+                    self.setUp()
+                    s = self.pi()
+                    if args:
+                        self.assertEqual(main(s)[0], 0)
+                        self.before = kfk.tree(self.home)
+                    def unsupported(*_args, code=code):
+                        ctypes.set_errno(code)
+                        return -1
+
+                    with mock.patch.object(kf, "_renameat2_function", return_value=unsupported) as lookup, mock.patch.object(kf, "renameat2", side_effect=REAL_RENAMEAT2):
+                        exit_code, out, err = main(s, *args)
+                    self.assertTrue(lookup.called)
+                    self.assertEqual(exit_code, ks.EXIT_CANNOT_TELL, err)
+                    self.assertIn("atomic swap", err)
+                    self.assertIn("Nothing was changed.", err)
+                    self.assert_unchanged()
+
+
+class StateLinkTests(Base):
+    """Everything in the state folder is reached through folder fds with
+    O_NOFOLLOW: a link anywhere stops the run before any write (exit 5)."""
+
+    def setup_done(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        return s
+
+    def state(self, *parts):
+        return os.path.join(self.home, kiosk.KIOSK_STATE_DIR, *parts)
+
+    def refused_everywhere(self, s, actions=((), ("--off",), ("--undo",))):
+        snapshot = kfk.tree(self.home)
+        for args in actions:
+            code, out, err = main(s, *args)
+            self.assertEqual(code, ks.EXIT_CHANGED, (args, err))
+            self.assertIn("is a link or not the kind of file this tool made", err)
+            self.assertEqual(kfk.tree(self.home), snapshot)
+
+    def test_original_folder_replaced_by_a_link(self):
+        s = self.setup_done()
+        os.rename(self.state("original"), os.path.join(self.home, "elsewhere"))
+        os.symlink(os.path.join(self.home, "elsewhere"), self.state("original"))
+        self.refused_everywhere(s)
+
+    def test_state_folder_replaced_by_a_link(self):
+        s = self.setup_done()
+        os.rename(self.state(), os.path.join(self.home, "elsewhere"))
+        os.symlink(os.path.join(self.home, "elsewhere"), self.state())
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",)):
+            code, _, err = main(s, *args)
+            self.assertEqual(code, ks.EXIT_CHANGED, (args, err))
+            self.assertEqual(kfk.tree(self.home), snapshot)
+
+    def test_a_link_inside_run(self):
+        s = self.setup_done()
+        os.unlink(self.state("run", "launcher.lock"))
+        os.symlink(os.path.join(self.home, ".config", "labwc", "rc.xml"), self.state("run", "launcher.lock"))
+        self.refused_everywhere(s)
+
+    def test_a_replaced_waiting_page(self):
+        """A run file changed after setup is kept by --undo and reported;
+        everything else is restored."""
+        s = self.setup_done()
+        os.unlink(self.state("run", "starting.html"))
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "run", "starting.html"), b"<p>mine</p>", mode=0o600)
+        code, _, err = main(s)
+        self.assertEqual(code, ks.EXIT_CHANGED, err)  # setup: a damaged snapshot
+        code, out, err = main(s, "--undo")
+        self.assertEqual(code, 0, err)
+        self.assertIn("state folder was kept", out)
+        left = sorted(rel for rel in kfk.tree(self.home) if rel.startswith(kiosk.KIOSK_STATE_DIR))
+        run = os.path.join(kiosk.KIOSK_STATE_DIR, "run")
+        self.assertEqual(left, [kiosk.KIOSK_STATE_DIR, run, os.path.join(run, "starting.html")])
+        self.assertEqual(kfk.read(self.home, os.path.join(run, "starting.html")), b"<p>mine</p>")
+        for rel in MANAGED:
+            self.assertEqual(kfk.tree(self.home).get(rel), self.before.get(rel))
+
+    def test_setup_writes_the_launcher_run_files(self):
+        self.setup_done()
+        with open(self.state("manifest.json"), encoding="utf-8") as handle:
+            created = json.load(handle)["created_files"]
+        for name in ("launcher.lock", "starting.html"):
+            rel = os.path.join(kiosk.KIOSK_STATE_DIR, "run", name)
+            st = os.lstat(os.path.join(self.home, rel))
+            self.assertEqual((created[rel]["dev"], created[rel]["ino"], created[rel]["mode"]), (st.st_dev, st.st_ino, 0o600))
+        self.assertEqual(kfk.read(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "run", "starting.html")), kf.wait_page_bytes())
+
+
+class ReloadTests(Base):
+    def test_a_reload_that_fails_is_not_success(self):
+        for result in ("denied", "gone"):
+            for pid in (kfk.LABWC_PID, kfk.KANSHI_PID):
+                with self.subTest(result, pid=pid):
+                    self.setUp()
+                    s = self.pi()
+                    s.kill_results[(pid, signal.SIGHUP)] = result
+                    code, out, err = main(s)
+                    self.assertEqual(code, ks.EXIT_ATTENTION, out)
+                    self.assertIn("could not be told to reload", err)
+                    self.assertNotIn("applied now", err)
+                    s.kill_results.clear()
+                    s.kill_results[(pid, signal.SIGHUP)] = result
+                    code, out, err = main(s, "--undo")
+                    self.assertEqual(code, ks.EXIT_ATTENTION, out)
+                    self.assertIn("could not be told to reload", err)
+                    self.assertNotIn("were reloaded", err)
+
+
+REAL_RENAMEAT2 = kf.renameat2
 
 if __name__ == "__main__":
     unittest.main()

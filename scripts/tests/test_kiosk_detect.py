@@ -149,6 +149,9 @@ class SessionTests(unittest.TestCase):
             "kanshi --config=": lambda s: s.procs.__setitem__(3, (kfk.KANSHI_PID, kfk.UID, "kanshi", ["/usr/bin/kanshi", "--config=/srv/k"])),
             "XDG_CONFIG_HOME in labwc": lambda s: s.environs[kfk.LABWC_PID].__setitem__("XDG_CONFIG_HOME", "/srv/config"),
             "XDG_CONFIG_HOME in kanshi": lambda s: s.environs[kfk.KANSHI_PID].__setitem__("XDG_CONFIG_HOME", "/home/pi/.cfg"),
+            "XDG_CONFIG_DIRS in labwc": lambda s: s.environs[kfk.LABWC_PID].__setitem__("XDG_CONFIG_DIRS", "/srv/xdg:/etc/xdg"),
+            "XDG_CONFIG_DIRS in kanshi": lambda s: s.environs[kfk.KANSHI_PID].__setitem__("XDG_CONFIG_DIRS", "/usr/local/etc/xdg"),
+            "XDG_CONFIG_DIRS with the default second": lambda s: s.environs[kfk.KANSHI_PID].__setitem__("XDG_CONFIG_DIRS", "/etc/xdg/xdg-LXDE-pi:/etc/xdg"),
             "another HOME": lambda s: s.environs[kfk.LABWC_PID].__setitem__("HOME", "/home/someone"),
             "no HOME": lambda s: s.environs[kfk.KANSHI_PID].pop("HOME"),
         }
@@ -161,7 +164,9 @@ class SessionTests(unittest.TestCase):
         s = pi()
         s.environs[kfk.LABWC_PID]["XDG_CONFIG_HOME"] = "/home/pi/.config/"
         s.environs[kfk.KANSHI_PID]["XDG_CONFIG_HOME"] = "/home/pi/.config"
-        self.assertEqual(det.find_session(s).reason, "ok")  # the default, spelled out
+        s.environs[kfk.LABWC_PID]["XDG_CONFIG_DIRS"] = "/etc/xdg"
+        s.environs[kfk.KANSHI_PID]["XDG_CONFIG_DIRS"] = ""
+        self.assertEqual(det.find_session(s).reason, "ok")  # the defaults, spelled out
 
     def test_socket(self):
         s = pi()
@@ -268,6 +273,20 @@ class OutputTests(unittest.TestCase):
             item = dict(good, **change)
             with self.assertRaises(ValueError, msg=change):
                 det.parse_wlr_randr_json(json.dumps([item]))
+        text = json.dumps([good])
+        for duplicated in (
+            text.replace('"transform": "normal"', '"transform": "normal", "transform": "90"'),
+            text.replace('"enabled": true', '"enabled": false, "enabled": true'),
+            text.replace('"width": 1920', '"width": 1920, "width": 1280', 1),
+        ):
+            self.assertNotEqual(duplicated, text)
+            with self.assertRaises(ValueError):
+                det.parse_wlr_randr_json(duplicated)
+            s = pi()
+            s.set(["wlr-randr", "--json"], ok(duplicated))
+            with self.assertRaises(det.CannotTell):  # never the plain-text fallback's guess
+                det.read_outputs(s, det.find_session(s))
+            self.assertNotIn(("wlr-randr",), [argv for argv, _ in s.calls])
 
     def test_strict_text(self):
         good = kfk.wlr_randr_text([kfk.output_json()])

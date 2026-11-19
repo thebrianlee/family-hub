@@ -15,6 +15,7 @@ The marker text must never change: an installed launcher is found by it.
 `setup kiosk` turns it back on. Paths below are relative to the home folder.
 """
 
+import json
 import os
 
 KIOSK_AUTOSTART = os.path.join(".config", "labwc", "autostart")
@@ -51,3 +52,31 @@ def inactive_marker_lines(text):
         if KIOSK_MARKER in stripped and stripped.startswith("#"):
             count += 1
     return count
+
+
+class AmbiguousJSON(ValueError):
+    """Valid-looking JSON with a duplicate key or NaN/Infinity: what it
+    means cannot be told, so it is never read as one of its meanings."""
+
+
+def _no_duplicates(pairs):
+    found = {}
+    for key, value in pairs:
+        if key in found:
+            raise AmbiguousJSON("duplicate key")
+        found[key] = value
+    return found
+
+
+def _no_constants(name):
+    raise AmbiguousJSON("not JSON: " + name)
+
+
+def loads_strict(text):
+    """json.loads that rejects duplicate keys and NaN/Infinity
+    (AmbiguousJSON, a ValueError).
+
+    The one decoder for everything `setup kiosk` reads as JSON (the state
+    manifest, wlr-randr --json); kiosk_launcher.py keeps an identical copy,
+    because it may not import this package (a test compares them)."""
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constants)

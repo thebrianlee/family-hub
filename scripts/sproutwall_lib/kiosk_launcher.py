@@ -7,12 +7,17 @@ autostart. Python 3 standard library only; it imports nothing from the
 repository, so the copy keeps working if the checkout moves.
 
 What it does, as the logged-in desktop user (never root):
-1. Takes a lock in the state folder's run/ (made by setup), so only one
-   launcher runs; exits if a kiosk browser with its profile is already open.
-2. Polls http://127.0.0.1:3847/api/health: a 3 s socket timeout and a 5 s
-   deadline for the whole request. Redirects are never followed (a 3xx is
-   "not ready"). The hub is ready only on HTTP 200 with a JSON body whose
-   "ok" is true.
+1. Opens the state folder one component at a time without following links,
+   takes setup.lock shared (if setup, --off or --undo holds it, it exits at
+   once), checks that the record, run/ and browser/ are there, takes the
+   lock file setup made in run/ so only one launcher runs, then lets go of
+   setup.lock. It creates and writes no files itself. It exits if a kiosk
+   browser with its profile is already open.
+2. Polls http://127.0.0.1:3847/api/health over a plain socket: a 3 s connect
+   timeout and a 5 s deadline for the whole request (each read waits only for
+   the time left). Redirects are never followed (a 3xx is "not ready"). The
+   hub is ready only on HTTP 200 with a JSON body whose "ok" is true (a
+   duplicate key is not ready).
 3. Polls every 2 s for the first minute, then every 10 s. After 90 s without
    a ready hub it shows a local page that says the hub is starting, and
    keeps polling every 10 s.
@@ -42,11 +47,13 @@ if __name__ == "__main__":
     warnings.simplefilter("ignore")
 
 try:
+    import errno
     import fcntl
-    import http.client
     import json
     import os
+    import re
     import signal
+    import socket
     import stat
     import threading
     import time
@@ -64,6 +71,7 @@ HEALTH_PATH = "/api/health"
 HEALTH_TIMEOUT_S = 3.0
 HEALTH_DEADLINE_S = 5.0
 MAX_BODY = 64 * 1024
+MAX_RESPONSE = MAX_BODY + 16 * 1024
 FAST_INTERVAL_S = 2.0
 FAST_PERIOD_S = 60.0
 SLOW_INTERVAL_S = 10.0
@@ -73,12 +81,16 @@ STOP_GRACE_S = 10.0
 # Same values as sproutwall_lib/kiosk.py, kiosk_files.py and kiosk_detect.py
 # (a test checks).
 STATE_DIR = os.path.join(".local", "state", "sproutwall", "kiosk")
+MANIFEST = "manifest.json"
+SETUP_LOCK = "setup.lock"
 RUN_DIR = "run"
 BROWSER_PROFILE = "browser"
 LOCK_FILE = "launcher.lock"
 WAIT_PAGE = "starting.html"
 CHROMIUM_CANDIDATES = ("/usr/bin/chromium", "/usr/bin/chromium-browser")
 NOFOLLOW = os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | NOFOLLOW
+FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW
 
 WAIT_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Sproutwall is starting</title>
@@ -96,11 +108,40 @@ or run <code>./scripts/sproutwall doctor --phase running</code> in the hub's fol
 STARTED = []
 
 
+UNSAFE = (
+    "sproutwall-kiosk: the kiosk's state folder holds a link or a file setup did not make; not starting. "
+    "Run ./scripts/sproutwall setup kiosk --check.\n"
+)
+
+
 class NotSetUp(Exception):
     pass
 
 
+class Unsafe(Exception):
+    """A link, or an entry of the wrong kind, in the state folder."""
+
+
 # --- pure decisions (unit-tested) -------------------------------------------------
+
+
+def _no_duplicates(pairs):
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise ValueError("duplicate key")
+        data[key] = value
+    return data
+
+
+def _no_constants(name):
+    raise ValueError("not JSON: " + name)
+
+
+def loads_strict(text):
+    """json.loads that rejects duplicate keys and NaN/Infinity (the same as
+    sproutwall_lib/kiosk.py loads_strict; a test checks)."""
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_constant=_no_constants)
 
 
 def health_verdict(status, body):
@@ -108,10 +149,69 @@ def health_verdict(status, body):
     if status != 200 or not isinstance(body, (bytes, bytearray)) or len(body) > MAX_BODY:
         return False
     try:
-        data = json.loads(bytes(body).decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+        data = loads_strict(bytes(body).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return False
     return isinstance(data, dict) and data.get("ok") is True
+
+
+STATUS_RE = re.compile(rb"HTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?")
+HEX_RE = re.compile(rb"[0-9A-Fa-f]{1,8}")
+
+
+def _dechunk(data):
+    body = bytearray()
+    pos = 0
+    while True:
+        end = data.find(b"\r\n", pos)
+        if end < 0:
+            raise ValueError("chunk size")
+        size_text = data[pos:end].split(b";", 1)[0].strip()
+        if HEX_RE.fullmatch(size_text) is None:
+            raise ValueError("chunk size")
+        size = int(size_text, 16)
+        pos = end + 2
+        if size == 0:
+            return bytes(body)
+        if data[pos + size : pos + size + 2] != b"\r\n":
+            raise ValueError("chunk")
+        body += data[pos : pos + size]
+        if len(body) > MAX_BODY:
+            raise ValueError("too large")
+        pos += size + 2
+
+
+def parse_response(data):
+    """(status, body) of a complete HTTP/1.x response read until the server
+    closed the connection: Content-Length, chunked or close-delimited.
+    ValueError for anything malformed."""
+    head, sep, rest = data.partition(b"\r\n\r\n")
+    if not sep:
+        raise ValueError("no end of headers")
+    lines = head.split(b"\r\n")
+    match = STATUS_RE.fullmatch(lines[0])
+    if match is None:
+        raise ValueError("status line")
+    headers = {}
+    for line in lines[1:]:
+        name, colon, value = line.partition(b":")
+        if not colon or not name or name != name.strip():
+            raise ValueError("header")
+        name = name.lower()
+        if name in headers and name in (b"content-length", b"transfer-encoding"):
+            raise ValueError("duplicate header")
+        headers[name] = value.strip()
+    encoding = headers.get(b"transfer-encoding")
+    if encoding is not None:
+        if encoding.lower() != b"chunked" or b"content-length" in headers:
+            raise ValueError("transfer-encoding")
+        return int(match.group(1)), _dechunk(rest)
+    length = headers.get(b"content-length")
+    if length is not None:
+        if not length.isdigit() or len(rest) < int(length):
+            raise ValueError("content-length")
+        return int(match.group(1)), rest[: int(length)]
+    return int(match.group(1)), rest
 
 
 def next_delay(elapsed):
@@ -147,51 +247,44 @@ def chromium_argv(binary, profile, url):
 
 # --- host access -------------------------------------------------------------------
 
-EXPECTED_HEALTH_ERRORS = (OSError, http.client.HTTPException, ValueError)
-
-
-def check_health(connect=None, timeout=HEALTH_TIMEOUT_S, deadline=HEALTH_DEADLINE_S):
-    """One GET of the health address, with a deadline for the whole request.
-
-    The request runs in a helper thread; if connect, headers and body
-    together take longer than deadline (a server that trickles bytes), the
-    connection is closed and the answer is "not ready". http.client never
-    follows redirects, so a 3xx is just "not ready". connect(host, port,
-    timeout) makes the connection (tests pass a fake). Connection failures
+def check_health(address=(HUB_HOST, HUB_PORT), deadline=HEALTH_DEADLINE_S, connect_timeout=HEALTH_TIMEOUT_S):
+    """One HTTP/1.0 GET of the health address over a plain socket, with a
+    deadline for the whole request: the connect waits at most
+    connect_timeout (and never past the deadline), and every send and read
+    waits only for the time left, so a server that trickles bytes cannot
+    hold it longer. The socket is always closed. Nothing is followed (a 3xx
+    is "not ready"). Connection failures, timeouts and malformed answers
     are "not ready"; anything unexpected is raised here, in the caller."""
-    connect = connect or http.client.HTTPConnection
-    box = {}
-
-    def attempt():
-        try:
-            conn = connect(HUB_HOST, HUB_PORT, timeout=timeout)
-            box["conn"] = conn
-            try:
-                conn.request("GET", HEALTH_PATH, headers={"Accept": "application/json"})
-                resp = conn.getresponse()
-                box["ok"] = health_verdict(resp.status, resp.read(MAX_BODY + 1))
-            finally:
-                conn.close()
-        except BaseException as error:  # noqa: BLE001 - handed to the caller below
-            box["error"] = error
-
-    worker = threading.Thread(target=attempt, name="health", daemon=True)
-    worker.start()
-    worker.join(deadline)
-    if worker.is_alive():
-        conn = box.get("conn")
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001 - the answer is "not ready" either way
-                pass
-        return False
-    error = box.get("error")
-    if error is not None:
-        if isinstance(error, EXPECTED_HEALTH_ERRORS):
+    end = time.monotonic() + deadline
+    sock = None
+    try:
+        sock = socket.create_connection(address, timeout=max(0.001, min(connect_timeout, deadline)))
+        host = "%s:%d" % address
+        request = "GET %s HTTP/1.0\r\nHost: %s\r\nAccept: application/json\r\nConnection: close\r\n\r\n" % (HEALTH_PATH, host)
+        remaining = end - time.monotonic()
+        if remaining <= 0:
             return False
-        raise error
-    return box.get("ok", False)
+        sock.settimeout(remaining)
+        sock.sendall(request.encode("ascii"))
+        data = bytearray()
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return False
+            sock.settimeout(remaining)
+            chunk = sock.recv(16384)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > MAX_RESPONSE:
+                return False
+        status, body = parse_response(bytes(data))
+        return health_verdict(status, body)
+    except (OSError, ValueError):
+        return False
+    finally:
+        if sock is not None:
+            sock.close()
 
 
 def find_chromium():
@@ -220,14 +313,51 @@ def browser_running(profile):
     return False
 
 
-def _folder(path):
-    """A real folder that setup made, or NotSetUp."""
+def _open_at(dir_fd, name, flags, mode_check):
+    """fd for name in an open folder, never following a link: NotSetUp if
+    missing, Unsafe for a link or the wrong kind of file."""
     try:
-        st = os.lstat(path)
+        fd = os.open(name, flags, dir_fd=dir_fd)
     except FileNotFoundError as error:
         raise NotSetUp() from error
-    if not stat.S_ISDIR(st.st_mode):
-        raise NotSetUp()
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO):
+            raise Unsafe() from error
+        raise
+    try:
+        st = os.fstat(fd)
+        if not mode_check(st.st_mode) or st.st_uid != os.getuid():
+            raise Unsafe()
+        if not stat.S_ISDIR(st.st_mode) and st.st_nlink != 1:
+            raise Unsafe()
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_state(home):
+    """The state folder, reached from home one component at a time (O_NOFOLLOW)."""
+    fd = os.open(home, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+    try:
+        for part in STATE_DIR.split(os.sep):
+            nfd = _open_at(fd, part, DIR_FLAGS, stat.S_ISDIR)
+            os.close(fd)
+            fd = nfd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _same_entry(fd, dir_fd, name):
+    """The open file fd is still the one called name in dir_fd."""
+    try:
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    held = os.fstat(fd)
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
 
 
 def stop_children():
@@ -247,6 +377,7 @@ def stop_children():
 
 class Launcher:
     def __init__(self, home):
+        self.home = home
         self.state = os.path.join(home, STATE_DIR)
         self.run_dir = os.path.join(self.state, RUN_DIR)
         self.profile = os.path.join(self.state, BROWSER_PROFILE)
@@ -280,27 +411,67 @@ class Launcher:
         STARTED.append(self.child)
 
     def wait_page_url(self):
-        path = os.path.join(self.run_dir, WAIT_PAGE)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(WAIT_HTML)
-        return "file://" + urllib.parse.quote(path)
+        """The page setup wrote to run/ (checked: a regular file of this
+        user with one link, reached without following links), or None."""
+        try:
+            state_fd = open_state(self.home)
+            try:
+                run_fd = _open_at(state_fd, RUN_DIR, DIR_FLAGS, stat.S_ISDIR)
+                try:
+                    os.close(_open_at(run_fd, WAIT_PAGE, FILE_FLAGS, stat.S_ISREG))
+                finally:
+                    os.close(run_fd)
+            finally:
+                os.close(state_fd)
+        except (NotSetUp, Unsafe, OSError):
+            return None
+        return "file://" + urllib.parse.quote(os.path.join(self.run_dir, WAIT_PAGE))
 
     def sleep(self, seconds):
         end = time.monotonic() + seconds
         while not self.stopping and time.monotonic() < end:
             time.sleep(min(0.5, max(0.0, end - time.monotonic())))
 
-    def run(self):
-        _folder(self.state)
-        _folder(self.run_dir)
-        _folder(self.profile)
-        lock_fd = os.open(os.path.join(self.run_dir, LOCK_FILE), os.O_WRONLY | os.O_CREAT | NOFOLLOW, 0o600)
+    def take_lock(self):
+        """The launcher lock fd, or None when this launcher should not run
+        (setup, --off or --undo is running, or another launcher holds it).
+
+        setup.lock is held shared only while the state is checked and the
+        launcher lock is taken, so --off and --undo (which hold it
+        exclusive) never meet a launcher that is still starting."""
+        state_fd = open_state(self.home)
         try:
+            setup_fd = _open_at(state_fd, SETUP_LOCK, FILE_FLAGS, stat.S_ISREG)
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return 0  # another launcher is already running
+                try:
+                    fcntl.flock(setup_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return None  # setup, --off or --undo is running
+                if not _same_entry(setup_fd, state_fd, SETUP_LOCK):
+                    return None  # removed by a finishing --undo
+                os.close(_open_at(state_fd, MANIFEST, FILE_FLAGS, stat.S_ISREG))
+                os.close(_open_at(state_fd, BROWSER_PROFILE, DIR_FLAGS, stat.S_ISDIR))
+                run_fd = _open_at(state_fd, RUN_DIR, DIR_FLAGS, stat.S_ISDIR)
+                try:
+                    lock_fd = _open_at(run_fd, LOCK_FILE, os.O_RDWR | NOFOLLOW, stat.S_ISREG)
+                finally:
+                    os.close(run_fd)
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(lock_fd)
+                    return None  # another launcher is already running
+                return lock_fd
+            finally:
+                os.close(setup_fd)  # lets go of the shared setup.lock
+        finally:
+            os.close(state_fd)
+
+    def run(self):
+        lock_fd = self.take_lock()
+        if lock_fd is None:
+            return 0
+        try:
             return self.run_locked()
         finally:
             os.close(lock_fd)
@@ -328,7 +499,9 @@ class Launcher:
                 break
             if action == "show_hint":
                 hint_shown = True
-                self.start(binary, self.wait_page_url())
+                page = self.wait_page_url()
+                if page is not None:
+                    self.start(binary, page)
             self.sleep(next_delay(elapsed))
         self.stop_child()
         return 0
@@ -373,6 +546,8 @@ def guarded_main():
         code = exit_request.code if isinstance(exit_request.code, int) or exit_request.code is None else fail_safe()
     except NotSetUp:
         code = fail_safe(NOT_SET_UP)
+    except Unsafe:
+        code = fail_safe(UNSAFE)
     except BaseException:  # noqa: BLE001 - fixed output only
         code = fail_safe()
     return code

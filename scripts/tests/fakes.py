@@ -149,6 +149,7 @@ class FakeSystem:
         self.env = {}
         self.procs = []
         self.environs = {}
+        self.kill_results = {}
         self.kills = []
         self.executables = set()
         self.sleeps = []
@@ -304,8 +305,9 @@ class FakeSystem:
         return dict(value)
 
     def kill(self, pid, sig):
+        """"sent", or what kill_results says for (pid, sig) or pid ("gone", "denied")."""
         self.kills.append((pid, sig))
-        return True
+        return self.kill_results.get((pid, sig), self.kill_results.get(pid, "sent"))
 
     def sleep(self, seconds):
         self.sleeps.append(seconds)

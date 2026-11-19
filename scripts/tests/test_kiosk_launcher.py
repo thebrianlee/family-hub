@@ -6,6 +6,9 @@ import ast
 import fcntl
 import json
 import os
+import socket
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -33,6 +36,8 @@ class HealthVerdictTests(unittest.TestCase):
             (None, good),
             (200, b'{"ok":true,"pad":"' + b"x" * kl.MAX_BODY + b'"}'),
             (200, "not bytes"),
+            (200, b'{"ok":true,"ok":true}'),
+            (200, b'{"ok":true,"x":NaN}'),
         ):
             self.assertFalse(kl.health_verdict(status, body), (status, body[:40]))
 
@@ -52,106 +57,187 @@ class HealthVerdictTests(unittest.TestCase):
         self.assertEqual(kl.decide(kl.HINT_AFTER_S + 300, False, True), "wait")
 
 
-class FakeResponse:
-    def __init__(self, status, body):
-        self.status = status
-        self.body = body
-        self.reads = []
+class LocalServer:
+    """A real TCP server on 127.0.0.1 and an ephemeral port (never 3847):
+    each connection is handed to handler(conn) in a thread."""
 
-    def read(self, amount=None):
-        self.reads.append(amount)
-        return self.body if amount is None else self.body[:amount]
-
-
-class FakeConnection:
-    """Stands in for http.client.HTTPConnection: records every connection and
-    request, answers from a script. Nothing here opens a socket."""
-
-    made = []
-
-    def __init__(self, answer):
-        self.answer = answer
+    def __init__(self, test, handler):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.address = self.sock.getsockname()
+        assert self.address[1] != kl.HUB_PORT
+        self.handler = handler
+        self.connections = 0
         self.requests = []
-        self.closed = False
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+        test.addCleanup(self.close)
 
-    @classmethod
-    def factory(cls, answer):
-        def connect(host, port, timeout=None):
-            conn = cls(answer)
-            conn.target = (host, port, timeout)
-            cls.made.append(conn)
-            return conn
+    def serve(self):
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.connections += 1
+            threading.Thread(target=self.handle, args=(conn,), daemon=True).start()
 
-        return connect
-
-    def request(self, method, path, headers=None):
-        self.requests.append((method, path, dict(headers or {})))
-        if isinstance(self.answer, BaseException):
-            raise self.answer
-
-    def getresponse(self):
-        return self.answer
+    def handle(self, conn):
+        try:
+            conn.settimeout(5)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            self.requests.append(data)
+            self.handler(conn, self.stop)
+        except OSError:
+            pass
+        finally:
+            conn.close()
 
     def close(self):
-        self.closed = True
+        self.stop.set()
+        self.sock.close()
+
+
+def answer(status, body, headers=()):
+    def handler(conn, _stop):
+        head = ["HTTP/1.1 %s" % status, "Content-Type: application/json"] + list(headers)
+        if not any(h.lower().startswith("transfer-encoding") for h in headers):
+            head.append("Content-Length: %d" % len(body))
+        conn.sendall(("\r\n".join(head) + "\r\n\r\n").encode() + body)
+
+    return handler
+
+
+def chunked(body):
+    return b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
 
 
 class CheckHealthTests(unittest.TestCase):
-    def setUp(self):
-        FakeConnection.made = []
+    """check_health against a real local socket server (an ephemeral port)."""
 
-    def check(self, answer):
-        result = kl.check_health(connect=FakeConnection.factory(answer), timeout=0.5)
-        self.assertEqual(len(FakeConnection.made), 1, "exactly one connection, no redirect follow-up")
-        conn = FakeConnection.made[0]
-        self.assertEqual(conn.target, ("127.0.0.1", 3847, 0.5))
-        self.assertEqual(conn.requests, [("GET", "/api/health", {"Accept": "application/json"})])
-        self.assertTrue(conn.closed)
+    def check(self, handler, **kwargs):
+        server = LocalServer(self, handler)
+        sockets = []
+        real = socket.create_connection
+
+        def create_connection(address, timeout=None):
+            sock = real(address, timeout=timeout)
+            sockets.append(sock)
+            return sock
+
+        with mock.patch.object(kl.socket, "create_connection", side_effect=create_connection):
+            result = kl.check_health(address=server.address, **kwargs)
+        self.assertEqual(server.connections, 1, "exactly one connection, no redirect follow-up")
+        self.assertEqual(len(sockets), 1)
+        self.assertEqual(sockets[0].fileno(), -1, "the socket was closed")
+        for _ in range(50):
+            if server.requests:
+                break
+            time.sleep(0.01)
+        self.assertTrue(server.requests[0].startswith(b"GET /api/health HTTP/1.0\r\n"))
         return result
 
     def test_healthy(self):
-        self.assertTrue(self.check(FakeResponse(200, b'{"ok":true,"schema":3}')))
+        self.assertTrue(self.check(answer("200 OK", b'{"ok":true,"schema":3}')))
+        self.assertTrue(self.check(answer("200 OK", chunked(b'{"ok":true}'), ["Transfer-Encoding: chunked"])))
 
-    def test_redirect_is_not_followed(self):
-        self.assertFalse(self.check(FakeResponse(302, b'{"ok":true}')))
-
-    def test_blocked_database(self):
-        self.assertFalse(self.check(FakeResponse(503, b'{"ok":false,"code":"db_newer"}')))
-
-    def test_body_is_bounded(self):
-        response = FakeResponse(200, b'{"ok":true,"pad":"' + b"x" * (2 * kl.MAX_BODY) + b'"}')
-        self.assertFalse(self.check(response))
-        self.assertEqual(response.reads, [kl.MAX_BODY + 1])
-
-    def test_connection_failures(self):
-        for error in (ConnectionRefusedError(111, "refused"), TimeoutError("timed out"), OSError(113, "no route"), ValueError("bad")):
-            FakeConnection.made = []
-            self.assertFalse(self.check(error), error)
+    def test_not_ready_answers(self):
+        cases = (
+            answer("302 Found", b'{"ok":true}', ["Location: http://127.0.0.1:3847/elsewhere"]),
+            answer("503 Service Unavailable", b'{"ok":false,"code":"db_newer"}'),
+            answer("200 OK", b'{"ok":true,"ok":false}'),  # a duplicate key
+            answer("200 OK", b'{"ok":true,"pad":"' + b"x" * (2 * kl.MAX_BODY) + b'"}'),
+            answer("200 OK", b'{"ok":true}', ["Content-Length: 99"]),
+            answer("200 OK", b"zz\r\n", ["Transfer-Encoding: chunked"]),
+            lambda conn, _stop: conn.sendall(b"garbage\r\n\r\n"),
+            lambda conn, _stop: None,  # closes without an answer
+        )
+        for handler in cases:
+            with self.subTest(handler):
+                self.assertFalse(self.check(handler))
 
     def test_a_trickling_server_is_cut_off_by_the_deadline(self):
-        import time
-
-        class Slow(FakeResponse):
-            def read(self, amount=None):
-                time.sleep(2.0)  # one byte now and then, never done in time
-                return b'{"ok":true}'
+        def trickle(conn, stop):
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n")
+            for byte in b'{"ok":true}':
+                if stop.wait(0.15):
+                    return
+                conn.sendall(bytes([byte]))  # each read gets a byte in time; the whole never does
 
         started = time.monotonic()
-        result = kl.check_health(connect=FakeConnection.factory(Slow(200, b"")), timeout=3.0, deadline=0.3)
-        self.assertFalse(result)
-        self.assertLess(time.monotonic() - started, 1.0)
-        self.assertTrue(FakeConnection.made[0].closed)
+        self.assertFalse(self.check(trickle, deadline=0.6, connect_timeout=3.0))
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.55)
+        self.assertLess(elapsed, 1.5)
+
+    def test_a_silent_server_is_cut_off_by_the_deadline(self):
+        started = time.monotonic()
+        self.assertFalse(self.check(lambda conn, stop: stop.wait(5), deadline=0.4))
+        self.assertLess(time.monotonic() - started, 1.2)
+
+    def test_nothing_listening(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        address = probe.getsockname()
+        probe.close()  # a free port: connection refused
+        self.assertNotEqual(address[1], kl.HUB_PORT)
+        self.assertFalse(kl.check_health(address=address, deadline=1.0))
 
     def test_unexpected_errors_reach_the_caller(self):
-        with self.assertRaises(RuntimeError):
-            kl.check_health(connect=FakeConnection.factory(RuntimeError("unexpected")), deadline=1.0)
+        with mock.patch.object(kl.socket, "create_connection", side_effect=RuntimeError("unexpected")):
+            with self.assertRaises(RuntimeError):
+                kl.check_health(deadline=1.0)
 
-    def test_default_uses_http_client_on_loopback(self):
-        import http.client
+    def test_default_address_is_the_hub_on_loopback(self):
+        """Checked with a fake socket, so nothing touches port 3847."""
 
-        with mock.patch.object(http.client, "HTTPConnection", FakeConnection.factory(FakeResponse(200, b'{"ok":true}'))):
+        class FakeSocket:
+            def __init__(self):
+                self.sent, self.timeouts, self.closed = b"", [], False
+                self.answers = [b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}', b""]
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+            def sendall(self, data):
+                self.sent += data
+
+            def recv(self, _size):
+                return self.answers.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        fake = FakeSocket()
+        with mock.patch.object(kl.socket, "create_connection", return_value=fake) as connect:
             self.assertTrue(kl.check_health())
-        self.assertEqual(FakeConnection.made[0].target, ("127.0.0.1", 3847, kl.HEALTH_TIMEOUT_S))
+        self.assertEqual(connect.call_args, mock.call(("127.0.0.1", 3847), timeout=kl.HEALTH_TIMEOUT_S))
+        self.assertTrue(fake.sent.startswith(b"GET /api/health HTTP/1.0\r\nHost: 127.0.0.1:3847\r\n"))
+        self.assertTrue(fake.closed)
+        self.assertTrue(all(0 < value <= kl.HEALTH_DEADLINE_S for value in fake.timeouts))
+
+    def test_parse_response(self):
+        self.assertEqual(kl.parse_response(b"HTTP/1.0 200 OK\r\n\r\nbody"), (200, b"body"))
+        self.assertEqual(kl.parse_response(b"HTTP/1.1 503\r\nContent-Length: 2\r\n\r\nabXX"), (503, b"ab"))
+        for bad in (
+            b"HTTP/2 200 OK\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\n0\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\n Bad: header\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\n",
+            b"HTTP/1.1 200 OK",
+        ):
+            with self.assertRaises(ValueError, msg=bad):
+                kl.parse_response(bad)
 
 
 class ChromiumArgvTests(unittest.TestCase):
@@ -170,6 +256,7 @@ class ChromiumArgvTests(unittest.TestCase):
         self.assertEqual(kl.BROWSER_PROFILE, kiosk_files.BROWSER_PROFILE)
         self.assertEqual(kl.RUN_DIR, kiosk_files.RUN_DIR)
         self.assertEqual((kl.LOCK_FILE, kl.WAIT_PAGE), kiosk_files.LAUNCHER_RUN_FILES)
+        self.assertEqual((kl.SETUP_LOCK, kl.MANIFEST), (kiosk_files.SETUP_LOCK, kiosk_files.MANIFEST))
         self.assertEqual(kl.CHROMIUM_CANDIDATES, kiosk_detect.CHROMIUM_CANDIDATES)
         self.assertEqual((kl.HUB_HOST, kl.HUB_PORT, kl.HEALTH_PATH), ("127.0.0.1", 3847, "/api/health"))
         self.assertIn(os.path.join("$HOME", kiosk.KIOSK_LAUNCHER), kiosk.LAUNCH_LINE)
@@ -185,7 +272,7 @@ class ChromiumArgvTests(unittest.TestCase):
                 imported.add("." * node.level + (node.module or ""))
         self.assertEqual(
             imported,
-            {"fcntl", "http.client", "json", "os", "signal", "stat", "subprocess", "sys", "threading", "time", "urllib.parse", "warnings"},
+            {"errno", "fcntl", "json", "os", "re", "signal", "socket", "stat", "subprocess", "sys", "threading", "time", "urllib.parse", "warnings"},
         )
 
 
@@ -212,8 +299,18 @@ class FakeChild:
 class LauncherFlowTests(unittest.TestCase):
     def setUp(self):
         self.home = kfk.temp_home(self)
-        for sub in (kl.RUN_DIR, kl.BROWSER_PROFILE):  # setup makes these
-            os.makedirs(os.path.join(self.home, kl.STATE_DIR, sub), 0o700)
+        # What setup makes: the record, setup.lock, run/ with the launcher's
+        # lock file and waiting page, and browser/.
+        self.state = os.path.join(self.home, kl.STATE_DIR)
+        for sub in (kl.RUN_DIR, kl.BROWSER_PROFILE):
+            os.makedirs(os.path.join(self.state, sub), 0o700)
+        for rel, data in (
+            (kl.MANIFEST, b"{}"),
+            (kl.SETUP_LOCK, b""),
+            (os.path.join(kl.RUN_DIR, kl.LOCK_FILE), b""),
+            (os.path.join(kl.RUN_DIR, kl.WAIT_PAGE), kl.WAIT_HTML.encode()),
+        ):
+            kfk.write(self.state, rel, data, mode=0o600)
         self.started = []
         self.children = []
         self.clock = [0.0]
@@ -243,32 +340,65 @@ class LauncherFlowTests(unittest.TestCase):
             self.addCleanup(patch.stop)
         return launcher
 
+    def hold(self, rel, operation):
+        fd = os.open(os.path.join(self.state, rel), os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, operation | fcntl.LOCK_NB)
+        return fd
+
     def test_opens_the_hub_only_when_healthy(self):
+        before = kfk.tree(self.home)
         code = self.launcher([False, False, False, True]).run()
         self.assertEqual(code, 0)
         self.assertEqual(self.started, [kl.HUB_URL])
         self.assertEqual(self.clock[0], 3 * 2.0 + 2 * 1.0)  # three 2 s polls, then two 1 s waits on the browser
+        self.assertEqual(kfk.tree(self.home), before)  # the launcher creates and writes nothing
 
-    def test_shows_a_local_hint_then_replaces_it(self):
-        health = [False] * 60 + [True]
-        self.launcher(health).run()
+    def test_shows_the_page_setup_wrote_then_replaces_it(self):
+        before = kfk.tree(self.home)
+        self.launcher([False] * 60 + [True]).run()
         self.assertEqual(len(self.started), 2)
-        self.assertTrue(self.started[0].startswith("file://"))
+        page = os.path.join(self.state, kl.RUN_DIR, kl.WAIT_PAGE)
+        self.assertEqual(self.started[0], "file://" + page)
         self.assertEqual(self.started[1], kl.HUB_URL)
         self.assertTrue(self.children[0].terminated)  # hint closed before the hub opens
-        page = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, kl.RUN_DIR, kl.WAIT_PAGE)
-        with open(page, encoding="utf-8") as handle:
-            self.assertIn("Sproutwall is starting", handle.read())
-        self.assertEqual(os.stat(page).st_mode & 0o777, 0o600)
+        self.assertEqual(kfk.tree(self.home), before)
+
+    def test_a_missing_or_replaced_page_is_not_shown(self):
+        page = os.path.join(self.state, kl.RUN_DIR, kl.WAIT_PAGE)
+        os.unlink(page)
+        os.symlink(os.path.join(self.home, "elsewhere.html"), page)
+        self.launcher([False] * 60 + [True]).run()
+        self.assertEqual(self.started, [kl.HUB_URL])
 
     def test_one_launcher_at_a_time(self):
-        run_dir = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, kl.RUN_DIR)
-        fd = os.open(os.path.join(run_dir, kl.LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o600)
-        self.addCleanup(os.close, fd)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        launcher = self.launcher([True])
-        self.assertEqual(launcher.run(), 0)
+        self.hold(os.path.join(kl.RUN_DIR, kl.LOCK_FILE), fcntl.LOCK_EX)
+        self.assertEqual(self.launcher([True]).run(), 0)
         self.assertEqual(self.started, [])
+
+    def test_waits_for_nobody_while_setup_off_or_undo_runs(self):
+        self.hold(kl.SETUP_LOCK, fcntl.LOCK_EX)  # what --off and --undo hold
+        self.assertEqual(self.launcher([True]).run(), 0)
+        self.assertEqual(self.started, [])
+
+    def test_lets_go_of_setup_lock_once_started(self):
+        """While the browser runs, --off and --undo can take setup.lock."""
+        launcher = self.launcher([True])
+        original_start = launcher.start
+        taken = []
+
+        def start(binary, url):
+            original_start(binary, url)
+            fd = os.open(os.path.join(self.state, kl.SETUP_LOCK), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                taken.append(True)
+            finally:
+                os.close(fd)
+
+        launcher.start = start
+        self.assertEqual(launcher.run(), 0)
+        self.assertEqual(taken, [True])
 
     def test_no_second_browser(self):
         launcher = self.launcher([True])
@@ -290,12 +420,43 @@ class LauncherFlowTests(unittest.TestCase):
         self.assertTrue(self.children[0].terminated)
 
     def test_not_set_up(self):
+        for rel in (kl.MANIFEST, kl.SETUP_LOCK, os.path.join(kl.RUN_DIR, kl.LOCK_FILE)):
+            with self.subTest(rel):
+                path = os.path.join(self.state, rel)
+                os.rename(path, path + ".away")
+                with self.assertRaises(kl.NotSetUp):
+                    self.launcher([True]).run()
+                os.rename(path + ".away", path)
         for sub in (kl.RUN_DIR, kl.BROWSER_PROFILE):
-            os.rmdir(os.path.join(self.home, kl.STATE_DIR, sub))
-            launcher = self.launcher([True])
-            with self.assertRaises(kl.NotSetUp):
-                launcher.run()
-            os.makedirs(os.path.join(self.home, kl.STATE_DIR, sub), 0o700)
+            with self.subTest(sub):
+                path = os.path.join(self.state, sub)
+                os.rename(path, path + ".away")
+                with self.assertRaises(kl.NotSetUp):
+                    self.launcher([True]).run()
+                os.rename(path + ".away", path)
+        self.assertEqual(self.started, [])
+
+    def test_links_are_never_followed(self):
+        outside = os.path.join(self.home, "outside")
+        os.makedirs(outside)
+        cases = (
+            kl.RUN_DIR,
+            os.path.join(kl.RUN_DIR, kl.LOCK_FILE),
+            kl.SETUP_LOCK,
+            kl.BROWSER_PROFILE,
+            "",  # the state folder itself
+        )
+        for rel in cases:
+            with self.subTest(rel or "state folder"):
+                path = os.path.join(self.state, rel) if rel else self.state
+                os.rename(path, path + ".away")
+                os.symlink(path + ".away", path)
+                before = kfk.tree(self.home)
+                with self.assertRaises(kl.Unsafe):
+                    self.launcher([True]).run()
+                self.assertEqual(kfk.tree(self.home), before)
+                os.unlink(path)
+                os.rename(path + ".away", path)
         self.assertEqual(self.started, [])
 
     def test_never_as_root(self):
