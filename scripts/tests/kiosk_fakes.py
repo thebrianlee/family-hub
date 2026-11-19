@@ -283,6 +283,11 @@ def fake_renameat2(src_dir_fd, src, dst_dir_fd, dst, flags):
         raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
 
 
+# The real functions, before any test patches them (portable() below).
+REAL_XATTRS = kf._xattrs
+REAL_RENAMEAT2 = kf.renameat2
+
+
 def portable(test):
     """Where renameat2 or listxattr is missing (macOS), use fake_renameat2
     and "no extended attributes", so the logic runs there too. On Linux the

@@ -4,6 +4,7 @@ Chromium arguments, single instance, and the wait-then-open flow."""
 
 import ast
 import fcntl
+import io
 import json
 import os
 import socket
@@ -226,7 +227,21 @@ class CheckHealthTests(unittest.TestCase):
 
     def test_parse_response(self):
         self.assertEqual(kl.parse_response(b"HTTP/1.0 200 OK\r\n\r\nbody"), (200, b"body"))
-        self.assertEqual(kl.parse_response(b"HTTP/1.1 503\r\nContent-Length: 2\r\n\r\nabXX"), (503, b"ab"))
+        self.assertEqual(kl.parse_response(b"HTTP/1.1 503\r\nContent-Length: 2\r\n\r\nab"), (503, b"ab"))
+        chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        self.assertEqual(kl.parse_response(chunked + b"2\r\nab\r\n0\r\n\r\n"), (200, b"ab"))
+        self.assertEqual(kl.parse_response(chunked + b"2;x=1\r\nab\r\n0\r\nExpires: never\r\n\r\n"), (200, b"ab"))
+        for bad in (
+            b"HTTP/1.1 503\r\nContent-Length: 2\r\n\r\nabXX",  # bytes beyond Content-Length
+            b"HTTP/1.1 503\r\nContent-Length: 3\r\n\r\nab",  # short
+            chunked + b"2\r\nab\r\n0\r\n",  # no final CRLF
+            chunked + b"2\r\nab\r\n0\r\n\r\nextra",  # bytes after the last chunk
+            chunked + b"2\r\nab\r\n0\r\nno colon\r\n\r\n",  # a malformed trailer field
+            chunked + b"2\r\nab\r\n0\r\nX: 1\r\n",  # a trailer without its end
+            chunked + b"2\r\nabc\r\n0\r\n\r\n",  # a chunk longer than its size
+        ):
+            with self.assertRaises(ValueError, msg=bad):
+                kl.parse_response(bad)
         for bad in (
             b"HTTP/2 200 OK\r\n\r\n",
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nabc",
@@ -238,6 +253,49 @@ class CheckHealthTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError, msg=bad):
                 kl.parse_response(bad)
+
+
+class BrowserRunningTests(unittest.TestCase):
+    """browser_running against a fake /proc: only a process confirmed gone
+    is skipped; any other error is unknown, never "no browser"."""
+
+    def run_with(self, cmdlines, errors=None, listing_error=None):
+        errors = errors or {}
+        uid = os.getuid()
+
+        def listdir(path):
+            self.assertEqual(path, "/proc")
+            if listing_error:
+                raise listing_error
+            return ["self", "1"] + sorted(cmdlines) + sorted(errors)
+
+        def stat(path):
+            return os.stat_result((0o555, 0, 0, 1, uid if path != "/proc/1" else uid + 1, 0, 0, 0, 0, 0))  # pid 1: another user
+
+        def open_(path, mode="r"):
+            pid = path.split("/")[2]
+            if pid in errors:
+                raise errors[pid]
+            return io.BytesIO(cmdlines[pid])
+
+        with mock.patch.object(kl.os, "listdir", side_effect=listdir), mock.patch.object(kl.os, "stat", side_effect=stat), mock.patch.object(kl, "open", side_effect=open_, create=True):
+            return kl.browser_running("/state/browser")
+
+    def test_found_and_not_found(self):
+        mine = b"chromium\0--kiosk\0--user-data-dir=/state/browser\0"
+        self.assertTrue(self.run_with({"20": b"bash\0", "21": mine}))
+        self.assertFalse(self.run_with({"20": b"bash\0", "21": b"chromium\0--user-data-dir=/elsewhere\0"}))
+
+    def test_a_process_that_is_gone_is_skipped(self):
+        for error in (FileNotFoundError(2, "gone"), ProcessLookupError(3, "gone")):
+            self.assertFalse(self.run_with({"20": b"bash\0"}, {"30": error}))
+
+    def test_other_errors_are_unknown(self):
+        for error in (PermissionError(13, "denied"), OSError(5, "I/O error")):
+            with self.assertRaises(kl.ProcessesUnknown):
+                self.run_with({"20": b"bash\0"}, {"30": error})
+        with self.assertRaises(kl.ProcessesUnknown):
+            self.run_with({}, listing_error=PermissionError(13, "denied"))
 
 
 class ChromiumArgvTests(unittest.TestCase):
@@ -404,6 +462,13 @@ class LauncherFlowTests(unittest.TestCase):
         launcher = self.launcher([True])
         with mock.patch.object(kl, "browser_running", return_value=True):
             self.assertEqual(launcher.run(), 0)
+        self.assertEqual(self.started, [])
+
+    def test_no_browser_when_the_process_table_cannot_be_read(self):
+        launcher = self.launcher([True])
+        with mock.patch.object(kl, "browser_running", side_effect=kl.ProcessesUnknown()):
+            with self.assertRaises(kl.ProcessesUnknown):  # the guard turns it into one fixed line, exit 1
+                launcher.run()
         self.assertEqual(self.started, [])
 
     def test_stop_signal_closes_the_browser(self):

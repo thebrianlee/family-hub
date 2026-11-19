@@ -161,16 +161,17 @@ REFUSALS = {
     ),
     "kept_aside": (
         EXIT_CHANGED,
-        "Stopped: a file this tool manages changed while it was being updated, and a new file took its name "
-        "before it could be put back, so the changed version was kept next to it under a hidden name ending "
-        "in .sproutwall-removed. Nothing more was written. Compare the two by hand (docs/install-cli.md, "
-        "setup kiosk), then run the same command again, or --undo.",
+        "Stopped: a file this tool manages changed while it was being updated, and the tool could not prove "
+        "which version was whose, so it deleted none of them: one was kept next to the file, under the "
+        "file's name followed by .sproutwall-kept- and a number. Nothing more was written. Compare the "
+        "versions by hand (docs/install-cli.md, setup kiosk), then run the same command again, or --undo.",
     ),
     "unsupported_metadata": (
         EXIT_CANNOT_TELL,
-        "Refused: a file this tool would manage has extra hard links, another owner or group, or extended "
-        "attributes (such as an access control list), or its folder hands new files to another group. This "
-        "tool could not put such a file back exactly as it was, so it changes nothing. " + MANUAL,
+        "Stopped: a file this tool manages (or one it has just written) has extra hard links, another owner "
+        "or group, or extended attributes (such as an access control list), or its folder would give new "
+        "files an access control list or another group. This tool could not put such a file back exactly "
+        "as it was, so it stops here. " + MANUAL,
     ),
     "rename_unsupported": (
         EXIT_CANNOT_TELL,
@@ -350,30 +351,23 @@ def _state_errors(fn):
 
 def open_and_lock(state):
     """Open an existing state folder and take the exclusive run lock (so no
-    other run, and no new launcher, starts meanwhile). A setup.lock that is
-    missing (removed by hand) is made again. Returns (lock fd, made again)."""
+    other run, and no new launcher, starts meanwhile). Nothing is created:
+    a record without its setup.lock (removed by hand) is a damaged state,
+    refused before any check could report that nothing was changed while
+    something was. Returns the lock fd."""
 
     def go():
         state.open()
         try:
-            return kf.lock_fd(state.fd), False
-        except FileNotFoundError:
-            pass
-        try:
-            return kf.lock_fd(state.fd, create=True), True
-        except FileExistsError as error:
-            raise kf.Busy("made meanwhile") from error
+            return kf.lock_fd(state.fd)
+        except FileNotFoundError as error:
+            raise kf.StateDamaged("setup.lock missing") from error
 
     return _state_errors(go)
 
 
-def load_manifest(state, lock_made_again=False):
-    manifest = _state_errors(state.load)
-    rel = kf.state_rel(kf.SETUP_LOCK)
-    if lock_made_again:
-        # Record the new lock file as it is now, so --undo may remove it.
-        manifest["created_files"][rel] = _state_errors(lambda: state.record(kf.SETUP_LOCK))
-    return manifest
+def load_manifest(state):
+    return _state_errors(state.load)
 
 
 def check_no_links(state):
@@ -509,7 +503,9 @@ def create_fresh_state(state, seen, autologin, meta, progress):
     """A first setup: make the state folder with mkdir (it must not exist),
     take the run lock, and write the record (phase "init") right away. If
     anything fails before the record is written, what this run made is
-    removed again. Returns (lock fd, manifest)."""
+    removed again (the lock file only while it is still the one this run
+    holds); once the record is there, the folder and its lock stay for the
+    next run to finish. Returns (lock fd, manifest)."""
     created = []
     try:
         state.create(created)
@@ -536,11 +532,17 @@ def create_fresh_state(state, seen, autologin, meta, progress):
         manifest.update(meta)
         state.save(manifest)
     except BaseException:
+        try:
+            recorded = state.observe_created(kf.MANIFEST).exists
+        except BaseException:  # noqa: BLE001 - cannot tell: keep everything
+            recorded = True
         if lock is not None:
-            kf._unlink_quietly(state.fd, kf.SETUP_LOCK)
+            if not recorded:  # with a record, the lock stays with it: the next run finishes
+                kf.unlink_if_same_inode(state.fd, kf.SETUP_LOCK, lock)
             os.close(lock)
         state.close()
-        kf.remove_created_dirs(state.home, created)
+        if not recorded:
+            kf.remove_created_dirs(state.home, created)
         raise
     return lock, manifest
 
@@ -616,10 +618,12 @@ def transact(state, manifest, seen, targets, meta, operation, progress, save_cop
                 kf.remove_file(home, kf.MANAGED[key], seen[key])
             else:
                 kf.write_atomic(home, kf.MANAGED[key], data, mode, seen[key])
-    except (kf.ChangedMeanwhile, kf.UnsupportedMetadata) as error:
+    except kf.ChangedMeanwhile as error:
         raise Refused("changed_during") from error
     except kf.KeptAside as error:
         raise Refused("kept_aside") from error
+    except kf.UnsupportedMetadata as error:
+        raise Refused("unsupported_metadata") from error  # a generated file was rolled back
     for key in kf.MANAGED:
         entry = manifest["files"][key]
         entry.update({"installed": entry["target"], "previous": None, "target": None})
@@ -648,7 +652,8 @@ def remove_state(state, manifest, lock):
     for rel in manifest["created_files"]:
         if rel != lock_rel and not state.remove_created(manifest, rel):
             complete = False
-    state.remove_manifest()
+    if not state.remove_manifest():
+        complete = False
     if lock_rel in manifest["created_files"] and not state.remove_created(manifest, lock_rel):
         complete = False
     os.close(lock)
@@ -771,8 +776,8 @@ def run_setup(system, orientation, progress):
     try:
         manifest = None
         if kind == "manifest":
-            lock, made = open_and_lock(state)
-            manifest = load_manifest(state, made)
+            lock = open_and_lock(state)
+            manifest = load_manifest(state)
         seen = observe_all(state)
         check_metadata(seen)
         if manifest is not None:
@@ -845,8 +850,8 @@ def run_off(system, progress):
         return EXIT_OK, [NOT_INSTALLED]
     lock = None
     try:
-        lock, made = open_and_lock(state)
-        manifest = load_manifest(state, made)
+        lock = open_and_lock(state)
+        manifest = load_manifest(state)
         seen = observe_all(state)
         check_metadata(seen)
         stopped = stop_running(system, state)
@@ -888,8 +893,8 @@ def run_undo(system, progress):
         return EXIT_OK, [NOT_INSTALLED]
     lock = None
     try:
-        lock, made = open_and_lock(state)
-        manifest = load_manifest(state, made)
+        lock = open_and_lock(state)
+        manifest = load_manifest(state)
         seen = observe_all(state)
         check_metadata(seen)
         verify_accepted(manifest, seen)
@@ -992,10 +997,24 @@ def fallback_json():
     return serialize_check(unknown_report())
 
 
+# Everything a detection step raises when it cannot read or cannot parse a
+# source, or a tool it runs is missing: --check reports that item as unknown.
+UNREADABLE = (
+    det.CannotTell,
+    det.OutputsUnreadable,
+    Refused,
+    kf.RcXmlError,
+    kf.StateDamaged,
+    kf.ManagedFileError,
+    kf.StateLink,
+    OSError,
+)
+
+
 def _try(fn, default="unknown"):
     try:
         return fn()
-    except (det.CannotTell, Refused, kf.RcXmlError, kf.StateDamaged, kf.ManagedFileError, kf.StateLink, OSError):
+    except UNREADABLE:
         return default
 
 
@@ -1042,7 +1061,7 @@ def gather_check(system):
         report["blanking"] = "unknown"
     elif system_wide:
         report["blanking"] = "system"
-    report["autologin"] = det.autologin_state(system)
+    report["autologin"] = _try(lambda: det.autologin_state(system))
     report["running"] = _try(lambda: "yes" if launcher_processes(system, state) else "no")
     if installed == "no":
         report["files"] = report["orientation"] = report["rotation"] = report["touch"] = "none"

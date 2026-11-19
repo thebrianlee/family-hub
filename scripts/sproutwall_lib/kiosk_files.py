@@ -253,6 +253,9 @@ def kanshi_text(base, connector, transform):
 HASH_RE = re.compile(r"[0-9a-f]{64}", re.ASCII)
 TMP_SUFFIX = ".sproutwall-tmp"
 QUARANTINE_SUFFIX = ".sproutwall-removed"
+# A version that could not be put back under its own name and must not be
+# deleted is kept next to it as <name>.sproutwall-kept-<n> (n = 1, 2, ...).
+KEPT_INFIX = ".sproutwall-kept-"
 PROBE_NAME = "sproutwall-probe"
 MAX_FILE = 4 * 1024 * 1024
 CLOEXEC = getattr(os, "O_CLOEXEC", 0)
@@ -269,13 +272,16 @@ class ChangedMeanwhile(Exception):
 
 
 class KeptAside(Exception):
-    """A changed file could not be put back under its own name (a new file
-    took the name), so it was left under a hidden name in the same folder."""
+    """A version whose origin could not be proven (someone saved while the
+    tool swapped, moved or cleaned up) was not deleted: it was kept next to
+    the file as <name>.sproutwall-kept-<n>."""
 
 
 class UnsupportedMetadata(Exception):
     """A managed file has extra hard links, another owner or group, or
-    extended attributes (ACLs), which this tool cannot keep exactly."""
+    extended attributes (ACLs), which this tool cannot keep exactly; or a
+    folder would hand new files an ACL or another group; or a file this tool
+    generated did not come out with exactly the metadata --undo requires."""
 
 
 class RenameUnsupported(Exception):
@@ -512,26 +518,99 @@ def _write_temp(dir_fd, name, data, mode, suffix=TMP_SUFFIX):
         os.fchmod(fd, mode & 0o7777)
         os.fsync(fd)
     except BaseException:
-        os.close(fd)
-        _unlink_quietly(dir_fd, tmp)
+        try:
+            unlink_if_same_inode(dir_fd, tmp, fd)
+        finally:
+            os.close(fd)
         raise
     os.close(fd)
     return tmp
 
 
-def _unlink_quietly(dir_fd, name):
+def unlink_if_same_inode(dir_fd, name, fd):
+    """Unlink name only while it is still the file open as fd (a file this
+    run created and still holds). True if it was unlinked."""
     try:
-        os.unlink(name, dir_fd=dir_fd)
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     except FileNotFoundError:
-        pass
+        return False
+    held = os.fstat(fd)
+    if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
+        return False
+    os.unlink(name, dir_fd=dir_fd)
+    return True
+
+
+def is_exactly(dir_fd, name, proof):
+    """name is still proof's file: a regular file with the same device,
+    inode and sha256. A link, another kind of file, an unreadable or a
+    missing file is not."""
+    try:
+        now = observe_at(dir_fd, name)
+    except (OSError, ManagedFileError):
+        return False
+    return now.exists and (now.dev, now.ino, now.sha256) == (proof.dev, proof.ino, proof.sha256)
+
+
+def unlink_if_exactly(dir_fd, name, proof):
+    """Unlink name only if it is proven, right now, to be proof's file.
+    True if it was unlinked; False leaves whatever is there untouched."""
+    if not is_exactly(dir_fd, name, proof):
+        return False
+    os.unlink(name, dir_fd=dir_fd)
+    return True
+
+
+def keep_aside(dir_fd, name, base):
+    """Move name to base.sproutwall-kept-<n>, the first free n, with
+    RENAME_NOREPLACE (never over another file). Raises KeptAside, also when
+    no free name is found (then it stays where it is)."""
+    for number in range(1, 1000):
+        try:
+            renameat2(dir_fd, name, dir_fd, "%s%s%d" % (base, KEPT_INFIX, number), RENAME_NOREPLACE)
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            return  # nothing there any more: nothing to keep
+        raise KeptAside("kept aside")
+    raise KeptAside("left under its hidden name")
+
+
+def dispose(dir_fd, name, proof, base):
+    """Clean up a hidden name this run used: unlink it only if it is
+    exactly proof's file; anything else there (a version someone saved
+    meanwhile) is kept aside under base's kept name (KeptAside)."""
+    if unlink_if_exactly(dir_fd, name, proof):
+        return
+    try:
+        os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    keep_aside(dir_fd, name, base)
+
+
+def check_generated(seen, data, mode):
+    """A file this tool just wrote must have exactly what --undo will
+    require: these bytes and mode (else WriteCheckFailed), this user and
+    group, one link and no extended attributes, such as an ACL inherited
+    from the folder (else UnsupportedMetadata)."""
+    if not seen.exists or seen.sha256 != sha256(data) or seen.mode != mode & 0o7777:
+        raise WriteCheckFailed("read-back differs")
+    if seen.nlink != 1 or seen.uid != os.getuid() or seen.gid != os.getgid() or seen.xattrs:
+        raise UnsupportedMetadata("generated file metadata")
 
 
 def probe_rename_support(home, rels):
-    """Before any write: each file system that will hold a managed file
-    must support renameat2 RENAME_EXCHANGE and RENAME_NOREPLACE (checked
-    with two hidden probe files, removed again, in the nearest existing
-    folder), and no such folder may be setgid to another group (new files
-    would get that group). RenameUnsupported or UnsupportedMetadata."""
+    """Before any write, for the nearest existing folder of each path:
+    - it has no extended attributes at all, so no default ACL
+      (system.posix_acl_default) that new files would inherit, and it is
+      not setgid to another group (new files would get that group):
+      else UnsupportedMetadata; an xattr read error other than ENOTSUP
+      raises OSError (cannot tell);
+    - its file system supports renameat2 RENAME_EXCHANGE and
+      RENAME_NOREPLACE, checked with two hidden probe files that are
+      removed again (each only if still exactly the probe file): else
+      RenameUnsupported."""
     probed = set()
     for rel in rels:
         parent = os.path.dirname(rel)
@@ -547,89 +626,155 @@ def probe_rename_support(home, rels):
             st = os.fstat(dfd)
             if st.st_mode & stat.S_ISGID and st.st_gid != os.getgid():
                 raise UnsupportedMetadata("setgid folder")
+            if _xattrs(dfd):
+                raise UnsupportedMetadata("folder xattrs")  # a default ACL, or one we cannot vouch for
             if st.st_dev in probed:
                 continue
             probed.add(st.st_dev)
-            first = _write_temp(dfd, PROBE_NAME, b"1", 0o600)
-            second = None
+            made = []  # (name, Seen) of each probe file, to remove only those
             try:
-                second = _write_temp(dfd, PROBE_NAME, b"2", 0o600)
-                before = os.stat(first, dir_fd=dfd, follow_symlinks=False).st_ino
+                for data in (b"1", b"2"):
+                    name = _write_temp(dfd, PROBE_NAME, data, 0o600)
+                    made.append([name, observe_at(dfd, name)])
+                (first, first_seen), (second, second_seen) = made
                 renameat2(dfd, first, dfd, second, RENAME_EXCHANGE)
-                if os.stat(second, dir_fd=dfd, follow_symlinks=False).st_ino != before:
+                made[0][0], made[1][0] = second, first  # each file now has the other's name
+                if not is_exactly(dfd, second, first_seen):
                     raise RenameUnsupported("exchange did not swap")
                 try:
-                    renameat2(dfd, first, dfd, second, RENAME_NOREPLACE)
+                    renameat2(dfd, second, dfd, first, RENAME_NOREPLACE)
                 except FileExistsError:
                     pass
                 else:
-                    second = None  # it replaced the second probe: not safe
+                    made[0][0] = first  # it replaced the other probe file: not safe
+                    made.pop(1)
                     raise RenameUnsupported("noreplace replaced")
             finally:
-                _unlink_quietly(dfd, first)
-                if second is not None:
-                    _unlink_quietly(dfd, second)
+                for name, seen in made:
+                    unlink_if_exactly(dfd, name, seen)
         finally:
             os.close(dfd)
 
 
 def write_atomic(home, rel, data, mode, expect):
-    """Write data to home/rel so that a version saved by someone else at the
-    same moment is never lost.
+    """Write data to home/rel so that no version saved by someone else at
+    the same moment is ever lost, and nothing is deleted whose origin is
+    not proven at that moment.
 
     expect: the Seen verified for the path (ABSENT if it must not exist).
-    1. data goes to a new hidden file in the same folder (fsync, mode).
+    1. data goes to a new hidden file in the same folder (fsync, mode); it
+       must have exactly what --undo requires (check_generated), else it is
+       removed (proven ours) and UnsupportedMetadata / WriteCheckFailed is
+       raised before anything is swapped.
     2. The path is observed again (bytes, metadata, identity) and must
        still be exactly expect.
     3. An existing file is swapped with the new one in one step
        (renameat2 RENAME_EXCHANGE); a missing one is created only if still
        missing (RENAME_NOREPLACE).
-    4. The file that was swapped out is checked against expect. If someone
-       saved between 2 and 3, it is theirs: it is swapped back, the new file
-       is removed and ChangedMeanwhile is raised. Only verified bytes are
-       ever deleted.
-    5. The folder is fsync-ed and the result read back."""
+    4. The file that was swapped out must still be expect, and the file now
+       at the path must still be ours with the right metadata. If either is
+       not so, the swap is undone (see _undo_swap) and the run stops.
+    5. The swapped-out file is unlinked only if it is still exactly expect;
+       otherwise it is kept aside (KeptAside)."""
     dfd = open_dir(home, os.path.dirname(rel))
     name = os.path.basename(rel)
     try:
         tmp = _write_temp(dfd, name, data, mode)
-        ours_at_tmp = True
+        ours = observe_at(dfd, tmp)
         try:
+            check_generated(ours, data, mode)
             current = observe_at(dfd, name)
             if not current.same_file(expect):
                 raise ChangedMeanwhile("changed before the swap")
-            check_supported(current)
             if not expect.exists:
                 try:
                     renameat2(dfd, tmp, dfd, name, RENAME_NOREPLACE)
                 except FileExistsError as error:
                     raise ChangedMeanwhile("created meanwhile") from error
-                ours_at_tmp = False
-            else:
-                renameat2(dfd, tmp, dfd, name, RENAME_EXCHANGE)
-                ours_at_tmp = False  # tmp now holds the file that was there
-                try:
-                    previous = observe_at(dfd, tmp)
-                    verified = previous.same_moved(expect)
-                except (OSError, ManagedFileError):
-                    verified = False
-                if not verified:
-                    try:
-                        renameat2(dfd, tmp, dfd, name, RENAME_EXCHANGE)
-                    except BaseException as error:
-                        raise KeptAside("could not swap back") from error
-                    ours_at_tmp = True
-                    raise ChangedMeanwhile("changed in the window")
-                os.unlink(tmp, dir_fd=dfd)
-        finally:
-            if ours_at_tmp:
-                _unlink_quietly(dfd, tmp)
+        except BaseException:
+            dispose(dfd, tmp, ours, name)
+            raise
+        if not expect.exists:
+            try:
+                _check_in_place(dfd, name, ours, data, mode)
+            except (WriteCheckFailed, UnsupportedMetadata):
+                _take_back_new(dfd, name, ours)
+                raise
+            os.fsync(dfd)
+            return
+        try:
+            renameat2(dfd, tmp, dfd, name, RENAME_EXCHANGE)  # tmp now holds the file that was there
+        except BaseException:
+            dispose(dfd, tmp, ours, name)  # not swapped: tmp is still ours
+            raise
+        try:
+            displaced = observe_at(dfd, tmp)
+            verified = displaced.same_moved(expect)
+        except (OSError, ManagedFileError):
+            verified = False
+        if not verified:
+            _undo_swap(dfd, name, tmp, ours, ChangedMeanwhile("changed in the window"))
+        try:
+            _check_in_place(dfd, name, ours, data, mode)
+        except (WriteCheckFailed, UnsupportedMetadata) as error:
+            _undo_swap(dfd, name, tmp, ours, error)
+        if not unlink_if_exactly(dfd, tmp, displaced):
+            keep_aside(dfd, tmp, name)  # changed after it was checked: kept, never deleted
         os.fsync(dfd)
-        after = observe_at(dfd, name)
-        if not matches(after, file_state(data, mode)) or after.nlink != 1:
-            raise WriteCheckFailed("read-back differs")
     finally:
         os.close(dfd)
+
+
+def _check_in_place(dfd, name, ours, data, mode):
+    """After the swap: the file at name is still ours (same inode) and has
+    exactly what --undo requires."""
+    after = observe_at(dfd, name)
+    if (after.dev, after.ino) != (ours.dev, ours.ino):
+        raise WriteCheckFailed("not our file")
+    check_generated(after, data, mode)
+
+
+def _undo_swap(dfd, name, tmp, ours, error):
+    """Swap tmp and name back, then clean up tmp only if it is exactly the
+    file this run made; a version saved meanwhile is kept aside instead.
+    If the swap back itself fails, what is at tmp is kept aside. Raises
+    error, or KeptAside when something had to be kept."""
+    try:
+        renameat2(dfd, tmp, dfd, name, RENAME_EXCHANGE)
+    except BaseException:
+        keep_aside(dfd, tmp, name)
+        raise KeptAside("could not swap back") from error
+    dispose(dfd, tmp, ours, name)
+    os.fsync(dfd)
+    raise error
+
+
+def _take_back_new(dfd, name, ours):
+    """Remove a file this run just created at name (it did not exist
+    before), only if it is still exactly ours: moved to a hidden name,
+    checked again there, then unlinked. A file that is not ours (someone
+    saved over it) is left where it is."""
+    if not is_exactly(dfd, name, ours):
+        return
+    quarantine = _quarantine(dfd, name)
+    if quarantine is not None:
+        dispose(dfd, quarantine, ours, name)
+        os.fsync(dfd)
+
+
+def _quarantine(dfd, name):
+    """Move name to a new hidden name in the same folder (RENAME_NOREPLACE);
+    the hidden name, or None if name is gone."""
+    for _ in range(100):
+        quarantine = ".%s.%s%s" % (name, secrets.token_hex(6), QUARANTINE_SUFFIX)
+        try:
+            renameat2(dfd, name, dfd, quarantine, RENAME_NOREPLACE)
+            return quarantine
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            return None
+    raise FileExistsError(errno.EEXIST, "no free quarantine name")
 
 
 def remove_file(home, rel, expect):
@@ -639,8 +784,8 @@ def remove_file(home, rel, expect):
     folder (RENAME_NOREPLACE), checked there against expect, and only then
     unlinked. If it is not the expected file (someone saved meanwhile), it
     is moved back (RENAME_NOREPLACE) and ChangedMeanwhile is raised; if a
-    new file has taken the name in the meantime, it stays in quarantine and
-    KeptAside is raised."""
+    new file has taken the name in the meantime, it is kept aside as
+    <name>.sproutwall-kept-<n> and KeptAside is raised."""
     try:
         dfd = open_dir(home, os.path.dirname(rel))
     except FileNotFoundError:
@@ -654,28 +799,20 @@ def remove_file(home, rel, expect):
             raise ChangedMeanwhile("changed before the move")
         if not current.exists:
             return
-        check_supported(current)
-        for _ in range(100):
-            quarantine = ".%s.%s%s" % (name, secrets.token_hex(6), QUARANTINE_SUFFIX)
-            try:
-                renameat2(dfd, name, dfd, quarantine, RENAME_NOREPLACE)
-                break
-            except FileExistsError:
-                continue
-        else:
-            raise FileExistsError(errno.EEXIST, "no free quarantine name")
+        quarantine = _quarantine(dfd, name)
+        if quarantine is None:
+            raise ChangedMeanwhile("gone meanwhile")
         try:
             moved = observe_at(dfd, quarantine)
             verified = moved.same_moved(expect)
         except (OSError, ManagedFileError):
             verified = False
-        if not verified:
+        if not verified or not unlink_if_exactly(dfd, quarantine, moved):
             try:
                 renameat2(dfd, quarantine, dfd, name, RENAME_NOREPLACE)
-            except FileExistsError as error:
-                raise KeptAside("name taken again") from error
+            except FileExistsError:
+                keep_aside(dfd, quarantine, name)
             raise ChangedMeanwhile("changed in the window")
-        os.unlink(quarantine, dir_fd=dfd)
         os.fsync(dfd)
         if observe_at(dfd, name).exists:
             raise ChangedMeanwhile("created meanwhile")
@@ -688,15 +825,17 @@ def write_state_file(dir_fd, name, data, mode=0o600):
     file, fsync, rename by folder fd (a link at name is replaced, never
     followed), fsync the folder, read back."""
     tmp = _write_temp(dir_fd, name, data, mode)
+    ours = observe_at(dir_fd, tmp)
     try:
         os.rename(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
-        _unlink_quietly(dir_fd, tmp)
+        unlink_if_exactly(dir_fd, tmp, ours)
         raise
     os.fsync(dir_fd)
     after = observe_at(dir_fd, name)
-    if not after.exists or after.data != data or after.mode != mode:
-        raise WriteCheckFailed("state file read-back differs")
+    if (after.dev, after.ino) != (ours.dev, ours.ino):
+        raise WriteCheckFailed("state file replaced")
+    check_generated(after, data, mode)
     return after
 
 
@@ -986,6 +1125,7 @@ class State:
         self.home = home
         self.dir = os.path.join(home, kiosk.KIOSK_STATE_DIR)
         self.fd = None  # the open state folder, while a run holds it
+        self.saved = None  # the record as this run last wrote or read it
 
     def path(self, key):
         return os.path.join(self.home, MANAGED[key])
@@ -1054,11 +1194,12 @@ class State:
             parsed = kiosk.loads_strict(seen.data.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as error:
             raise StateDamaged("manifest json") from error
+        self.saved = seen
         return validate_manifest(parsed)
 
     def save(self, manifest):
         validate_manifest(manifest)
-        write_state_file(self.fd, MANIFEST, json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8"))
+        self.saved = write_state_file(self.fd, MANIFEST, json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8"))
 
     def subdir(self, name, create=False, created_dirs=None):
         """An open subfolder (FileNotFoundError if absent and not create)."""
@@ -1189,19 +1330,23 @@ class State:
                 return True
             if not state:
                 return False
-            quarantine = ".%s.%s%s" % (name, secrets.token_hex(6), QUARANTINE_SUFFIX)
-            renameat2(fd, name, fd, quarantine, RENAME_NOREPLACE)
+            quarantine = _quarantine(fd, name)
+            if quarantine is None:
+                return True
             try:
+                moved = observe_at(fd, quarantine)
                 verified = self._matches_at(fd, quarantine, record) is True
-            except StateLink:
+            except (StateLink, ManagedFileError, OSError):
                 verified = False
-            if not verified:
+            if not verified or not unlink_if_exactly(fd, quarantine, moved):
                 try:
                     renameat2(fd, quarantine, fd, name, RENAME_NOREPLACE)
-                except FileExistsError as error:
-                    raise KeptAside(rel) from error
+                except FileExistsError:
+                    try:
+                        keep_aside(fd, quarantine, name)
+                    except KeptAside:
+                        pass  # kept, and reported as a state folder that was kept
                 return False
-            os.unlink(quarantine, dir_fd=fd)
             os.fsync(fd)
         finally:
             self._done(fd)
@@ -1219,5 +1364,9 @@ class State:
             os.close(fd)
 
     def remove_manifest(self):
-        os.unlink(MANIFEST, dir_fd=self.fd)
+        """Delete the record only if it is still exactly what this run last
+        wrote or read. True if it was deleted."""
+        if self.saved is None or not unlink_if_exactly(self.fd, MANIFEST, self.saved):
+            return False
         os.fsync(self.fd)
+        return True

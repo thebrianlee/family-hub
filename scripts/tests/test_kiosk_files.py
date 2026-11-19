@@ -280,7 +280,7 @@ class DiskTests(unittest.TestCase):
             if dst.endswith(kf.QUARANTINE_SUFFIX):
                 self.users_save("in place", b"mine")
                 return True
-            if src.endswith(kf.QUARANTINE_SUFFIX):
+            if src.endswith(kf.QUARANTINE_SUFFIX) and dst == "rc.xml":
                 with open(self.path("rc.xml"), "wb") as handle:
                     handle.write(b"newer")
                 return True
@@ -290,11 +290,150 @@ class DiskTests(unittest.TestCase):
         with patch, self.assertRaises(kf.KeptAside):
             kf.remove_file(self.dir, "rc.xml", checked)
         self.assertEqual(len(reached), 2)
-        names = sorted(os.listdir(self.dir))
-        self.assertEqual(len(names), 2)
-        self.assertTrue(names[0].endswith(kf.QUARANTINE_SUFFIX))
-        self.assertEqual(kf.read_file(self.dir, names[0]), b"mine")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["rc.xml", "rc.xml.sproutwall-kept-1"])
+        self.assertEqual(kf.read_file(self.dir, "rc.xml.sproutwall-kept-1"), b"mine")
         self.assertEqual(kf.read_file(self.dir, "rc.xml"), b"newer")
+
+    def around(self, before=None, after=None):
+        """Wrap kf.renameat2: before(n, src, dst, flags) and after(...) run
+        around the n-th real call (1-based). Returns the patch and the log
+        of (src, dst, flags) calls."""
+        real = kf.renameat2
+        log = []
+
+        def renameat2(src_fd, src, dst_fd, dst, flags):
+            log.append((src, dst, flags))
+            if before:
+                before(len(log), src, dst, flags)
+            result = real(src_fd, src, dst_fd, dst, flags)
+            if after:
+                after(len(log), src, dst, flags)
+            return result
+
+        return mock.patch.object(kf, "renameat2", side_effect=renameat2), log
+
+    def test_a_save_during_the_rollback_is_kept_not_deleted(self):
+        """The first save (between the last check and the swap) makes the
+        swap roll back. A second save during that rollback, by an editor
+        that renames over the file before the swap back, or that writes
+        into the file after it, must also survive: the version at the
+        temporary name is not provably ours, so it is kept aside."""
+        for variant in ("renamed over before the swap back", "written into after the swap back"):
+            with self.subTest(variant):
+                for name in os.listdir(self.dir):
+                    os.unlink(self.path(name))
+                checked = self.write("rc.xml", b"checked")
+                reached = []
+
+                def before(n, src, dst, flags, variant=variant):
+                    if n == 1 and flags == kf.RENAME_EXCHANGE:
+                        self.users_save("in place", b"mine")
+                        reached.append("first save")
+                    if n == 2 and flags == kf.RENAME_EXCHANGE and variant.startswith("renamed"):
+                        self.users_save("new file", b"newest")
+                        reached.append("save during rollback")
+
+                def after(n, src, dst, flags, variant=variant):
+                    if n == 2 and flags == kf.RENAME_EXCHANGE and variant.startswith("written"):
+                        with open(self.path(src), "r+b") as handle:  # the editor's open file is now at src
+                            handle.truncate(0)
+                            handle.write(b"newest")
+                        reached.append("save during rollback")
+
+                patch, log = self.around(before, after)
+                with patch, self.assertRaises(kf.KeptAside):
+                    kf.write_atomic(self.dir, "rc.xml", b"ours", 0o644, checked)
+                self.assertEqual(reached, ["first save", "save during rollback"])
+                self.assertEqual(sorted(os.listdir(self.dir)), ["rc.xml", "rc.xml.sproutwall-kept-1"])
+                self.assertEqual(kf.read_file(self.dir, "rc.xml"), b"mine")
+                self.assertEqual(kf.read_file(self.dir, "rc.xml.sproutwall-kept-1"), b"newest")
+
+    def tainting(self, inodes):
+        """_xattrs reports an ACL for the files and folders whose inode is in inodes."""
+        previous = kf._xattrs
+
+        def xattrs(fd):
+            if os.fstat(fd).st_ino in inodes:
+                return ("system.posix_acl_access",)
+            return previous(fd)
+
+        return mock.patch.object(kf, "_xattrs", side_effect=xattrs)
+
+    def test_a_generated_file_must_pass_the_undo_check(self):
+        """A temporary file that comes out with an ACL is removed before any
+        swap; one that gains it after the swap fails the read-back and is
+        rolled back; a new file that gains it is taken back. Nothing of the
+        person's is touched and nothing of ours is left."""
+        inodes = set()
+        real_temp = kf._write_temp
+
+        def write_temp(dir_fd, name, data, mode, suffix=kf.TMP_SUFFIX):
+            tmp = real_temp(dir_fd, name, data, mode, suffix)
+            inodes.add(os.stat(tmp, dir_fd=dir_fd, follow_symlinks=False).st_ino)
+            return tmp
+
+        checked = self.write("rc.xml", b"checked")
+        patch, log = self.around()
+        with self.tainting(inodes), mock.patch.object(kf, "_write_temp", side_effect=write_temp), patch:
+            with self.assertRaises(kf.UnsupportedMetadata):
+                kf.write_atomic(self.dir, "rc.xml", b"ours", 0o644, checked)
+        self.assertEqual(log, [], "refused before any swap")
+        self.assertEqual((os.listdir(self.dir), kf.read_file(self.dir, "rc.xml")), (["rc.xml"], b"checked"))
+
+        def taint_at(target):
+            def after(n, src, dst, flags):
+                if n == 1:
+                    inodes.add(os.stat(self.path(target)).st_ino)
+
+            return after
+
+        inodes.clear()
+        patch, log = self.around(after=taint_at("rc.xml"))
+        with self.tainting(inodes), patch, self.assertRaises(kf.UnsupportedMetadata):
+            kf.write_atomic(self.dir, "rc.xml", b"ours", 0o644, checked)
+        self.assertEqual([flags for _, _, flags in log], [kf.RENAME_EXCHANGE, kf.RENAME_EXCHANGE], "swapped, then swapped back")
+        self.assertEqual((os.listdir(self.dir), kf.read_file(self.dir, "rc.xml")), (["rc.xml"], b"checked"))
+
+        inodes.clear()
+        patch, log = self.around(after=taint_at("new.conf"))
+        with self.tainting(inodes), patch, self.assertRaises(kf.UnsupportedMetadata):
+            kf.write_atomic(self.dir, "new.conf", b"ours", 0o644, kf.ABSENT)
+        self.assertEqual(log[0][2], kf.RENAME_NOREPLACE)
+        self.assertEqual(os.listdir(self.dir), ["rc.xml"])  # taken back
+
+    def test_a_folder_that_hands_out_acls_is_refused_before_writing(self):
+        os.makedirs(self.path(os.path.join(".config", "labwc")))
+        folder = os.stat(self.path(os.path.join(".config", "labwc"))).st_ino
+        before = sorted(os.listdir(self.dir))
+        with self.tainting({folder}), self.assertRaises(kf.UnsupportedMetadata):
+            kf.probe_rename_support(self.dir, [os.path.join(".config", "labwc", "rc.xml")])
+        self.assertEqual(sorted(os.listdir(self.dir)), before)
+        self.assertEqual(os.listdir(self.path(os.path.join(".config", "labwc"))), [])
+
+    @unittest.skipUnless(hasattr(os, "setxattr"), kfk.LINUX_ONLY)
+    def test_a_real_default_acl(self):
+        """On Linux, with a real POSIX default ACL (an extra user entry): the
+        folder is refused, and a file made in it does inherit an ACL, which
+        check_generated catches."""
+        import struct
+
+        folder = self.path("acl")
+        os.mkdir(folder)
+        undefined = 0xFFFFFFFF
+        entries = ((0x01, 7, undefined), (0x02, 7, os.getuid() + 1), (0x04, 5, undefined), (0x10, 7, undefined), (0x20, 5, undefined))
+        acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+        try:
+            os.setxattr(folder, "system.posix_acl_default", acl)
+        except OSError as error:
+            self.skipTest("no POSIX ACLs on this file system (%s)" % error.strerror)
+        with self.assertRaises(kf.UnsupportedMetadata):
+            kf.probe_rename_support(self.dir, [os.path.join("acl", "rc.xml")])
+        self.assertEqual(os.listdir(folder), [])
+        fd = os.open(folder, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        tmp = kf._write_temp(fd, "rc.xml", b"x", 0o644)
+        with self.assertRaises(kf.UnsupportedMetadata):
+            kf.check_generated(kf.observe_at(fd, tmp), b"x", 0o644)
 
     def test_remove_file_removes_only_the_verified_file(self):
         checked = self.write("rc.xml", b"checked")
@@ -341,11 +480,15 @@ class DiskTests(unittest.TestCase):
 
         import errno
 
+        # The real _xattrs, not the stand-in portable() installs where
+        # os.listxattr is missing (macOS); os.listxattr itself is faked.
         with mock.patch.object(os, "listxattr", side_effect=failing(errno.ENOTSUP), create=True):
-            self.assertEqual(kf._xattrs(0), ())
+            self.assertEqual(kfk.REAL_XATTRS(0), ())
         with mock.patch.object(os, "listxattr", side_effect=failing(errno.EIO), create=True):
             with self.assertRaises(OSError):
-                kf._xattrs(0)
+                kfk.REAL_XATTRS(0)
+        with mock.patch.object(os, "listxattr", return_value=["user.b", "user.a"], create=True):
+            self.assertEqual(kfk.REAL_XATTRS(0), ("user.a", "user.b"))
 
     def test_assert_no_links(self):
         os.makedirs(os.path.join(self.dir, "real", ".config"))
@@ -423,7 +566,12 @@ class RealRenameat2Tests(unittest.TestCase):
 
 
 class RenameSupportTests(unittest.TestCase):
+    def setUp(self):
+        kfk.portable(self)
+
     def test_unsupported_errors_and_no_symbol(self):
+        """The real wrapper (not the stand-in portable() installs off Linux),
+        with the libc function faked."""
         import ctypes
         import errno
 
@@ -435,7 +583,7 @@ class RenameSupportTests(unittest.TestCase):
 
             with mock.patch.object(kf, "_renameat2_function", return_value=unsupported):
                 with self.assertRaises(kf.RenameUnsupported):
-                    kf.renameat2(0, "a", 0, "b", kf.RENAME_EXCHANGE)
+                    kfk.REAL_RENAMEAT2(0, "a", 0, "b", kf.RENAME_EXCHANGE)
 
         def exists(*_args):
             ctypes.set_errno(errno.EEXIST)
@@ -443,10 +591,10 @@ class RenameSupportTests(unittest.TestCase):
 
         with mock.patch.object(kf, "_renameat2_function", return_value=exists):
             with self.assertRaises(FileExistsError):
-                kf.renameat2(0, "a", 0, "b", kf.RENAME_NOREPLACE)
+                kfk.REAL_RENAMEAT2(0, "a", 0, "b", kf.RENAME_NOREPLACE)
         with mock.patch.object(kf, "_renameat2_function", return_value=None):
             with self.assertRaises(kf.RenameUnsupported):
-                kf.renameat2(0, "a", 0, "b", kf.RENAME_EXCHANGE)
+                kfk.REAL_RENAMEAT2(0, "a", 0, "b", kf.RENAME_EXCHANGE)
 
     def test_probe_refuses_before_writing(self):
         home = kfk.temp_home(self)
@@ -512,6 +660,9 @@ def manifest(phase="done", **changes):
 
 
 class ManifestTests(unittest.TestCase):
+    def setUp(self):
+        kfk.portable(self)
+
     def test_valid(self):
         kf.validate_manifest(manifest())
         kf.validate_manifest(manifest("writing"))

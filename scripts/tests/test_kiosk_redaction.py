@@ -244,11 +244,25 @@ if kf._renameat2_function() is None:  # as kfk.portable: macOS has no renameat2
 if not hasattr(os, "listxattr"):
     kf._xattrs = lambda fd: ()
 made = []
+writes = [0]
+if scenario.startswith("fail_after_write:"):
+    # The transaction matrix through the real CLI: the n-th file write (a
+    # record, snapshot copy, run file or managed file) succeeds, then fails
+    # with an I/O error whose text carries the seeded home path.
+    limit = int(scenario.split(":", 1)[1])
+    for fname in ("write_atomic", "remove_file", "write_state_file"):
+        def wrapped(*args, _real=getattr(kf, fname), **kwargs):
+            result = _real(*args, **kwargs)
+            writes[0] += 1
+            if writes[0] == limit:
+                raise OSError(5, "Input/output error in " + home)
+            return result
+        setattr(kf, fname, wrapped)
 
 
 def system():
     pi = SeededPi(home)
-    if scenario != "none":
+    if scenario in SCENARIOS:
         SCENARIOS[scenario][0](pi)
     made.append(pi)
     return pi
@@ -256,7 +270,7 @@ def system():
 
 def dump():
     with open(log_file, "w", encoding="utf-8") as handle:
-        json.dump([pi.log() for pi in made], handle)
+        json.dump({"systems": [pi.log() for pi in made], "writes": writes[0]}, handle)
 
 
 atexit.register(dump)
@@ -295,11 +309,13 @@ class EndToEndTests(Assertions, unittest.TestCase):
         )
         return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
-    def stages(self):
+    def stages(self, key="systems"):
         with open(self.log_file, encoding="utf-8") as handle:
-            logs = json.load(handle)
-        self.assertEqual(len(logs), 1, "one System per run")
-        return logs[0]
+            data = json.load(handle)
+        if key == "writes":
+            return data["writes"]
+        self.assertEqual(len(data["systems"]), 1, "one System per run")
+        return data["systems"][0]
 
     def test_every_action_through_the_bootstrap(self):
         home = seeded_home(self)
@@ -343,6 +359,32 @@ class EndToEndTests(Assertions, unittest.TestCase):
                     reached = reached_check if "--check" in args else reached_setup
                     log = self.stages()
                     self.assertTrue(reached(log), ("stage not reached", name, args, log))
+
+    def test_an_interrupted_setup_through_the_bootstrap(self):
+        """The transaction matrix through the real CLI in a subprocess: a
+        first setup fails right after each single file write (exit 2, the
+        fixed crash text, nothing leaked), then the same command finishes
+        and --undo restores the seeded home exactly."""
+        home = seeded_home(self)
+        code, _, err = self.run_script(home, self.harness(home), scenario="fail_after_write:0")
+        self.assertEqual(code, 0, err)
+        total = self.stages("writes")
+        self.assertGreaterEqual(total, 8)
+        for fail_at in range(1, total + 1):
+            with self.subTest(fail_after_write=fail_at):
+                home = seeded_home(self)
+                harness = self.harness(home)
+                before = kfk.tree(home)
+                code, out, err = self.run_script(home, harness, scenario="fail_after_write:%d" % fail_at)
+                self.assertEqual(self.stages("writes"), fail_at, "the failure point was reached")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("after it had started writing", err)
+                self.assert_clean(home, out, err)
+                code, out, err = self.run_script(home, harness)  # the same command finishes
+                self.assertEqual(code, 0, err)
+                code, out, err = self.run_script(home, harness, "--undo")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(kfk.tree(home), before)
 
     def test_the_real_host_refuses_cleanly(self):
         """No fake at all: this machine is not a Raspberry Pi OS desktop

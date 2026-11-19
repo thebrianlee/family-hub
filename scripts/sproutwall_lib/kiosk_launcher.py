@@ -12,7 +12,9 @@ What it does, as the logged-in desktop user (never root):
    once), checks that the record, run/ and browser/ are there, takes the
    lock file setup made in run/ so only one launcher runs, then lets go of
    setup.lock. It creates and writes no files itself. It exits if a kiosk
-   browser with its profile is already open.
+   browser with its profile is already open, and starts none if the process
+   table cannot be read for certain (only a process confirmed gone is
+   skipped).
 2. Polls http://127.0.0.1:3847/api/health over a plain socket: a 3 s connect
    timeout and a 5 s deadline for the whole request (each read waits only for
    the time left). Redirects are never followed (a 3xx is "not ready"). The
@@ -172,6 +174,8 @@ def _dechunk(data):
         size = int(size_text, 16)
         pos = end + 2
         if size == 0:
+            if _trailer_end(data, pos) != len(data):
+                raise ValueError("bytes after the last chunk")
             return bytes(body)
         if data[pos + size : pos + size + 2] != b"\r\n":
             raise ValueError("chunk")
@@ -179,6 +183,22 @@ def _dechunk(data):
         if len(body) > MAX_BODY:
             raise ValueError("too large")
         pos += size + 2
+
+
+def _trailer_end(data, pos):
+    """The end of the trailer section that starts at pos: header lines,
+    each "name: value" and CRLF, then an empty line (RFC 9112, 7.1.2)."""
+    while True:
+        end = data.find(b"\r\n", pos)
+        if end < 0:
+            raise ValueError("trailer")
+        line = data[pos:end]
+        pos = end + 2
+        if not line:
+            return pos
+        name, colon, _value = line.partition(b":")
+        if not colon or not name or name != name.strip():
+            raise ValueError("trailer field")
 
 
 def parse_response(data):
@@ -208,9 +228,9 @@ def parse_response(data):
         return int(match.group(1)), _dechunk(rest)
     length = headers.get(b"content-length")
     if length is not None:
-        if not length.isdigit() or len(rest) < int(length):
-            raise ValueError("content-length")
-        return int(match.group(1)), rest[: int(length)]
+        if not length.isdigit() or len(rest) != int(length):
+            raise ValueError("content-length")  # short, or bytes after the body
+        return int(match.group(1)), rest
     return int(match.group(1)), rest
 
 
@@ -294,11 +314,23 @@ def find_chromium():
     return None
 
 
+class ProcessesUnknown(Exception):
+    """The process table could not be read for certain, so whether a kiosk
+    browser already runs cannot be told; no browser is started."""
+
+
 def browser_running(profile):
-    """True if a process of this user already runs with this browser profile."""
+    """True if a process of this user already runs with this browser
+    profile. Only a process that is confirmed gone (ENOENT, ESRCH) is
+    skipped; any other error reading /proc raises ProcessesUnknown, never
+    "no browser"."""
     flag = ("--user-data-dir=" + profile).encode("utf-8", "surrogateescape")
     uid = os.getuid()
-    for name in os.listdir("/proc"):
+    try:
+        names = os.listdir("/proc")
+    except OSError as error:
+        raise ProcessesUnknown() from error
+    for name in names:
         if not name.isascii() or not name.isdigit():
             continue
         try:
@@ -306,8 +338,10 @@ def browser_running(profile):
                 continue
             with open("/proc/%s/cmdline" % name, "rb") as handle:
                 args = handle.read(64 * 1024).split(b"\0")
-        except OSError:
-            continue  # exited meanwhile, or not ours
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # exited meanwhile
+        except OSError as error:
+            raise ProcessesUnknown() from error
         if flag in args:
             return True
     return False

@@ -447,6 +447,34 @@ class CheckTests(Base):
         self.assertEqual((code, data["running"], data["result"]), (ks.EXIT_CANNOT_TELL, "unknown", "unknown"))
         self.assertIs(ks.launcher_processes, real)
 
+    def test_missing_tools(self):
+        """--check never crashes when a tool it runs is missing: the items
+        that need it are unknown, in text and JSON, before and after setup."""
+        removals = {
+            "wlr-randr": lambda s: [s.commands.pop(key) for key in (("wlr-randr", "--json"), ("wlr-randr",))],
+            "dpkg": lambda s: s.commands.pop(("dpkg", "--print-architecture")),
+            "chromium": lambda s: s.files.pop("/usr/bin/chromium"),
+        }
+        for installed in (False, True):
+            if installed:
+                self.assertEqual(main(self.pi())[0], 0)
+            for tool, remove in removals.items():
+                for args in (("--check",), ("--check", "--json")):
+                    with self.subTest(tool, installed=installed, args=args):
+                        s = self.pi()
+                        remove(s)
+                        code, out, err = main(s, *args)
+                        self.assertNotIn(code, (0, 2), (out, err))
+                        self.assertNotIn("unexpected error", out + err)
+                        if "--json" in args:
+                            data = json.loads(out)
+                            self.assertEqual(list(data), EXPECTED_CHECK_KEYS)
+                            if tool == "wlr-randr":
+                                self.assertEqual((data["output"], data["result"]), ("unknown", "unknown"))
+                                self.assertEqual(data["rotation"], "unknown" if installed else "none")
+                        if tool == "wlr-randr":
+                            self.assertIn(("wlr-randr", "--json"), [argv for argv, _ in s.calls])
+
     def test_duplicate_keys_in_the_record(self):
         s = self.pi()
         main(s)
@@ -986,9 +1014,50 @@ class RaceTests(Base):
                 self.assertEqual(kfk.read(self.home, LAUNCHER), mine)
                 self.assertEqual(self.no_hidden_files(), [])
 
+    def test_a_save_during_the_rollback(self):
+        """A first save rolls the swap back; a second save during the
+        rollback (renamed over the file before the swap back, or written
+        into the file after it) is kept as rc.xml.sproutwall-kept-1, never
+        deleted (exit 5)."""
+        mine, newest = b"<openbox_config><mine/></openbox_config>\n", b"<openbox_config><newest/></openbox_config>\n"
+        for variant in ("renamed over before the swap back", "written into after the swap back"):
+            with self.subTest(variant):
+                self.setUp()
+                s = self.pi()
+                real = kf.renameat2
+                swaps, reached = [], []
+
+                def renameat2(src_fd, src, dst_fd, dst, flags, variant=variant):
+                    is_swap = flags == kf.RENAME_EXCHANGE and "rc.xml" in (src, dst) and kf.TMP_SUFFIX in src + dst
+                    if is_swap:
+                        swaps.append(src)
+                        if len(swaps) == 1:
+                            self.save_by_user(RC, mine, "in place")
+                            reached.append("first save")
+                        elif len(swaps) == 2 and variant.startswith("renamed"):
+                            self.save_by_user(RC, newest, "new file")
+                            reached.append("save during rollback")
+                    result = real(src_fd, src, dst_fd, dst, flags)
+                    if is_swap and len(swaps) == 2 and variant.startswith("written"):
+                        with open(os.path.join(self.home, os.path.dirname(RC), src), "r+b") as handle:
+                            handle.truncate(0)
+                            handle.write(newest)
+                        reached.append("save during rollback")
+                    return result
+
+                with mock.patch.object(kf, "renameat2", side_effect=renameat2):
+                    code, _, err = main(s)
+                self.assertEqual(reached, ["first save", "save during rollback"])
+                self.assertEqual(code, ks.EXIT_CHANGED, err)
+                self.assertIn(".sproutwall-kept-", err)
+                self.assertNotIn("rc.xml", err)
+                self.assertEqual(kfk.read(self.home, RC), mine)
+                self.assertEqual(kfk.read(self.home, RC + ".sproutwall-kept-1"), newest)
+                self.assertEqual(self.no_hidden_files(), [])
+
     def test_a_name_taken_while_a_removal_is_undone(self):
         """If a new file takes the name before the person's version can be
-        moved back, both are kept: theirs under a hidden name (exit 5)."""
+        moved back, both are kept: theirs as <name>.sproutwall-kept-1 (exit 5)."""
         s = self.pi()
         self.assertEqual(main(s)[0], 0)
         mine, newer = b"#!/bin/sh\n# mine\n", b"#!/bin/sh\n# newer\n"
@@ -1009,12 +1078,11 @@ class RaceTests(Base):
             code, _, err = main(s, "--undo")
         self.assertEqual(len(reached), 2, "both injection points were reached")
         self.assertEqual(code, ks.EXIT_CHANGED, err)
-        self.assertIn(".sproutwall-removed", err)
+        self.assertIn(".sproutwall-kept-", err)
+        self.assertNotIn("sproutwall-kiosk", err)  # the name itself is never printed
         self.assertEqual(kfk.read(self.home, LAUNCHER), newer)
-        kept = self.no_hidden_files()
-        self.assertEqual(len(kept), 1)
-        self.assertTrue(kept[0].endswith(kf.QUARANTINE_SUFFIX))
-        self.assertEqual(kfk.read(self.home, os.path.join(os.path.dirname(LAUNCHER), kept[0])), mine)
+        self.assertEqual(self.no_hidden_files(), [])
+        self.assertEqual(kfk.read(self.home, LAUNCHER + ".sproutwall-kept-1"), mine)
 
     def hold_lock(self):
         import fcntl
@@ -1081,6 +1149,21 @@ class OwnershipTests(Base):
                     self.assertEqual(code, ks.EXIT_CHANGED, err)
                     self.assertIn("without the record this tool writes", err)
                     self.assert_unchanged()
+
+    def test_a_record_without_its_lock_is_never_given_a_new_one(self):
+        """setup.lock removed by hand: nothing is created before the checks;
+        every command stops as a damaged state (exit 5), truthfully saying
+        nothing was changed."""
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        os.unlink(os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "setup.lock"))
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",), ("--orientation", "landscape")):
+            code, _, err = main(s, *args)
+            self.assertEqual(code, ks.EXIT_CHANGED, (args, err))
+            self.assertIn("damaged", err)
+            self.assertIn("Nothing was changed.", err)
+            self.assertEqual(kfk.tree(self.home), snapshot)
 
     def test_only_folders_setup_made_are_recorded(self):
         os.makedirs(os.path.join(self.home, ".local", "state"))  # the person's own
@@ -1185,6 +1268,58 @@ class MetadataTests(Base):
         for args in ((), ("--off",), ("--undo",)):
             self.refused(s, *args)
             self.assertEqual(kfk.tree(self.home), snapshot)
+
+    def acl_for(self, inodes):
+        """_xattrs reports a default ACL for these inodes (files or folders)."""
+        previous = kf._xattrs
+
+        def xattrs(fd):
+            if os.fstat(fd).st_ino in inodes:
+                return ("system.posix_acl_default",)
+            return previous(fd)
+
+        return mock.patch.object(kf, "_xattrs", side_effect=xattrs)
+
+    def test_a_folder_with_a_default_acl(self):
+        """New files would inherit it, and --undo could not accept them:
+        refused before any write, for setup and for --undo."""
+        folder = os.stat(os.path.join(self.home, os.path.dirname(RC))).st_ino
+        with self.acl_for({folder}):
+            self.refused(self.pi())
+        self.assert_unchanged()
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        snapshot = kfk.tree(self.home)
+        with self.acl_for({folder}):
+            self.refused(s, "--undo")
+        self.assertEqual(kfk.tree(self.home), snapshot)
+
+    def test_a_generated_file_with_an_acl_is_rolled_back(self):
+        """A file setup writes must pass the check --undo applies; one that
+        comes out with an ACL is removed again (it is ours), the run stops
+        with exit 6, and --undo then restores everything."""
+        inodes = set()
+        real_temp = kf._write_temp
+
+        def write_temp(dir_fd, name, data, mode, suffix=kf.TMP_SUFFIX):
+            tmp = real_temp(dir_fd, name, data, mode, suffix)
+            if name == "rc.xml":
+                inodes.add(os.stat(tmp, dir_fd=dir_fd, follow_symlinks=False).st_ino)
+            return tmp
+
+        s = self.pi()
+        with self.acl_for(inodes), mock.patch.object(kf, "_write_temp", side_effect=write_temp):
+            code, out, err = main(s)
+        self.assertEqual(len(inodes), 1, "the generated rc.xml was reached")
+        self.assertEqual(code, ks.EXIT_CANNOT_TELL, err)
+        self.assertIn("could not put such a file back exactly", err)
+        self.assertIn("It had already started writing", err)
+        self.assertNotIn("Nothing was changed", err)
+        self.assertEqual(kfk.tree(self.home)[RC], self.before[RC])
+        stray = [n for _, _, names in os.walk(self.home) for n in names if "sproutwall-" in n and n != "sproutwall-kiosk"]
+        self.assertEqual(stray, [])
+        self.assertEqual(main(s, "--undo")[0], 0)
+        self.assertEqual(kfk.tree(self.home), self.before)
 
     @unittest.skipUnless(hasattr(os, "setxattr"), kfk.LINUX_ONLY)
     def test_a_real_extended_attribute(self):
