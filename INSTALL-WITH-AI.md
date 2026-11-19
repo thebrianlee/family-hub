@@ -99,12 +99,12 @@ A chat-only AI cannot open your Pi. Give it the repository address too, `https:/
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
 
-1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is not one of the five decisions. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
+1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is a stated exception to the five-decision limit: ask it even if the five are used up. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
 2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
 5. **The image.** Start only the image that `verify-image` verified, and only after it exits 0. Never skip verification. Never pull or run the `:preview` tag. Never sign in to `gh` and never set a GitHub token. In this install, always run `docker compose` with `-f docker-compose.preview.yml`. The only change to the checkout is the one image line in step 4.
-6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and the short status each step names, such as an exit code, `healthy` or `Result: ok`. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
+6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
 7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
 8. **Data.** Never run `docker compose down -v` or `docker volume rm`, and never delete the `sproutwall` folder. The household lives in the Docker volume.
 9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: the temporary key is removed at both ends, and SSH is closed and turned off. Tier C: nothing to remove. Show the person how, and say when it is done.
@@ -140,7 +140,7 @@ These are the only questions the install asks.
 
 1. **Who runs the commands?**
    - **A:** an AI tool runs in the device's own Terminal. SSH stays off.
-   - **B:** an AI tool on your laptop connects to the device over SSH, with a temporary key, on your home network. The commands still run on the device.
+   - **B:** an AI tool on your laptop connects to the device over SSH, with a temporary key, on your home network. The commands still run on the device. This guide sets tier B up for Raspberry Pi OS only (step 1 enables key-only SSH in Raspberry Pi Imager); on a Debian or Ubuntu mini PC or laptop, use tier A or C.
    - **C:** a chat-only AI. You paste one block at a time into the device's Terminal and tell it only the short result. Nothing is installed for the AI, and no AI runs as your account on the device.
 2. **How does the screen hang?** Portrait is the default and the usual choice for a kitchen wall. You can also pick portrait turned the other way (`portrait-flipped`), `landscape`, `landscape-flipped`, or no kiosk (the hub then serves phones and tablets only). You don't need the screen's model number: the setup tool finds the one connected screen.
 3. **Do you approve the install plan?** The AI shows the [whole plan](#the-install-plan-decision-3) once before anything needs your password. It also asks you to confirm the home-network rule below. Your yes covers that plan only.
@@ -165,11 +165,11 @@ Three rows below are bundles taken from a vendor's own page: Docker's install, t
 | `sudo reboot` | 3, 7, 8 | After step 3, so the `docker` group takes effect; later, to check that everything starts by itself. | Nothing to undo. |
 | `sudo raspi-config nonint do_boot_behaviour B4` | 7, only if `setup kiosk` prints it | The desktop logs in by itself, so the screen comes back after a power cut. | `sudo raspi-config nonint do_boot_behaviour B3` (`setup kiosk --undo` prints it). |
 | `sudo raspi-config` menus for screen blanking and desktop autologin | 7, only if you set the screen up [by hand](docs/raspberry-pi.md#set-it-up-by-hand) | Keeps the screen lit and logs in by itself. | The same menus. |
-| `sudo raspi-config nonint do_ssh 1` | Tier B on Raspberry Pi OS: 8, or on an early stop | Turns the temporary SSH access off. | `sudo raspi-config nonint do_ssh 0` |
-| `sudo systemctl disable --now ssh.socket ssh.service` | Tier B on Debian or Ubuntu: 8, or on an early stop | The same, on those systems. | `sudo systemctl enable --now ssh.service` (or `ssh.socket` on a system that used it) |
+| `sudo raspi-config nonint do_ssh 1` | Raspberry Pi OS: tier B at step 8 or on an early stop; tiers A and C only if doctor reports SSH on (`ssh_policy`) | Turns SSH off. | `sudo raspi-config nonint do_ssh 0` |
+| `sudo systemctl disable --now ssh.socket ssh.service` | Debian or Ubuntu, only if doctor reports SSH on (`ssh_policy`) | Turns SSH off; tiers A and C expect it off. | `sudo systemctl enable --now ssh.service` (or `ssh.socket` on a system that used it) |
 | The AI tool's own uninstall command, only if its maker's instructions use `sudo` | Tier A: 8, or on an early stop | Removes the install-only AI tool. | Nothing to undo. |
 
-Installing the AI tool itself (tier A, step 2) comes before this plan, with its maker's own instructions.
+Installing the AI tool itself (tier A, step 2) comes before this plan, because the AI has to exist before it can show one. The person installs it from its maker's official instructions and reads them first. If they use `sudo`, the person types those commands, and step 8 removes the tool (the last row above).
 
 Other changes, without `sudo`:
 
@@ -203,7 +203,7 @@ Do this only once the owner has confirmed the card is new or blank, or that the 
 5. Let Imager write and verify the card, then eject it.
 6. With the Pi switched off, connect the screen and its touch connection following the screen's own instructions. Insert the card and switch on. The first start takes a few minutes.
 
-**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, only on a disk the owner has confirmed is new, blank or backed up ([First](#first-is-sproutwall-already-on-this-device)), with SSH off unless you use tier B.
+**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, only on a disk the owner has confirmed is new, blank or backed up ([First](#first-is-sproutwall-already-on-this-device)), with SSH off. On this path use tier A or C: this guide does not set up tier B's key-only SSH for Debian or Ubuntu.
 
 ## Step 2: Open the session
 
@@ -474,7 +474,7 @@ The final check below looks for these tools, their folders and any autostart ent
    sudo raspi-config nonint do_ssh 1
    ```
 
-   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay. On Debian or Ubuntu, turn SSH off with `sudo systemctl disable --now ssh.socket ssh.service` instead of the `raspi-config` line.
+   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay.
 3. On the laptop, confirm the old key no longer gets in. This must fail:
 
    ```bash
@@ -517,17 +517,17 @@ Each doctor check that is not `pass` names one action. The same action can come 
 
 | Check | Action | What it means | What to do |
 | --- | --- | --- | --- |
-| `platform` | `use_supported_os` | The system or CPU is not 64-bit Linux (for example a 32-bit system). | Put a 64-bit system on the card ([Supported devices](#supported-devices)), but only after the owner confirms the card holds no household data, or after a [backup](README.md#back-up) copied off the device. |
+| `platform` | `use_supported_os` | The system or CPU is not 64-bit Linux (for example a 32-bit system). | Put a 64-bit system on the card ([Supported devices](#supported-devices)), but only after the owner explicitly confirms the card may be erased: it holds no household data, or a [backup](README.md#back-up) has been copied off the device. |
 | `docker` | `use_supported_os` | Docker Compose is missing or older than v2. | Install or upgrade Docker Engine and Compose (step 3). Never put a new system on the card for this. |
 | `docker` | `retry_local` | Docker is not running, or your account cannot reach it yet. | Check `docker info`. If you just joined the `docker` group, restart first (step 3). Then run the check again. |
 | `image_identity` | `verify_release` | The running image, or the compose file, is not the verified preview. | `docker compose -f docker-compose.preview.yml stop`, repeat step 4, and start again only after exit 0. |
-| `storage` | `restore_storage` | The data volume, photos folder or database is not as expected. | Don't start a new volume and don't delete anything. Use the README's [backup and restore](README.md#back-up-and-update), or get help. |
+| `storage` | `restore_storage` | The data volume, photos folder or database is not as expected. | Stop and get help. Don't start a new volume, don't delete anything, and don't run the README's restore command in this install: it uses the default Compose file, which builds the image locally instead of using the verified one. A restore procedure for preview installs is not written yet. |
 | `health` | `restore_storage` | The database is blocked (the hub answers 503 with a reason). | Stop. Don't start a new volume. Read `docker compose -f docker-compose.preview.yml logs` yourself, then get help. |
 | `health` | `retry_local` | The hub is not healthy yet, or answered in an unexpected way. | Wait a minute and run it again. If it repeats, stop and get help. |
 | `app_bind` | `restrict_ports` | Port 3847 is reachable beyond the home network. | Stop the hub now with `docker compose -f docker-compose.preview.yml stop`. Check the router for port forwards and tunnels. Get help. Don't change the port or turn the check off. |
 | `app_bind` | `confirm_trusted_lan` | The hub is on your home network, and the device cannot prove the router forwards nothing. | Expected. Continue only if it is the only unknown and you confirmed the home-network rule in decision 3. |
 | `bridge_bind` | `restrict_ports` | The Ask bridge port 8787 is published or listens beyond the container. | Stop the hub now. `git status --short` must show only the one image line changed (step 4). Get help. |
-| `ssh_policy` | `review_ssh` | SSH is on, allows passwords, or its settings could not be read. | Stop. Tiers A and C expect SSH off; tier B, key-only until step 8, then off. Turning SSH off (`sudo raspi-config nonint do_ssh 1`) is a privileged change outside the approved plan for A and C, so it needs your own new decision. |
+| `ssh_policy` | `review_ssh` | SSH is on, allows passwords, or its settings could not be read. | Stop. Tiers A and C expect SSH off; tier B (Raspberry Pi OS only) expects key-only until step 8, then off. If it is simply on, turn it off with the install plan's line for your system: `sudo raspi-config nonint do_ssh 1` on Raspberry Pi OS, `sudo systemctl disable --now ssh.socket ssh.service` on Debian or Ubuntu. If it allows passwords during tier B, or could not be read, get help. |
 | `setup` | `open_hub` | First-run setup is not finished. | Open the hub on the device and finish setup (step 6). |
 | `read_guard` | `open_hub` | Setup is not finished, so the hub still answers without a PIN. | Finish setup now (step 6). |
 | `read_guard` | `verify_release` | Setup is finished, but the hub answers without a PIN: the screen lock is off. | Stop the hub. `git status --short` must show only the one image line changed. Repeat step 4. Never set `REQUIRE_AUTH_FOR_READS` to `0`. |
