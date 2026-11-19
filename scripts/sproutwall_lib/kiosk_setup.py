@@ -130,6 +130,28 @@ REFUSALS = {
         "Stopped: the kiosk's saved snapshot is missing, damaged or not in the form this version writes, so it "
         "cannot be used safely. Remove the kiosk by hand (docs/raspberry-pi.md, Kiosk).",
     ),
+    "config_path": (
+        EXIT_UNSUPPORTED,
+        "Refused: this desktop session reads its configuration from a non-standard place (a labwc or kanshi "
+        "config option, another XDG_CONFIG_HOME or another home folder), so the files this tool writes would "
+        "not be used. " + MANUAL,
+    ),
+    "state_orphan": (
+        EXIT_CHANGED,
+        "Stopped: the kiosk's state folder or launcher already exists, but without the record this tool "
+        "writes, so it is not safe to take it over or delete it. Check it and remove it by hand (the paths "
+        "are in docs/install-cli.md, setup kiosk), then run this again.",
+    ),
+    "busy": (
+        EXIT_NOT_READY,
+        "Stopped: another setup kiosk run is in progress. Wait for it to finish, then run this again.",
+    ),
+    "changed_during": (
+        EXIT_CHANGED,
+        "Stopped: a file this tool manages changed while it was being updated (for example Control Centre "
+        "saved it). That file was left as it is, and nothing more was written. Put the change back, then run "
+        "the same command again to finish, or --undo.",
+    ),
     "cannot_tell": (
         EXIT_CANNOT_TELL,
         "Stopped: something this tool must read could not be read, or did not have the expected form, so it "
@@ -170,8 +192,8 @@ class Progress:
 
 def refusal_lines(key):
     code, text = REFUSALS[key]
-    if key == "changed":
-        return code, [text]  # the text already says the files were left as they are
+    if key in ("changed", "changed_during"):
+        return code, [text]  # the text says what was and was not changed
     return code, [text, UNCHANGED]
 
 
@@ -184,6 +206,7 @@ SESSION_REFUSAL = {
     "no_merge": "session",
     "no_kanshi": "session",
     "no_socket": "session",
+    "config_path": "config_path",
 }
 
 
@@ -220,17 +243,21 @@ def the_touch(system):
     return name
 
 
-def load_state(home):
-    """(State, manifest or None). Raises Refused or det.CannotTell."""
-    state = kf.State(home)
+def classify(state):
+    """"absent", "leftover", "manifest" or "foreign" (see State.classify)."""
     try:
-        if not state.present():
-            return state, None
-        return state, state.load()
-    except kf.StateDamaged as error:
-        raise Refused("state_damaged") from error
+        return state.classify()
     except kf.ManagedFileError as error:
         raise Refused("link") from error
+    except OSError as error:
+        raise det.CannotTell("state") from error
+
+
+def load_manifest(state):
+    try:
+        return state.load()
+    except kf.StateDamaged as error:
+        raise Refused("state_damaged") from error
     except OSError as error:
         raise det.CannotTell("state") from error
 
@@ -245,26 +272,236 @@ def check_no_links(state):
         raise det.CannotTell("home-files") from error
 
 
-def current_files(state):
+def observe_all(state):
+    """{key: Seen} for the managed files: bytes, mode, identity."""
     try:
-        return {key: kf.read_file(state.path(key)) for key in kf.MANAGED}
+        return {key: kf.observe(state.path(key)) for key in kf.MANAGED}
     except kf.ManagedFileError as error:
         raise Refused("link") from error
     except OSError as error:
         raise det.CannotTell("home-files") from error
 
 
-def originals(state):
+def originals(state, manifest, seen):
+    """{key: pre-install bytes or None}."""
     try:
-        return {key: state.original(key) for key in kf.MANAGED}
+        return {key: state.original_bytes(manifest, key, seen[key]) for key in kf.MANAGED}
     except kf.StateDamaged as error:
         raise Refused("state_damaged") from error
     except OSError as error:
         raise det.CannotTell("state") from error
 
 
-def statuses(manifest, current):
-    return {key: kf.file_status(manifest["files"][key], current[key]) for key in kf.MANAGED}
+def copies_to_save(state, manifest, seen):
+    """Keys whose saved original copy is missing but can be taken from the
+    file itself (it is still exactly the original). A missing copy that can
+    no longer be taken is a damaged snapshot."""
+    needed = []
+    for key in kf.MANAGED:
+        original = manifest["files"][key]["original"]
+        if not original["exists"]:
+            continue
+        try:
+            copy = state.original_copy(key)
+        except kf.StateDamaged as error:
+            raise Refused("state_damaged") from error
+        except OSError as error:
+            raise det.CannotTell("state") from error
+        if copy is not None and kf.sha256(copy) == original["sha256"]:
+            continue
+        if kf.matches(seen[key], original) and copy is None:
+            needed.append(key)
+        else:
+            raise Refused("state_damaged")
+    return needed
+
+
+def verify_accepted(manifest, seen):
+    if kf.changed_since_setup(manifest, seen):
+        raise Refused("changed")
+
+
+def recheck(state, seen):
+    """Observe again right before the first write: anything that changed
+    since the check (an editor or Control Centre saving meanwhile) stops the
+    run before it writes anything."""
+    now = observe_all(state)
+    if any(not now[key].same_file(seen[key]) for key in kf.MANAGED):
+        raise Refused("changed")
+
+
+def target_modes(manifest_or_seen_original):
+    """The mode each managed file is written with: its original mode if it
+    existed, else the default (the launcher is always 0755)."""
+    modes = {}
+    for key in kf.MANAGED:
+        original = manifest_or_seen_original[key]
+        modes[key] = original["mode"] if original["exists"] and key != "launcher" else kf.DEFAULT_MODES[key]
+    return modes
+
+
+def build_targets(base, original_states, meta):
+    """{key: (bytes, mode)} for the configuration in meta, from the originals."""
+    try:
+        data = {
+            "launcher": kf.launcher_bytes(),
+            "kanshi": kf.kanshi_text(base["kanshi"], meta["connector"], meta["transform"]),
+            "rc_xml": kf.rc_xml_text(base["rc_xml"], meta["touch_device"], meta["connector"]),
+            "autostart": kf.autostart_text(base["autostart"], meta["enabled"]),
+        }
+    except kf.RcXmlError as error:
+        raise Refused("rc_xml") from error
+    modes = target_modes(original_states)
+    return {key: (data[key], modes[key]) for key in kf.MANAGED}
+
+
+def new_manifest(seen, autologin, meta):
+    """The record for a first setup: the originals are the files as they are now."""
+    files = {key: {"original": seen[key].state(), "installed": None, "previous": None, "target": None} for key in kf.MANAGED}
+    manifest = {
+        "schema": kf.STATE_SCHEMA,
+        "phase": "writing",
+        "operation": "setup",
+        "autologin_before": autologin,
+        "created_dirs": [],
+        "created_files": [],
+        "files": files,
+    }
+    manifest.update(meta)
+    return manifest
+
+
+def _add(items, extra):
+    for item in extra:
+        if item not in items:
+            items.append(item)
+
+
+def transact(state, manifest, seen, targets, meta, operation, lock, progress, save_copies=()):
+    """One write-ahead transaction over the managed files.
+
+    1. The manifest is saved with phase "writing" and, per file, "previous"
+       (what it holds now) and "target" (what this run writes). Folders and
+       files this run will create are recorded before they are created.
+    2. Each file is written (or removed) only if it is not already at its
+       target, each with a last check that it is still what was verified.
+    3. The manifest is saved with phase "done" and "installed" = target.
+    If the run stops in step 2, every file is at its previous state, its
+    original or its target, all accepted while the phase is "writing", so
+    the same command (or --undo) can be run again to finish."""
+    home = state.home
+    needed = []
+    if operation != "undo":
+        needed = [(kf.state_rel(sub), 0o700) for sub in kf.STATE_SUBDIRS]
+        needed += [(os.path.dirname(kf.MANAGED[key]), 0o755) for key in kf.WRITE_ORDER if targets[key][0] is not None]
+    try:
+        planned = []
+        for rel, _mode in needed:
+            _add(planned, kf.missing_dirs(home, rel))
+    except kf.ManagedFileError as error:
+        raise Refused("link") from error
+    except OSError as error:
+        raise det.CannotTell("home-files") from error
+    _add(manifest["created_dirs"], lock.created_dirs + planned)
+    _add(manifest["created_files"], [kf.state_rel(kf.SETUP_LOCK)] + [kf.state_rel(kf.ORIGINALS, key) for key in save_copies])
+    manifest.update(meta)
+    manifest["phase"] = "writing"
+    manifest["operation"] = operation
+    for key in kf.MANAGED:
+        entry = manifest["files"][key]
+        entry.update({"installed": None, "previous": seen[key].state(), "target": kf.file_state(*targets[key])})
+
+    progress.writing = True
+    state.save(manifest)
+    for rel, mode in needed:
+        kf.make_dirs(home, rel, mode, [])
+    for key in save_copies:
+        state.save_original(key, seen[key].data)
+    order = reversed(kf.WRITE_ORDER) if operation == "undo" else kf.WRITE_ORDER
+    try:
+        for key in order:
+            data, mode = targets[key]
+            if kf.matches(seen[key], kf.file_state(data, mode)):
+                continue
+            if data is None:
+                kf.remove_file(state.path(key), expect=seen[key])
+            else:
+                kf.write_atomic(state.path(key), data, mode, expect=seen[key])
+    except kf.ChangedMeanwhile as error:
+        raise Refused("changed_during") from error
+    for key in kf.MANAGED:
+        entry = manifest["files"][key]
+        entry.update({"installed": entry["target"], "previous": None, "target": None})
+    manifest["phase"] = "done"
+    state.save(manifest)
+    return manifest
+
+
+def remove_state(state, manifest, lock):
+    """After an undo: delete what setup created, file by file, then the
+    folders it created if they are empty. The manifest goes last but one
+    (before the lock), so an interrupted cleanup can be run again.
+    True if the state folder is gone."""
+    kf.remove_profile_tree(state.profile_dir())
+    for name in kf.LAUNCHER_RUN_FILES:
+        try:
+            os.unlink(os.path.join(state.dir, kf.RUN_DIR, name))
+        except FileNotFoundError:
+            pass
+    for rel in manifest["created_files"]:
+        if rel == kf.state_rel(kf.SETUP_LOCK):
+            continue
+        try:
+            os.unlink(state.rel_path(rel))
+        except FileNotFoundError:
+            pass
+    state.remove_manifest()
+    lock.release(remove=True)
+    kf.remove_created_dirs(state.home, manifest["created_dirs"])
+    try:
+        os.lstat(state.dir)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+class Locked:
+    """The run lock as a context: Busy and creation errors become refusals.
+    On a refused or failed first setup (no manifest written by this run),
+    the lock file and the folders the lock created are removed again."""
+
+    def __init__(self, state):
+        self.lock = kf.RunLock(state)
+        self.state = state
+        self.keep = False
+
+    def __enter__(self):
+        try:
+            return self.lock.acquire()
+        except kf.Busy as error:
+            raise Refused("busy") from error
+        except kf.ManagedFileError as error:
+            raise Refused("link") from error
+        except OSError as error:
+            raise det.CannotTell("state") from error
+
+    def __exit__(self, kind, value, tb):
+        if self.keep or self.lock.fd is None:
+            self.lock.release()
+            return False
+        try:
+            os.lstat(self.state.manifest_path)
+            has_manifest = True
+        except FileNotFoundError:
+            has_manifest = False
+        except OSError:
+            has_manifest = True  # cannot tell: keep everything
+        if has_manifest:
+            self.lock.release()
+        else:
+            self.lock.release(remove=self.lock.created_file)
+            kf.remove_created_dirs(self.state.home, self.lock.created_dirs)
+        return False
 
 
 def launcher_processes(system, state):
@@ -341,85 +578,62 @@ def autologin_lines(state_now):
 # --- setup ---------------------------------------------------------------------------------
 
 
+def _state_or_refuse(state):
+    kind = classify(state)
+    if kind == "foreign":
+        raise Refused("state_orphan")
+    return kind
+
+
 def run_setup(system, orientation, progress):
     home = system.home()
     session = supported_session(system)
-    state, manifest = load_state(home)
+    state = kf.State(home)
     check_no_links(state)
-    current = current_files(state)
-    if manifest is not None and kf.changed_since_setup(manifest, current):
-        raise Refused("changed")
-    if det.system_blanking(system):
-        raise Refused("system_blanking")
-    output = the_output(system, session)
-    touch = the_touch(system)
-
-    if orientation is None:
-        orientation = manifest["orientation"] if manifest is not None else det.DEFAULT_ORIENTATION
-    transform = det.transform_for(orientation, output)
-    base = originals(state) if manifest is not None else dict(current)
-    if any(det.launches_chromium(line) for line in kf.decode_text(base["autostart"]).splitlines()):
-        raise Refused("manual_kiosk")
-    try:
-        new = {
-            "launcher": kf.launcher_bytes(),
-            "kanshi": kf.kanshi_text(base["kanshi"], output.name, transform),
-            "rc_xml": kf.rc_xml_text(base["rc_xml"], touch, output.name),
-            "autostart": kf.autostart_text(base["autostart"], True),
-        }
-    except kf.RcXmlError as error:
-        raise Refused("rc_xml") from error
-    autologin = det.autologin_state(system)
-    if manifest is None:
-        try:
-            modes = {key: kf.file_mode(state.path(key)) for key in kf.MANAGED}
-        except OSError as error:
-            raise det.CannotTell("home-files") from error
-
-    # Writes start here: first the snapshot, then the files, each verified.
-    progress.writing = True
-    created = list(manifest["created_dirs"]) if manifest is not None else []
-    state.create(created)
-    if manifest is None:
-        files = {}
-        for key in kf.MANAGED:
-            if current[key] is not None:
-                state.save_original(key, current[key])
-            files[key] = {
-                "existed": current[key] is not None,
-                "mode": modes[key],
-                "original": kf.sha256(current[key]),
-                "written": None,
-            }
-        manifest = {"schema": kf.STATE_SCHEMA, "autologin_before": autologin, "files": files}
-    for key in kf.WRITE_ORDER:
-        kf.make_dirs(home, os.path.dirname(kf.MANAGED[key]), 0o755, created)
-    for key in kf.MANAGED:
-        manifest["files"][key]["written"] = kf.sha256(new[key])
-    manifest.update(
-        {
-            "status": "writing",
+    _state_or_refuse(state)
+    with Locked(state) as lock:
+        kind = _state_or_refuse(state)  # again, now that no other run can change it
+        manifest = load_manifest(state) if kind == "manifest" else None
+        seen = observe_all(state)
+        if manifest is not None:
+            verify_accepted(manifest, seen)
+            save_copies = copies_to_save(state, manifest, seen)
+            base = originals(state, manifest, seen)
+            original_states = {key: manifest["files"][key]["original"] for key in kf.MANAGED}
+        else:
+            save_copies = [key for key in kf.MANAGED if seen[key].exists]
+            base = {key: seen[key].data for key in kf.MANAGED}
+            original_states = {key: seen[key].state() for key in kf.MANAGED}
+        if det.system_blanking(system):
+            raise Refused("system_blanking")
+        output = the_output(system, session)
+        touch = the_touch(system)
+        if orientation is None:
+            orientation = manifest["orientation"] if manifest is not None else det.DEFAULT_ORIENTATION
+        transform = det.transform_for(orientation, output)
+        if any(det.launches_chromium(line) for line in kf.decode_text(base["autostart"]).splitlines()):
+            raise Refused("manual_kiosk")
+        meta = {
             "enabled": True,
             "orientation": orientation,
             "connector": output.name,
             "transform": transform,
             "touch_device": touch,
-            "created_dirs": created,
         }
-    )
-    state.save(manifest)
-    for key in kf.WRITE_ORDER:
-        entry = manifest["files"][key]
-        mode = entry["mode"] if entry["existed"] and key != "launcher" else kf.DEFAULT_MODES[key]
-        kf.write_atomic(state.path(key), new[key], mode)
-    manifest["status"] = "installed"
-    state.save(manifest)
+        targets = build_targets(base, original_states, meta)
+        autologin = det.autologin_state(system)
+        if manifest is None:
+            manifest = new_manifest(seen, autologin, meta)
+            if kind == "leftover":
+                _add(manifest["created_dirs"], [kiosk.KIOSK_STATE_DIR])
+        recheck(state, seen)
+        transact(state, manifest, seen, targets, meta, "setup", lock, progress, save_copies)
 
     reload_session(system, session)
     applied = rotation_applied(system, session, output.name, transform)
-    kind = KIND_TEXT[det.connector_kind(output.name)]
+    kind_text = KIND_TEXT[det.connector_kind(output.name)]
     lines = [
-        "Kiosk set up on the %s screen: %s (output transform %s)." % (kind, orientation, transform),
+        "Kiosk set up on the %s screen: %s (output transform %s)." % (kind_text, orientation, transform),
         "  Rotation: saved in the kanshi config; "
         + ("applied now." if applied else "not confirmed yet, it applies at the next login."),
         "  Touch: the one touch input is mapped to this screen in labwc rc.xml; labwc reloaded.",
@@ -443,26 +657,28 @@ def run_setup(system, orientation, progress):
 def run_off(system, progress):
     if system.euid() == 0:
         raise Refused("root")
-    state, manifest = load_state(system.home())
-    if manifest is None:
-        return EXIT_OK, [NOT_INSTALLED]
+    state = kf.State(system.home())
     check_no_links(state)
-    current = current_files(state)
-    base = originals(state)["autostart"]
-    stopped = stop_running(system, state)
-    stop_line = "Stopped the running kiosk browser." if stopped else "No kiosk browser was running."
-    entry = manifest["files"]["autostart"]
-    if "autostart" in kf.changed_since_setup(manifest, current):
-        code, text = REFUSALS["changed"]
-        return code, [stop_line, text, "It starts again at the next login until this is fixed."]
-    new = kf.autostart_text(base, False)
-    progress.writing = True
-    kf.make_dirs(state.home, os.path.dirname(kf.MANAGED["autostart"]), 0o755, manifest["created_dirs"])
-    entry["written"] = kf.sha256(new)
-    manifest["enabled"] = False
-    state.save(manifest)
-    mode = entry["mode"] if entry["existed"] else kf.DEFAULT_MODES["autostart"]
-    kf.write_atomic(state.path("autostart"), new, mode)
+    if _state_or_refuse(state) != "manifest":
+        return EXIT_OK, [NOT_INSTALLED]
+    with Locked(state) as lock:
+        if _state_or_refuse(state) != "manifest":
+            return EXIT_OK, [NOT_INSTALLED]
+        manifest = load_manifest(state)
+        seen = observe_all(state)
+        stopped = stop_running(system, state)
+        stop_line = "Stopped the running kiosk browser." if stopped else "No kiosk browser was running."
+        if kf.changed_since_setup(manifest, seen):
+            code, text = REFUSALS["changed"]
+            return code, [stop_line, text, "If the launcher line is still active, it starts again at the next login."]
+        save_copies = copies_to_save(state, manifest, seen)
+        base = originals(state, manifest, seen)
+        meta = {key: manifest[key] for key in ("orientation", "connector", "transform", "touch_device")}
+        meta["enabled"] = False
+        original_states = {key: manifest["files"][key]["original"] for key in kf.MANAGED}
+        targets = build_targets(base, original_states, meta)
+        recheck(state, seen)  # after waiting for the browser to stop
+        transact(state, manifest, seen, targets, meta, "off", lock, progress, save_copies)
     return EXIT_OK, [
         stop_line,
         "Kiosk launch is off: the launcher line stays in labwc autostart as a comment. Rotation, touch and "
@@ -479,23 +695,24 @@ def run_undo(system, progress):
     if system.euid() == 0:
         raise Refused("root")
     home = system.home()
-    state, manifest = load_state(home)
-    if manifest is None:
-        return EXIT_OK, [NOT_INSTALLED]
+    state = kf.State(home)
     check_no_links(state)
-    current = current_files(state)
-    if kf.changed_since_setup(manifest, current):
-        raise Refused("changed")
-    before = originals(state)
-    stop_running(system, state)
-    progress.writing = True
-    manifest["status"] = "undoing"
-    state.save(manifest)
-    for key in reversed(kf.WRITE_ORDER):  # the autostart line goes first
-        if before[key] is None:
-            kf.remove_file(state.path(key))
-        else:
-            kf.write_atomic(state.path(key), before[key], manifest["files"][key]["mode"])
+    if _state_or_refuse(state) != "manifest":
+        return EXIT_OK, [NOT_INSTALLED]
+    with Locked(state) as lock:
+        if _state_or_refuse(state) != "manifest":
+            return EXIT_OK, [NOT_INSTALLED]
+        manifest = load_manifest(state)
+        seen = observe_all(state)
+        verify_accepted(manifest, seen)
+        before = originals(state, manifest, seen)
+        stop_running(system, state)
+        recheck(state, seen)  # after waiting for the browser to stop
+        targets = {key: (before[key], manifest["files"][key]["original"]["mode"]) for key in kf.MANAGED}
+        meta = {key: manifest[key] for key in ("enabled", "orientation", "connector", "transform", "touch_device")}
+        autologin_before = manifest["autologin_before"]
+        manifest = transact(state, manifest, seen, targets, meta, "undo", lock, progress)
+        folder_gone = remove_state(state, manifest, lock)
     try:
         session = det.find_session(system) if det.platform_supported(system) else None
     except det.CannotTell:
@@ -503,10 +720,6 @@ def run_undo(system, progress):
     reloaded = session is not None and session.ok
     if reloaded:
         reload_session(system, session)
-    created = list(manifest["created_dirs"])
-    autologin_before = manifest["autologin_before"]
-    state.remove()
-    kf.remove_created_dirs(home, created)
     lines = [
         "Kiosk removed. labwc autostart, labwc rc.xml and the kanshi config are back as they were before setup "
         "(files that did not exist then were removed). The launcher, its browser profile and the snapshot "
@@ -514,6 +727,8 @@ def run_undo(system, progress):
         "Rotation and touch mapping were reloaded." if reloaded else "Rotation and touch mapping return at the next login.",
         "Screen blanking is back as it was from the next login. The hub and its data were not touched.",
     ]
+    if not folder_gone:
+        lines.append("The kiosk's state folder was kept, because it holds files this tool did not create.")
     if autologin_before in ("off", "other_user") and det.autologin_state(system) == "on":
         lines += [
             "Autologin was not on for this user before setup and is on now. To turn it off, run this yourself "
@@ -528,7 +743,7 @@ def run_undo(system, progress):
 CHECK_SCHEMA = 1
 CHECK_FIELDS = (
     ("result", ("ok", "attention", "not_installed", "unsupported", "unknown")),
-    ("reason", ("none", "root", "unsupported_os", "no_desktop", "other_desktop", "session", "no_chromium", "cannot_tell", "unknown")),
+    ("reason", ("none", "root", "unsupported_os", "no_desktop", "other_desktop", "session", "config_path", "no_chromium", "cannot_tell", "unknown")),
     ("installed", ("yes", "no", "damaged", "unknown")),
     ("launch", ("on", "off", "duplicate", "none", "unknown")),
     ("files", ("as_set_up", "partial", "changed", "none", "unknown")),
@@ -593,7 +808,8 @@ def gather_check(system):
     state = kf.State(system.home())
     manifest = None
     try:
-        installed = "yes" if state.present() else "no"
+        kind = state.classify()
+        installed = {"absent": "no", "leftover": "no", "foreign": "damaged", "manifest": "yes"}[kind]
         if installed == "yes":
             manifest = state.load()
     except (kf.StateDamaged, kf.ManagedFileError):
@@ -612,7 +828,8 @@ def gather_check(system):
 
     report = unknown_report("unknown", reason)
     report["installed"] = installed
-    current = _try(lambda: current_files(state), None)
+    seen = _try(lambda: observe_all(state), None)
+    current = {key: seen[key].data for key in kf.MANAGED} if seen is not None else None
     if current is not None:
         text = kf.decode_text(current["autostart"])
         active, inactive = kiosk.active_marker_lines(text), kiosk.inactive_marker_lines(text)
@@ -629,12 +846,11 @@ def gather_check(system):
         report["files"], report["orientation"] = "none", "none"
     if manifest is not None:
         report["orientation"] = manifest["orientation"]
-        if current is not None:
-            found = set(statuses(manifest, current).values())
-            if kf.changed_since_setup(manifest, current) and manifest["status"] == "installed":
-                report["files"] = "changed"
+        if seen is not None:
+            if kf.changed_since_setup(manifest, seen):
+                report["files"] = "changed"  # bytes, mode or existence (a chmod counts)
             else:
-                report["files"] = "changed" if "changed" in found else "partial" if "original" in found else "as_set_up"
+                report["files"] = "as_set_up" if manifest["phase"] == "done" else "partial"
         if current is not None:
             report["touch"] = _try(
                 lambda: "mapped"

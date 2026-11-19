@@ -209,23 +209,23 @@ class CannotTellTests(Base):
                 self.cannot_tell(s)
 
     def test_home_files_and_state(self):
-        real_read = kf.read_file
+        real_observe = kf.observe
         for rel in MANAGED:
             target = os.path.join(self.home, rel)
 
             def failing(path, target=target):
                 if path == target:
                     raise PermissionError(13, "denied")
-                return real_read(path)
+                return real_observe(path)
 
-            with self.subTest(rel), mock.patch.object(kf, "read_file", side_effect=failing) as reader:
+            with self.subTest(rel), mock.patch.object(kf, "observe", side_effect=failing) as observer:
                 self.cannot_tell(self.pi())
-                self.assertIn(mock.call(target), reader.call_args_list)
-        with mock.patch.object(kf.State, "present", side_effect=PermissionError(13, "denied")) as present:
+                self.assertIn(mock.call(target), observer.call_args_list)
+        with mock.patch.object(kf.State, "classify", side_effect=PermissionError(13, "denied")) as classify:
             self.cannot_tell(self.pi())
             self.cannot_tell(self.pi(), "--off")
             self.cannot_tell(self.pi(), "--undo")
-        self.assertEqual(present.call_count, 3)
+        self.assertEqual(classify.call_count, 3)
 
     def test_off_and_undo_with_an_unreadable_process_table(self):
         s = self.pi()
@@ -396,6 +396,28 @@ class CheckTests(Base):
         code, data = self.report(s)
         self.assertEqual((code, data["result"], data["reason"]), (3, "unsupported", "unsupported_os"))
         self.assertEqual({data[k] for k in EXPECTED_CHECK_KEYS[3:]}, {"unknown"})  # nothing was looked at
+
+    def test_every_refusal_reason_serializes(self):
+        cases = {
+            "root": lambda s: setattr(s, "euid_value", 0),
+            "unsupported_os": lambda s: setattr(s, "arch", "x86_64"),
+            "no_desktop": lambda s: setattr(s, "procs", [p for p in s.procs if p[2] not in ("labwc", "kanshi")]),
+            "other_desktop": lambda s: setattr(s, "procs", [p for p in s.procs if p[2] != "labwc"] + [(9, kfk.UID, "wayfire", ["wayfire"])]),
+            "session": lambda s: setattr(s, "procs", [p for p in s.procs if p[2] != "kanshi"]),
+            "config_path": lambda s: s.environs[kfk.LABWC_PID].__setitem__("XDG_CONFIG_HOME", "/srv"),
+            "no_chromium": lambda s: s.files.pop("/usr/bin/chromium"),
+            "cannot_tell": lambda s: setattr(s, "procs", PermissionError(13, "denied")),
+        }
+        for reason, change in cases.items():
+            s = self.pi()
+            change(s)
+            code, data = self.report(s)
+            self.assertEqual(data["reason"], reason)
+            self.assertEqual(data["result"], "unknown" if reason == "cannot_tell" else "unsupported")
+            self.assertEqual(code, ks.EXIT_CANNOT_TELL if reason == "cannot_tell" else ks.EXIT_UNSUPPORTED, reason)
+            code, out, err = main(s, "--check")
+            self.assertEqual(out, "")
+            self.assertIn("Nothing was changed.", err)
 
     def test_damaged_state(self):
         s = self.pi()
@@ -607,6 +629,7 @@ class EditedAfterSetupTests(Base):
         path = os.path.join(self.home, rel)
         with open(path, "rb") as handle:
             written = handle.read()
+        self.written_mode = os.stat(path).st_mode & 0o7777
         if change == "delete":
             os.unlink(path)
         else:
@@ -629,13 +652,260 @@ class EditedAfterSetupTests(Base):
                         self.assertEqual(kfk.tree(self.home), snapshot)
                         self.assertEqual(s.kills, [])
                     code, _, _ = main(s, "--off")
-                    if rel == AUTOSTART:
-                        self.assertEqual(code, ks.EXIT_CHANGED)
-                        self.assertEqual(kfk.tree(self.home), snapshot)
+                    self.assertEqual(code, ks.EXIT_CHANGED)
+                    self.assertEqual(kfk.tree(self.home), snapshot)
                     with open(path, "wb") as handle:
                         handle.write(written)
+                    os.chmod(path, self.written_mode)  # bytes and mode back as setup left them
                     self.assertEqual(main(s, "--undo")[0], 0)
                     self.assertEqual(kfk.tree(self.home), self.before)
+
+
+def managed(tree):
+    return {rel: tree.get(rel) for rel in MANAGED}
+
+
+class TransactionTests(Base):
+    """Blocker 2: a failure right after any single file write (manifest,
+    snapshot copy or managed file) leaves a state the same command finishes,
+    and --undo restores the original exactly, for every operation."""
+
+    SCENARIOS = {
+        "setup": ((), ()),
+        "re-orientation": (((),), ("--orientation", "landscape")),
+        "off": (((),), ("--off",)),
+        "re-enable": (((), ("--off",)), ()),
+        "undo": (((),), ("--undo",)),
+    }
+
+    def prepare(self, steps):
+        s = self.pi()
+        for args in steps:
+            self.assertEqual(main(s, *args)[0], 0, args)
+        return s
+
+    def counting(self, fail_at):
+        real_write, real_remove = kf.write_atomic, kf.remove_file
+        count = [0]
+
+        def after(real):
+            def wrapped(*args, **kwargs):
+                result = real(*args, **kwargs)
+                count[0] += 1
+                if count[0] == fail_at:
+                    raise OSError(5, "Input/output error")
+                return result
+
+            return wrapped
+
+        patches = [mock.patch.object(kf, "write_atomic", side_effect=after(real_write)), mock.patch.object(kf, "remove_file", side_effect=after(real_remove))]
+        return patches, count
+
+    def run_with(self, s, args, fail_at=None):
+        patches, count = self.counting(fail_at)
+        for patch in patches:
+            patch.start()
+        try:
+            code, out, err = main(s, *args)
+        finally:
+            for patch in patches:
+                patch.stop()
+        return code, err, count[0]
+
+    def test_every_write_of_every_operation(self):
+        for name, (steps, args) in self.SCENARIOS.items():
+            # A clean run: how many writes, and what it leaves.
+            self.setUp()
+            s = self.prepare(steps)
+            code, err, writes = self.run_with(s, args)
+            self.assertEqual(code, 0, (name, err))
+            self.assertGreaterEqual(writes, 3, name)
+            finished = managed(kfk.tree(self.home))
+            for fail_at in range(1, writes + 1):
+                for recovery in ("same command", "undo"):
+                    with self.subTest(operation=name, fail_after_write=fail_at, recovery=recovery):
+                        self.setUp()
+                        s = self.prepare(steps)
+                        code, err, _ = self.run_with(s, args, fail_at)
+                        self.assertEqual((code, err), (2, ks.CRASH_DURING + "\n"))
+                        if recovery == "same command":
+                            code, _, err = main(s, *args)
+                            self.assertEqual(code, 0, err)
+                            self.assertEqual(managed(kfk.tree(self.home)), finished)
+                        code, _, err = main(s, "--undo")
+                        self.assertEqual(code, 0, err)
+                        self.assertEqual(kfk.tree(self.home), self.before)
+
+
+class ModeDriftTests(Base):
+    """Blocker 3: a permission change after setup counts as an edit."""
+
+    def test_chmod_of_each_managed_file(self):
+        for rel in MANAGED:
+            with self.subTest(rel):
+                self.setUp()
+                s = self.pi()
+                self.assertEqual(main(s)[0], 0)
+                path = os.path.join(self.home, rel)
+                os.chmod(path, 0o644 if rel == LAUNCHER else 0o600)  # the launcher loses its exec bit
+                snapshot = kfk.tree(self.home)
+                for args in ((), ("--off",), ("--undo",)):
+                    code, _, err = main(s, *args)
+                    self.assertEqual(code, ks.EXIT_CHANGED, (rel, args, err))
+                    self.assertEqual(kfk.tree(self.home), snapshot)
+                code, out, _ = main(s, "--check", "--json")
+                self.assertEqual(json.loads(out)["files"], "changed")
+                self.assertEqual(code, ks.EXIT_ATTENTION)
+
+    def test_a_link_in_place_of_a_managed_file(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        path = os.path.join(self.home, RC)
+        os.rename(path, path + ".mine")
+        os.symlink(path + ".mine", path)
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",)):
+            self.assertEqual(main(s, *args)[0], ks.EXIT_UNSUPPORTED, args)
+            self.assertEqual(kfk.tree(self.home), snapshot)
+
+
+class RaceTests(Base):
+    """Blocker 4: an edit saved while the tool works is never overwritten,
+    and a second run waits for nobody: it stops."""
+
+    def editing_randr(self, s, rel, data):
+        real = s.commands[("wlr-randr", "--json")]
+        calls = []
+
+        def randr(key, env):
+            if not calls:
+                kfk.write(self.home, rel, data, mode=os.stat(os.path.join(self.home, rel)).st_mode & 0o7777)
+            calls.append(key)
+            return real(key, env)
+
+        s.set(["wlr-randr", "--json"], randr)
+        return calls
+
+    def test_edit_during_display_detection_first_setup(self):
+        s = self.pi()
+        calls = self.editing_randr(s, RC, USER_RC.replace("W-t", "W-x"))
+        code, _, err = main(s)
+        self.assertTrue(calls)
+        self.assertEqual(code, ks.EXIT_CHANGED, err)
+        edited = dict(self.before)
+        edited[RC] = kfk.tree(self.home)[RC]
+        self.assertIn(b"W-x", edited[RC][2])
+        self.assertEqual(kfk.tree(self.home), edited)  # the edit kept; no state folder, lock or file left
+
+    def test_edit_during_display_detection_on_a_second_run(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        installed_rc = kfk.read(self.home, RC)
+        calls = self.editing_randr(s, RC, installed_rc.replace(b"</openbox_config>", b"<core/></openbox_config>"))
+        before = kfk.tree(self.home)
+        code, _, err = main(s, "--orientation", "landscape")
+        self.assertTrue(calls)
+        self.assertEqual(code, ks.EXIT_CHANGED, err)
+        after = kfk.tree(self.home)
+        self.assertIn(b"<core/>", after[RC][2])
+        for rel in (AUTOSTART, KANSHI, LAUNCHER):
+            self.assertEqual(after[rel], before[rel])
+
+    def test_edit_between_the_last_check_and_the_write(self):
+        s = self.pi()
+        real = kf.write_atomic
+        target = os.path.join(self.home, RC)
+        edits = []
+
+        def write(path, data, mode, expect=None):
+            if path == target and not edits:
+                edits.append(path)
+                kfk.write(self.home, RC, b"<openbox_config><edited/></openbox_config>\n")
+            return real(path, data, mode, expect=expect)
+
+        with mock.patch.object(kf, "write_atomic", side_effect=write):
+            code, _, err = main(s)
+        self.assertEqual(edits, [target])
+        self.assertEqual(code, ks.EXIT_CHANGED)
+        self.assertIn("changed while it was being updated", err)
+        self.assertNotIn("Nothing was changed", err)
+        self.assertEqual(kfk.read(self.home, RC), b"<openbox_config><edited/></openbox_config>\n")
+        self.assertEqual(kfk.tree(self.home)[AUTOSTART], self.before[AUTOSTART])  # nothing more was written
+        kfk.write(self.home, RC, USER_RC)  # put the change back: the same command finishes
+        self.assertEqual(main(s)[0], 0)
+
+    def hold_lock(self):
+        import fcntl
+
+        path = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, "setup.lock")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_a_second_concurrent_run_stops(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        self.hold_lock()
+        snapshot = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",), ("--orientation", "landscape")):
+            code, out, err = main(s, *args)
+            self.assertEqual(code, ks.EXIT_NOT_READY, args)
+            self.assertIn("another setup kiosk run is in progress", err)
+            self.assertEqual(kfk.tree(self.home), snapshot)
+
+    def test_a_second_run_during_a_first_setup(self):
+        self.hold_lock()  # a first setup holds the lock and has not written its record yet
+        snapshot = kfk.tree(self.home)
+        code, _, err = main(self.pi())
+        self.assertEqual(code, ks.EXIT_NOT_READY, err)
+        self.assertEqual(kfk.tree(self.home), snapshot)
+
+
+class OwnershipTests(Base):
+    """Blocker 5: never take over or delete a state folder or launcher this
+    tool has no record of; undo removes only what setup created."""
+
+    def test_state_folder_without_a_record(self):
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "original", "rc_xml"), b"someone's snapshot")
+        self.before = kfk.tree(self.home)
+        for args in ((), ("--off",), ("--undo",)):
+            code, _, err = main(self.pi(), *args)
+            self.assertEqual(code, ks.EXIT_CHANGED, args)
+            self.assertIn("without the record this tool writes", err)
+            self.assert_unchanged()
+
+    def test_launcher_without_a_record(self):
+        kfk.write(self.home, LAUNCHER, "#!/bin/sh\n", mode=0o755)
+        self.before = kfk.tree(self.home)
+        code, _, err = main(self.pi())
+        self.assertEqual(code, ks.EXIT_CHANGED)
+        self.assert_unchanged()
+
+    def test_a_leftover_lock_from_an_interrupted_run_is_taken_over(self):
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "setup.lock"), b"", mode=0o600)
+        before = kfk.tree(self.home)
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        self.assertEqual(main(s, "--undo")[0], 0)
+        # The leftover folder and lock count as this tool's and go; their parents stay.
+        expected = {rel: v for rel, v in before.items() if not rel.startswith(kiosk.KIOSK_STATE_DIR)}
+        self.assertEqual(kfk.tree(self.home), expected)
+
+    def test_undo_keeps_files_it_did_not_create(self):
+        s = self.pi()
+        self.assertEqual(main(s)[0], 0)
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "my-notes.txt"), b"mine")
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "browser", "Default", "Cookies"), b"unlock", mode=0o600)
+        code, out, err = main(s, "--undo")
+        self.assertEqual(code, 0, err)
+        self.assertIn("state folder was kept", out)
+        left = {rel for rel in kfk.tree(self.home) if rel.startswith(kiosk.KIOSK_STATE_DIR)}
+        self.assertEqual(left, {kiosk.KIOSK_STATE_DIR, os.path.join(kiosk.KIOSK_STATE_DIR, "my-notes.txt")})
+        for rel in MANAGED:
+            self.assertEqual(kfk.tree(self.home).get(rel), self.before.get(rel))
+        code, _, _ = main(s)  # the kept folder is not this tool's any more
+        self.assertEqual(code, ks.EXIT_CHANGED)
 
 
 if __name__ == "__main__":

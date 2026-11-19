@@ -58,7 +58,13 @@ def bitmap(*bits):
     return " ".join("%x" % word for word in reversed(words))
 
 
+# The bitmap lines the kernel prints when the matching EV bit is set.
+TYPE_LINES = (("KEY", 1), ("REL", 2), ("ABS", 3), ("MSC", 4), ("SW", 5), ("LED", 0x11), ("SND", 0x12), ("FF", 0x15))
+
+
 def device(name, ev=(), key=(), abs_=(), rel=(), prop=(), handlers="event5"):
+    """One /proc/bus/input/devices record, as input_devices_seq_show() prints
+    it: every type bitmap whose EV bit is set, and no other."""
     lines = [
         "I: Bus=0003 Vendor=222a Product=0001 Version=0110",
         'N: Name="%s"' % name,
@@ -69,12 +75,10 @@ def device(name, ev=(), key=(), abs_=(), rel=(), prop=(), handlers="event5"):
         "B: PROP=%s" % bitmap(*prop),
         "B: EV=%s" % bitmap(*ev),
     ]
-    if key:
-        lines.append("B: KEY=%s" % bitmap(*key))
-    if rel:
-        lines.append("B: REL=%s" % bitmap(*rel))
-    if abs_:
-        lines.append("B: ABS=%s" % bitmap(*abs_))
+    given = {"KEY": key, "REL": rel, "ABS": abs_}
+    for kind, bit in TYPE_LINES:
+        if bit in ev:
+            lines.append("B: %s=%s" % (kind, bitmap(*given.get(kind, ()))))
     return "\n".join(lines) + "\n"
 
 
@@ -177,6 +181,7 @@ class KioskPi(FakeSystem):
             (KANSHI_PID, UID, "kanshi", ["/usr/bin/kanshi"]),
             (960, UID, "wf-panel-pi", ["/usr/bin/wf-panel-pi"]),
         ]
+        self.environs[LABWC_PID] = {"HOME": home, "XDG_RUNTIME_DIR": RUNTIME, "USER": "pi"}
         self.environs[KANSHI_PID] = {
             "LABWC_PID": str(LABWC_PID),
             "WAYLAND_DISPLAY": "wayland-0",

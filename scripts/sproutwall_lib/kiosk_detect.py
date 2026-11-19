@@ -33,6 +33,7 @@ Sources for the Raspberry Pi OS desktop facts used below:
 - The output and touch configuration files: see kiosk_files.py.
 """
 
+import fnmatch
 import json
 import os
 import re
@@ -104,7 +105,7 @@ class Session:
     session) or "no_socket" (the session's Wayland socket is not there).
     """
 
-    reason: str
+    reason: str  # also "config_path": a config folder or file option, or XDG_CONFIG_HOME, moves the config away from ~/.config
     labwc_pid: int = 0
     kanshi_pids: list = field(default_factory=list)
     env: dict = field(default_factory=dict)  # WAYLAND_DISPLAY and XDG_RUNTIME_DIR only
@@ -123,13 +124,45 @@ def own_processes(system):
     return [p for p in processes if p[1] == uid]
 
 
+# Options that make labwc or kanshi read another configuration than
+# ~/.config/labwc and ~/.config/kanshi/config (labwc(1): -c/--config,
+# -C/--config-dir; kanshi(1): -c/--config).
+LABWC_CONFIG_OPTIONS = ("-c", "-C", "--config", "--config-dir")
+KANSHI_CONFIG_OPTIONS = ("-c", "--config")
+
+
+def _overrides_config(argv, options):
+    """True if argv (after the program) has one of options, as a separate
+    word, as --option=value, or inside a cluster of short options (-mC)."""
+    short = [o[1] for o in options if len(o) == 2]
+    for arg in argv[1:]:
+        if arg in options or any(arg.startswith(o + "=") for o in options if o.startswith("--")):
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and any(c in arg[1:] for c in short):
+            return True
+    return False
+
+
+def _config_env_ok(env, home):
+    """The session environment uses this home folder and the default
+    ~/.config (no XDG_CONFIG_HOME, or exactly ~/.config)."""
+    session_home = env.get("HOME")
+    if not isinstance(session_home, str) or os.path.normpath(session_home) != os.path.normpath(home):
+        return False
+    config = env.get("XDG_CONFIG_HOME")
+    return config is None or os.path.normpath(config) == os.path.join(os.path.normpath(home), ".config")
+
+
 def find_session(system):
     """The labwc session of the user running this, found from the process table.
 
     Works from the desktop's own terminal and from an SSH login of the same
     user: the Wayland socket is taken from the environment of the kanshi that
     labwc started (it carries LABWC_PID and WAYLAND_DISPLAY), not from the
-    caller's environment. Raises CannotTell.
+    caller's environment. labwc and kanshi must use the default config
+    places (~/.config, no config options, no other XDG_CONFIG_HOME) and this
+    home folder, or the files this tool writes would not be read: that is
+    "config_path". Raises CannotTell, also when an environment cannot be read.
     """
     if system.euid() == 0:
         return Session("root")
@@ -142,32 +175,35 @@ def find_session(system):
     if len(labwc) != 1:
         return Session("other_desktop")  # nested or several labwc: not the plain desktop
     labwc_pid, _, _, labwc_argv = labwc[0]
-    if not any(arg in ("-m", "--merge-config") for arg in labwc_argv[1:]):
+    if _overrides_config(labwc_argv, LABWC_CONFIG_OPTIONS):
+        return Session("config_path")
+    if not _overrides_config(labwc_argv, ("-m", "--merge-config")):  # -m, also inside -dm
         return Session("no_merge")
-    kanshi = [p[0] for p in own if p[2] == "kanshi"]
-    session_kanshi, unreadable = [], []
+    home = system.home()
+    try:
+        labwc_env = system.process_environ(labwc_pid)
+    except OSError as error:  # gone or unreadable: either way it cannot be told
+        raise CannotTell("labwc-environment") from error
+    if not _config_env_ok(labwc_env, home):
+        return Session("config_path")
+    kanshi = [(p[0], p[3]) for p in own if p[2] == "kanshi"]
+    session_kanshi = []
     env = None
-    for pid in kanshi:
+    for pid, argv in kanshi:
         try:
             penv = system.process_environ(pid)
         except ProcessLookupError:
             continue  # exited meanwhile
-        except OSError:
-            unreadable.append(pid)
+        except OSError as error:
+            raise CannotTell("kanshi-environment") from error
+        if penv.get("LABWC_PID") != str(labwc_pid):
             continue
-        if penv.get("LABWC_PID") == str(labwc_pid):
-            session_kanshi.append(pid)
-            env = env or penv
+        if _overrides_config(argv, KANSHI_CONFIG_OPTIONS) or not _config_env_ok(penv, home):
+            return Session("config_path")
+        session_kanshi.append(pid)
+        env = env or penv
     if not session_kanshi:
-        if not unreadable:
-            return Session("no_kanshi")
-        # kanshi's environment is unreadable: use our own, but only when it
-        # belongs to this same labwc (a terminal on the desktop).
-        own_env = system.environ()
-        if own_env.get("LABWC_PID") != str(labwc_pid):
-            raise CannotTell("kanshi-environment")
-        env = own_env
-        session_kanshi = unreadable
+        return Session("no_kanshi")
     display = env.get("WAYLAND_DISPLAY")
     runtime = env.get("XDG_RUNTIME_DIR")
     if not isinstance(display, str) or not WAYLAND_SOCKET_RE.fullmatch(display):
@@ -239,12 +275,16 @@ class Output:
     transform: object = None  # one of TRANSFORMS, or None for a switched-off output
 
     def native_mode(self):
-        """The panel's own mode: preferred, else current, else the first one."""
-        for test in (lambda m: m.preferred, lambda m: m.current, lambda m: True):
-            for mode in self.modes:
-                if test(mode):
-                    return mode
-        return None
+        """The panel's own mode: the one preferred mode, else the one current
+        mode. Raises CannotTell when neither is known for certain (no
+        guessing a landscape panel)."""
+        for flag in ("preferred", "current"):
+            found = [m for m in self.modes if getattr(m, flag)]
+            if len(found) == 1:
+                return found[0]
+            if len(found) > 1:
+                raise CannotTell("modes")
+        raise CannotTell("modes")
 
 
 class OutputsUnreadable(Exception):
@@ -258,7 +298,7 @@ def _size(value):
 
 
 def _flag(item, key):
-    value = item.get(key, False)
+    value = item.get(key)  # required: a missing flag is not "False"
     if type(value) is not bool:
         raise ValueError("flag")
     return value
@@ -268,7 +308,8 @@ def parse_wlr_randr_json(text):
     """`wlr-randr --json` (wlr-randr 0.4+): a list of output objects.
 
     Reads name, enabled, modes[width, height, preferred, current] and
-    transform; anything that is not exactly that shape raises ValueError.
+    transform, all required; anything that is not exactly that shape raises
+    ValueError.
     [미확인] The field names follow wlr-randr 0.4's JSON output; the
     authoring sandbox could not reach the upstream repository, so a ValueError
     here makes the caller use the plain-text output instead.
@@ -286,7 +327,7 @@ def parse_wlr_randr_json(text):
         enabled = item.get("enabled")
         if type(enabled) is not bool:
             raise ValueError("enabled")
-        modes_data = item.get("modes", [])
+        modes_data = item.get("modes")  # required: missing is not "no modes"
         if not isinstance(modes_data, list):
             raise ValueError("modes")
         modes = []
@@ -425,8 +466,9 @@ TRANSFORM_PORTRAIT_PANEL = {"portrait": "normal", "portrait-flipped": "180", "la
 
 
 def transform_for(orientation, output):
+    """Raises CannotTell when the panel's own mode is not known for certain."""
     mode = output.native_mode()
-    table = TRANSFORM_PORTRAIT_PANEL if mode is not None and mode.height > mode.width else TRANSFORM_LANDSCAPE_PANEL
+    table = TRANSFORM_PORTRAIT_PANEL if mode.height > mode.width else TRANSFORM_LANDSCAPE_PANEL
     return table[orientation]
 
 
@@ -468,11 +510,29 @@ def _bit(bitmap, number):
     return bool((bitmap >> number) & 1)
 
 
+# Which event-type bit makes the kernel print which bitmap line
+# (input_devices_seq_show(): KEY only with EV_KEY, ABS only with EV_ABS, ...).
+BITMAP_EV_BITS = {"KEY": 0x01, "REL": 0x02, "ABS": 0x03, "MSC": 0x04, "SW": 0x05, "LED": 0x11, "SND": 0x12, "FF": 0x15}
+
+
+def _check_record(block):
+    """Every line the kernel always prints (I, N, P, S, U, H, PROP, EV), and
+    each type bitmap exactly when its EV bit is set. Else ValueError."""
+    for key in ("I", "N", "P", "S", "U", "H", "PROP", "EV"):
+        if key not in block:
+            raise ValueError("incomplete record")
+    for key, bit in BITMAP_EV_BITS.items():
+        if (key in block) != _bit(block["EV"], bit):
+            raise ValueError("bitmap does not match EV")
+
+
 def parse_input_devices(text):
     """[{name, handlers, PROP, EV, KEY, ABS, ...}] from /proc/bus/input/devices.
 
-    Every line must have one of the kernel's shapes and every record must
-    have a name and handlers; anything else raises ValueError."""
+    Every line must have one of the kernel's shapes, no line may repeat in a
+    record, and every record must be complete (_check_record); anything else
+    raises ValueError: an incomplete record is never read as "no
+    capabilities"."""
     devices = []
     block = {}
     lines = text.split("\n")
@@ -481,8 +541,7 @@ def parse_input_devices(text):
     for line in lines + [""]:
         if line == "":
             if block:
-                if "name" not in block or "handlers" not in block:
-                    raise ValueError("incomplete record")
+                _check_record(block)
                 devices.append(block)
             block = {}
             continue
@@ -491,16 +550,16 @@ def parse_input_devices(text):
         if not match:
             raise ValueError("line shape")
         kind = line[:1]
+        key = match.group(1) if kind == "B" else kind
+        if key in block:
+            raise ValueError("repeated line")
         if kind == "N":
-            if "name" in block:
-                raise ValueError("two names")
             block["name"] = match.group(1)
         elif kind == "H":
             block["handlers"] = match.group(1).split()
         elif kind == "B":
-            if match.group(1) in block:
-                raise ValueError("repeated bitmap")
-            block[match.group(1)] = parse_bitmap(match.group(2))
+            block[key] = parse_bitmap(match.group(2))
+        block[key] = block.get(key, True)
     return devices
 
 
@@ -542,10 +601,11 @@ def is_touchscreen(device):
 def find_touch(system):
     """("one", name) | ("none", None) | ("several", None). Raises CannotTell.
 
-    Several device nodes with the same name (one panel, several event
-    nodes) count once: labwc maps by name. A missing file (ENOENT: no input
-    devices at all) is "none"; any other failure, a file that does not parse,
-    or a touch name that cannot be written safely is CannotTell.
+    Every touch device counts, even two with the same name: labwc maps by
+    name, so two same-named devices could be two panels, and that is
+    ambiguous. A missing file (ENOENT: no input devices at all) is "none";
+    any other failure, a file that does not parse, or a touch name that
+    cannot be written safely is CannotTell.
     """
     try:
         raw = system.read_bytes(INPUT_DEVICES)
@@ -557,10 +617,7 @@ def find_touch(system):
         devices = parse_input_devices(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise CannotTell("input-devices") from error
-    names = []
-    for device in devices:
-        if is_touchscreen(device) and device["name"] not in names:
-            names.append(device["name"])
+    names = [device["name"] for device in devices if is_touchscreen(device)]
     if not names:
         return "none", None
     if len(names) > 1:
@@ -574,42 +631,81 @@ def find_touch(system):
 
 LIGHTDM_CONF = "/etc/lightdm/lightdm.conf"
 LIGHTDM_CONF_D = "/etc/lightdm/lightdm.conf.d"
+# lightdm's load order (later files override earlier ones): the packaged
+# configuration folders, then /etc/lightdm/lightdm.conf.d, then
+# /etc/lightdm/lightdm.conf (lightdm src/lightdm.c, config_load_from_standard_locations).
+LIGHTDM_CONF_DIRS = (
+    "/usr/share/lightdm/lightdm.conf.d",
+    "/usr/local/share/lightdm/lightdm.conf.d",
+    "/etc/xdg/lightdm/lightdm.conf.d",
+    LIGHTDM_CONF_D,
+)
 AUTOLOGIN_ON = ["sudo", "raspi-config", "nonint", "do_boot_behaviour", "B4"]
 AUTOLOGIN_OFF = ["sudo", "raspi-config", "nonint", "do_boot_behaviour", "B3"]
 CONF_NAME_RE = _re(r"[A-Za-z0-9_.-]{1,64}\.conf")
+INI_SECTION_RE = _re(r"\[([^\[\]\x00-\x1f]{1,64})\]")
+INI_KEY_RE = _re(r"[A-Za-z0-9_.-]{1,64}")
+# The sections whose autologin-user applies to the Pi's seat, as lightdm
+# reads them (canonical/lightdm@bcd0e902: common/configuration.c moves keys
+# of the old [SeatDefaults] into [Seat:*]; src/lightdm.c get_config_sections
+# takes [Seat:*] first, then every [Seat:<pattern>] matching the seat name).
+SEAT_NAME = "seat0"
+
+
+def parse_lightdm_ini(text):
+    """{section: {key: value}} for one lightdm (GKeyFile-style) file.
+    Raises ValueError on any line that is not blank, a comment, a [section]
+    header or key=value inside a section."""
+    sections = {}
+    current = None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        header = INI_SECTION_RE.fullmatch(stripped)
+        if header:
+            current = sections.setdefault(header.group(1), {})
+            continue
+        key, sep, value = stripped.partition("=")
+        if not sep or current is None or not INI_KEY_RE.fullmatch(key.strip()):
+            raise ValueError("malformed line")
+        current[key.strip()] = value.strip()
+    return sections
 
 
 def autologin_state(system):
     """"on" (this user), "other_user", "off" or "unknown". The name is never printed.
 
     Informational only: the tool never edits lightdm. "unknown" when a file
-    or the conf.d folder cannot be read or decoded (never "off")."""
-    try:
-        names = system.listdir(LIGHTDM_CONF_D)
-    except FileNotFoundError:
-        names = []
-    except OSError:
-        return "unknown"
-    files = [LIGHTDM_CONF] + [os.path.join(LIGHTDM_CONF_D, n) for n in sorted(names) if CONF_NAME_RE.fullmatch(n)]
-    value = None
+    or a folder cannot be read, decoded or parsed (never "off")."""
+    files = []
+    for folder in LIGHTDM_CONF_DIRS:
+        try:
+            names = system.listdir(folder)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return "unknown"
+        files += [os.path.join(folder, n) for n in sorted(names) if CONF_NAME_RE.fullmatch(n)]
+    files.append(LIGHTDM_CONF)
+    merged = {}  # section -> {key: value}, in the order sections first appear
     readable = False
     for path in files:
         try:
-            text = system.read_bytes(path).decode("utf-8")
+            sections = parse_lightdm_ini(system.read_bytes(path).decode("utf-8"))
         except FileNotFoundError:
             continue
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, ValueError):
             return "unknown"
         readable = True
-        for line in text.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith(("#", ";")):
-                continue
-            key, sep, val = stripped.partition("=")
-            if sep and key.strip() == "autologin-user":
-                value = val.strip()
+        for name, keys in sections.items():
+            merged.setdefault("Seat:*" if name == "SeatDefaults" else name, {}).update(keys)
     if not readable:
         return "unknown"
+    value = merged.get("Seat:*", {}).get("autologin-user")
+    for name, keys in merged.items():
+        if name.startswith("Seat:") and name != "Seat:*" and fnmatch.fnmatchcase(SEAT_NAME, name[len("Seat:") :]):
+            value = keys.get("autologin-user", value)
     if not value:
         return "off"
     try:

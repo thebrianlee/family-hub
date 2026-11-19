@@ -21,7 +21,7 @@ import tempfile
 import unittest
 import warnings
 
-from sproutwall_lib import cli, kiosk
+from sproutwall_lib import cli, kiosk, kiosk_files as kf
 from sproutwall_lib.system import CommandResult
 
 from . import kiosk_fakes as kfk
@@ -35,6 +35,25 @@ EXPECTED_KEYS = [
     "schema", "result", "reason", "installed", "launch", "files", "running",
     "output", "orientation", "rotation", "touch", "blanking", "autologin",
 ]
+# The allowed values of each --check --json field, written out here on
+# purpose instead of imported from kiosk_setup, so a change there cannot
+# also change what this test expects.
+EXPECTED_VALUES = {
+    "result": {"ok", "attention", "not_installed", "unsupported", "unknown"},
+    "reason": {"none", "root", "unsupported_os", "no_desktop", "other_desktop", "session", "config_path", "no_chromium", "cannot_tell", "unknown"},
+    "installed": {"yes", "no", "damaged", "unknown"},
+    "launch": {"on", "off", "duplicate", "none", "unknown"},
+    "files": {"as_set_up", "partial", "changed", "none", "unknown"},
+    "running": {"yes", "no", "unknown"},
+    "output": {"one", "none", "several", "unsupported_connector", "unknown"},
+    "orientation": {"portrait", "portrait-flipped", "landscape", "landscape-flipped", "none", "unknown"},
+    "rotation": {"applied", "not_applied", "unknown"},
+    "touch": {"mapped", "not_mapped", "unknown"},
+    "blanking": {"off", "on", "system", "unknown"},
+    "autologin": {"on", "off", "other_user", "unknown"},
+}
+LAUNCHER_FAILED = "sproutwall-kiosk: stopped by an unexpected error.\n"
+LAUNCHER_NOT_SET_UP = "sproutwall-kiosk: the kiosk is not set up here. Run ./scripts/sproutwall setup kiosk.\n"
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPO = os.path.dirname(SCRIPTS)
 BOOTSTRAP = os.path.join(SCRIPTS, "sproutwall")
@@ -104,8 +123,9 @@ class Assertions:
         data = json.loads(lines[0])
         self.assertEqual(list(data), EXPECTED_KEYS)
         self.assertIs(type(data["schema"]), int)
+        self.assertEqual(data["schema"], 1)
         for key in EXPECTED_KEYS[1:]:
-            self.assertRegex(data[key], r"\A[a-z_-]{1,24}\Z")
+            self.assertIn(data[key], EXPECTED_VALUES[key], key)
 
 
 class InProcessTests(Assertions, unittest.TestCase):
@@ -225,6 +245,141 @@ class EndToEndTests(Assertions, unittest.TestCase):
             if "--json" in args:
                 self.assert_check_json(out)
         self.assertEqual(kfk.tree(home), before)
+
+
+LAUNCHER_HARNESS = r'''
+import os, sys, threading, subprocess, time, runpy, http.client
+launcher, pid_file, mode = sys.argv[1:4]
+home = os.environ["HOME"]
+os.geteuid = lambda: 1000  # the sandbox may run as root; the launcher refuses root
+
+
+class Connection:
+    calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def request(self, *args, **kwargs):
+        Connection.calls += 1
+        if mode == "crash_after_child" and Connection.calls >= 3:
+            raise RuntimeError("unexpected in " + home)
+        raise ConnectionRefusedError(111, "refused at " + home)
+
+    def close(self):
+        pass
+
+
+http.client.HTTPConnection = Connection  # never the real port 3847
+clock = [0.0]
+
+
+def monotonic():
+    clock[0] += 50.0
+    return clock[0]
+
+
+time.monotonic = monotonic
+time.sleep = lambda seconds: None
+real_isfile, real_access, real_open = os.path.isfile, os.access, os.open
+os.path.isfile = lambda p: p.startswith("/usr/bin/chromium") or real_isfile(p)
+os.access = lambda p, m: p.startswith("/usr/bin/chromium") or real_access(p, m)
+if mode == "unwritable":
+    def denied(path, *args, **kwargs):
+        if "/run/" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+    os.open = denied
+real_popen = subprocess.Popen
+
+
+def popen(argv, **kwargs):
+    child = real_popen([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+    with open(pid_file, "a", encoding="utf-8") as handle:
+        handle.write("%d\n" % child.pid)
+    return child
+
+
+subprocess.Popen = popen
+sys.argv = [launcher]
+runpy.run_path(launcher, run_name="__main__")
+'''
+
+
+class LauncherGuardTests(Assertions, unittest.TestCase):
+    """The installed launcher, run as its own process with a seeded home
+    folder: forced failures give one fixed line, never a traceback, path or
+    seeded value, and any Chromium it started is stopped."""
+
+    def setUp(self):
+        self.home = seeded_home(self)
+        self.launcher = os.path.join(self.home, kiosk.KIOSK_LAUNCHER)
+        kfk.write(self.home, kiosk.KIOSK_LAUNCHER, kf.launcher_bytes(), mode=0o755)
+        self.state = os.path.join(self.home, kiosk.KIOSK_STATE_DIR)
+        for sub in ("run", "browser"):
+            os.makedirs(os.path.join(self.state, sub), 0o700)
+        self.harness = os.path.join(os.path.dirname(os.path.dirname(self.home)), "launcher_harness.py")
+        with open(self.harness, "w", encoding="utf-8") as handle:
+            handle.write(LAUNCHER_HARNESS)
+        self.pids = os.path.join(os.path.dirname(os.path.dirname(self.home)), "children.txt")
+
+    def run_launcher(self, mode, harness=True):
+        argv = [sys.executable, self.harness, self.launcher, self.pids, mode] if harness else [sys.executable, self.launcher]
+        proc = subprocess.run(
+            argv,
+            env=dict(os.environ, HOME=self.home, USER=USER, PYTHONDONTWRITEBYTECODE="1"),
+            cwd=self.home,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+        out, err = proc.stdout.decode(), proc.stderr.decode()
+        self.assertEqual(out, "")
+        self.assertNotIn("Traceback", err)
+        self.assert_clean(self.home, out, err)
+        return proc.returncode, err
+
+    def children(self):
+        if not os.path.exists(self.pids):
+            return []
+        with open(self.pids, encoding="utf-8") as handle:
+            return [int(line) for line in handle if line.strip()]
+
+    def test_state_folder_problems(self):
+        os.rmdir(os.path.join(self.state, "run"))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_NOT_SET_UP))
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "run"), b"a file, not a folder")
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_NOT_SET_UP))
+
+    def test_unwritable_run_folder(self):
+        self.assertEqual(self.run_launcher("unwritable"), (1, LAUNCHER_FAILED))
+
+    def test_lock_file_error(self):
+        os.mkdir(os.path.join(self.state, "run", "launcher.lock"))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_FAILED))
+        self.assertEqual(self.children(), [])
+
+    def test_waiting_page_write_fails(self):
+        os.mkdir(os.path.join(self.state, "run", "starting.html"))
+        self.assertEqual(self.run_launcher("plain"), (1, LAUNCHER_FAILED))
+        self.assertTrue(os.path.isfile(os.path.join(self.state, "run", "launcher.lock")))  # got past the lock
+        self.assertEqual(self.children(), [])  # failed before any browser started
+
+    def test_a_crash_stops_the_browser_it_started(self):
+        self.assertEqual(self.run_launcher("crash_after_child"), (1, LAUNCHER_FAILED))
+        pids = self.children()
+        self.assertEqual(len(pids), 1)  # the waiting page's browser was started
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pids[0], 0)  # and stopped (and reaped) by the guard
+
+    def test_the_real_file_on_this_host(self):
+        """No harness: as root it refuses silently; otherwise, with no desktop
+        state around it, it says the kiosk is not set up."""
+        os.rmdir(os.path.join(self.state, "run"))
+        code, err = self.run_launcher("plain", harness=False)
+        self.assertEqual(code, 1)
+        self.assertIn(err, ("", LAUNCHER_NOT_SET_UP))
 
 
 class BootstrapFallbackTests(unittest.TestCase):

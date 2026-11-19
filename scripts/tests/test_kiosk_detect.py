@@ -127,13 +127,41 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(det.CannotTell):
             det.find_session(s)
 
-    def test_unreadable_kanshi_environment(self):
+    def test_unreadable_environments(self):
+        for pid in (kfk.KANSHI_PID, kfk.LABWC_PID):
+            s = pi()
+            s.environs[pid] = PermissionError(13, "denied")
+            s.env = {"LABWC_PID": str(kfk.LABWC_PID), "WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": kfk.RUNTIME}
+            with self.assertRaises(det.CannotTell, msg=pid):
+                det.find_session(s)  # never "no kanshi", and no fallback to the caller's environment
         s = pi()
-        s.environs[kfk.KANSHI_PID] = PermissionError(13, "denied")
+        del s.environs[kfk.LABWC_PID]  # labwc gone meanwhile
         with self.assertRaises(det.CannotTell):
-            det.find_session(s)  # never "no kanshi"
-        s.env = {"LABWC_PID": str(kfk.LABWC_PID), "WAYLAND_DISPLAY": "wayland-0", "XDG_RUNTIME_DIR": kfk.RUNTIME}
-        self.assertEqual(det.find_session(s).reason, "ok")  # the desktop's own terminal
+            det.find_session(s)
+
+    def test_non_standard_config_places(self):
+        cases = {
+            "labwc -C": lambda s: s.procs.__setitem__(2, (kfk.LABWC_PID, kfk.UID, "labwc", ["/usr/bin/labwc", "-m", "-C", "/srv/labwc"])),
+            "labwc --config-dir=": lambda s: s.procs.__setitem__(2, (kfk.LABWC_PID, kfk.UID, "labwc", ["/usr/bin/labwc", "-m", "--config-dir=/srv"])),
+            "labwc -mC": lambda s: s.procs.__setitem__(2, (kfk.LABWC_PID, kfk.UID, "labwc", ["/usr/bin/labwc", "-mC", "/srv"])),
+            "labwc --config": lambda s: s.procs.__setitem__(2, (kfk.LABWC_PID, kfk.UID, "labwc", ["/usr/bin/labwc", "-m", "--config", "/srv/rc.xml"])),
+            "kanshi -c": lambda s: s.procs.__setitem__(3, (kfk.KANSHI_PID, kfk.UID, "kanshi", ["/usr/bin/kanshi", "-c", "/etc/xdg/labwc-greeter/config.kanshi"])),
+            "kanshi --config=": lambda s: s.procs.__setitem__(3, (kfk.KANSHI_PID, kfk.UID, "kanshi", ["/usr/bin/kanshi", "--config=/srv/k"])),
+            "XDG_CONFIG_HOME in labwc": lambda s: s.environs[kfk.LABWC_PID].__setitem__("XDG_CONFIG_HOME", "/srv/config"),
+            "XDG_CONFIG_HOME in kanshi": lambda s: s.environs[kfk.KANSHI_PID].__setitem__("XDG_CONFIG_HOME", "/home/pi/.cfg"),
+            "another HOME": lambda s: s.environs[kfk.LABWC_PID].__setitem__("HOME", "/home/someone"),
+            "no HOME": lambda s: s.environs[kfk.KANSHI_PID].pop("HOME"),
+        }
+        for name, change in cases.items():
+            s = pi()
+            self.assertEqual(s.procs[2][2], "labwc")
+            self.assertEqual(s.procs[3][2], "kanshi")
+            change(s)
+            self.assertEqual(det.find_session(s).reason, "config_path", name)
+        s = pi()
+        s.environs[kfk.LABWC_PID]["XDG_CONFIG_HOME"] = "/home/pi/.config/"
+        s.environs[kfk.KANSHI_PID]["XDG_CONFIG_HOME"] = "/home/pi/.config"
+        self.assertEqual(det.find_session(s).reason, "ok")  # the default, spelled out
 
     def test_socket(self):
         s = pi()
@@ -290,6 +318,41 @@ class OutputTests(unittest.TestCase):
             det.connector_kind("DPI-1")
 
 
+class ModeCertaintyTests(unittest.TestCase):
+    """The panel's own mode must be known for certain; nothing is assumed."""
+
+    def test_json_needs_every_mode_field(self):
+        good = kfk.output_json()
+        for change in (
+            {"modes": [{"width": 1920, "height": 1080, "preferred": True}]},
+            {"modes": [{"width": 1920, "height": 1080, "current": True}]},
+        ):
+            with self.assertRaises(ValueError, msg=change):
+                det.parse_wlr_randr_json(json.dumps([dict(good, **change)]))
+        missing = dict(good)
+        del missing["modes"]
+        with self.assertRaises(ValueError):
+            det.parse_wlr_randr_json(json.dumps([missing]))
+
+    def test_native_mode(self):
+        def output(*modes):
+            return det.Output("HDMI-A-1", True, [det.Mode(w, h, p, c) for w, h, p, c in modes], "normal")
+
+        self.assertEqual(det.transform_for("portrait", output((1920, 1080, True, False), (720, 1280, False, True))), "90")
+        self.assertEqual(det.transform_for("portrait", output((720, 1280, False, True), (1920, 1080, False, False))), "normal")
+        for modes in ((), ((1920, 1080, False, False),), ((1920, 1080, True, False), (720, 1280, True, False)), ((1920, 1080, False, True), (1280, 720, False, True))):
+            with self.assertRaises(det.CannotTell, msg=modes):
+                det.transform_for("portrait", output(*modes))
+
+    def test_setup_without_a_known_mode_cannot_tell(self):
+        item = kfk.output_json()
+        item["modes"] = [dict(m, preferred=False, current=False) for m in item["modes"]]
+        s = kfk.KioskPi("/home/pi", outputs=[item])
+        output = det.read_outputs(s, det.find_session(s))[0]
+        with self.assertRaises(det.CannotTell):
+            det.transform_for("portrait", output)
+
+
 class OrientationTests(unittest.TestCase):
     def test_landscape_panel(self):
         out = det.parse_wlr_randr_json(json.dumps([kfk.output_json(width=1920, height=1080)]))[0]
@@ -333,8 +396,8 @@ class TouchTests(unittest.TestCase):
     def test_one_touch_among_other_inputs(self):
         self.assertEqual(self.find(kfk.keyboard(), kfk.mouse(), kfk.touchpad(), kfk.usb_touch()), ("one", "ILITEK ILITEK-TP"))
 
-    def test_same_name_on_two_nodes_is_one_input(self):
-        self.assertEqual(self.find(kfk.usb_touch(), kfk.usb_touch()), ("one", "ILITEK ILITEK-TP"))
+    def test_two_devices_with_the_same_name_are_ambiguous(self):
+        self.assertEqual(self.find(kfk.usb_touch(), kfk.usb_touch()), ("several", None))
 
     def test_ambiguous(self):
         self.assertEqual(self.find(kfk.usb_touch(), kfk.dsi_touch()), ("several", None))
@@ -358,6 +421,11 @@ class TouchTests(unittest.TestCase):
             good.replace("ILITEK", "bad\x1bname"),
             good.replace("B: KEY=", "B: KEY=٤"),
             good + good.split("\n")[1] + "\n",  # two names in one record
+            good.replace("P: Phys=usb-xhci-hcd.0-1/input0\n", ""),  # a line the kernel always prints
+            "\n".join(line for line in good.split("\n") if not line.startswith("B: PROP")),
+            "\n".join(line for line in good.split("\n") if not line.startswith("B: ABS")),  # EV_ABS set, no ABS
+            good.rstrip("\n") + "\nB: REL=3\n",  # REL printed without EV_REL
+            'N: Name="only a name"\nH: Handlers=event9\n',
         ):
             s = pi()
             s.files["/proc/bus/input/devices"] = value
@@ -366,34 +434,67 @@ class TouchTests(unittest.TestCase):
 
 
 class AutologinTests(unittest.TestCase):
-    def state(self, text, user="pi"):
+    def state(self, text, user="pi", extra=None):
         s = pi()
         s.user = user
         if text is None:
             del s.files["/etc/lightdm/lightdm.conf"]
         else:
             s.files["/etc/lightdm/lightdm.conf"] = text
-        return det.autologin_state(s)
+        s.files.update(extra or {})
+        return det.autologin_state(s), s
 
     def test_states(self):
-        self.assertEqual(self.state(kfk.lightdm()), "off")
-        self.assertEqual(self.state(kfk.lightdm("pi")), "on")
-        self.assertEqual(self.state(kfk.lightdm("guest")), "other_user")
-        self.assertEqual(self.state(kfk.lightdm("")), "off")
-        self.assertEqual(self.state(None), "unknown")
+        self.assertEqual(self.state(kfk.lightdm())[0], "off")
+        self.assertEqual(self.state(kfk.lightdm("pi"))[0], "on")
+        self.assertEqual(self.state(kfk.lightdm("guest"))[0], "other_user")
+        self.assertEqual(self.state(kfk.lightdm(""))[0], "off")
+        self.assertEqual(self.state(None)[0], "unknown")
 
-    def test_errors_are_unknown_not_off(self):
-        self.assertEqual(self.state(PermissionError(13, "denied")), "unknown")
-        self.assertEqual(self.state(b"\xff autologin-user=pi"), "unknown")
+    def test_only_seat_sections_count(self):
+        self.assertEqual(self.state("[LightDM]\nautologin-user=pi\n[Seat:*]\n")[0], "off")
+        self.assertEqual(self.state("[XDMCPServer]\nautologin-user=pi\n")[0], "off")
+        self.assertEqual(self.state("[SeatDefaults]\nautologin-user=pi\n")[0], "on")
+        self.assertEqual(self.state("[Seat:*]\nautologin-user=pi\n[Seat:seat0]\nautologin-user=guest\n")[0], "other_user")
+        self.assertEqual(self.state("[Seat:seat0]\nautologin-user=pi\n[Seat:*]\nautologin-user=\n")[0], "on")
+        self.assertEqual(self.state("[Seat:seat1]\nautologin-user=pi\n")[0], "off")
+        self.assertEqual(self.state("[Seat:*]\nautologin-user=guest\n[Seat:seat*]\nautologin-user=pi\n")[0], "on")
+        got, _ = self.state("[Seat:*]\n", extra={"/etc/lightdm/lightdm.conf.d/50-old.conf": "[SeatDefaults]\nautologin-user=pi\n"})
+        self.assertEqual(got, "on")
+
+    def test_malformed_is_unknown_not_off(self):
+        for text in (
+            "autologin-user=pi\n[Seat:*]\n",  # a key before any section
+            "[Seat:*]\nthis is not a setting\n",
+            "[Seat:*\nautologin-user=pi\n",
+            "[Seat:*]\n=pi\n",
+            b"\xff[Seat:*]\nautologin-user=pi\n",
+            PermissionError(13, "denied"),
+        ):
+            self.assertEqual(self.state(text)[0], "unknown", repr(text))
+
+    def test_load_order(self):
+        # /etc/lightdm/lightdm.conf is read last and wins; conf.d files in name order before it.
+        got, s = self.state(
+            "[Seat:*]\nautologin-user=pi\n",
+            extra={
+                "/usr/share/lightdm/lightdm.conf.d/01-defaults.conf": "[Seat:*]\nautologin-user=guest\n",
+                "/etc/lightdm/lightdm.conf.d/50-a.conf": "[Seat:*]\nautologin-user=guest\n",
+            },
+        )
+        self.assertEqual(got, "on")
+        self.assertEqual(
+            [p for p in s.reads if "lightdm" in p],
+            ["/usr/share/lightdm/lightdm.conf.d/01-defaults.conf", "/etc/lightdm/lightdm.conf.d/50-a.conf", "/etc/lightdm/lightdm.conf"],
+        )
+        got, _ = self.state("[Seat:*]\n", extra={"/etc/lightdm/lightdm.conf.d/50-kiosk.conf": "[Seat:*]\nautologin-user=pi\n"})
+        self.assertEqual(got, "on")
+
+    def test_unreadable_folder_is_unknown(self):
         s = pi()
+        s.files["/etc/lightdm/lightdm.conf.d/50-kiosk.conf"] = "[Seat:*]\n"
         s.list_errors[det.LIGHTDM_CONF_D] = PermissionError(13, "denied")
         self.assertEqual(det.autologin_state(s), "unknown")
-
-    def test_conf_d_overrides(self):
-        s = pi()
-        s.files["/etc/lightdm/lightdm.conf.d/50-kiosk.conf"] = "[Seat:*]\nautologin-user=pi\n"
-        self.assertEqual(det.autologin_state(s), "on")
-        self.assertIn("/etc/lightdm/lightdm.conf.d/50-kiosk.conf", s.reads)
 
     def test_commands(self):
         self.assertEqual(det.AUTOLOGIN_ON, ["sudo", "raspi-config", "nonint", "do_boot_behaviour", "B4"])

@@ -128,6 +128,24 @@ class CheckHealthTests(unittest.TestCase):
             FakeConnection.made = []
             self.assertFalse(self.check(error), error)
 
+    def test_a_trickling_server_is_cut_off_by_the_deadline(self):
+        import time
+
+        class Slow(FakeResponse):
+            def read(self, amount=None):
+                time.sleep(2.0)  # one byte now and then, never done in time
+                return b'{"ok":true}'
+
+        started = time.monotonic()
+        result = kl.check_health(connect=FakeConnection.factory(Slow(200, b"")), timeout=3.0, deadline=0.3)
+        self.assertFalse(result)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(FakeConnection.made[0].closed)
+
+    def test_unexpected_errors_reach_the_caller(self):
+        with self.assertRaises(RuntimeError):
+            kl.check_health(connect=FakeConnection.factory(RuntimeError("unexpected")), deadline=1.0)
+
     def test_default_uses_http_client_on_loopback(self):
         import http.client
 
@@ -150,6 +168,8 @@ class ChromiumArgvTests(unittest.TestCase):
     def test_matches_the_setup_tool(self):
         self.assertEqual(kl.STATE_DIR, kiosk.KIOSK_STATE_DIR)
         self.assertEqual(kl.BROWSER_PROFILE, kiosk_files.BROWSER_PROFILE)
+        self.assertEqual(kl.RUN_DIR, kiosk_files.RUN_DIR)
+        self.assertEqual((kl.LOCK_FILE, kl.WAIT_PAGE), kiosk_files.LAUNCHER_RUN_FILES)
         self.assertEqual(kl.CHROMIUM_CANDIDATES, kiosk_detect.CHROMIUM_CANDIDATES)
         self.assertEqual((kl.HUB_HOST, kl.HUB_PORT, kl.HEALTH_PATH), ("127.0.0.1", 3847, "/api/health"))
         self.assertIn(os.path.join("$HOME", kiosk.KIOSK_LAUNCHER), kiosk.LAUNCH_LINE)
@@ -163,7 +183,10 @@ class ChromiumArgvTests(unittest.TestCase):
                 imported.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
                 imported.add("." * node.level + (node.module or ""))
-        self.assertEqual(imported, {"fcntl", "http.client", "json", "os", "signal", "subprocess", "sys", "time", "urllib.parse"})
+        self.assertEqual(
+            imported,
+            {"fcntl", "http.client", "json", "os", "signal", "stat", "subprocess", "sys", "threading", "time", "urllib.parse", "warnings"},
+        )
 
 
 class FakeChild:
@@ -189,6 +212,8 @@ class FakeChild:
 class LauncherFlowTests(unittest.TestCase):
     def setUp(self):
         self.home = kfk.temp_home(self)
+        for sub in (kl.RUN_DIR, kl.BROWSER_PROFILE):  # setup makes these
+            os.makedirs(os.path.join(self.home, kl.STATE_DIR, sub), 0o700)
         self.started = []
         self.children = []
         self.clock = [0.0]
@@ -231,15 +256,14 @@ class LauncherFlowTests(unittest.TestCase):
         self.assertTrue(self.started[0].startswith("file://"))
         self.assertEqual(self.started[1], kl.HUB_URL)
         self.assertTrue(self.children[0].terminated)  # hint closed before the hub opens
-        page = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, kl.WAIT_PAGE)
+        page = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, kl.RUN_DIR, kl.WAIT_PAGE)
         with open(page, encoding="utf-8") as handle:
             self.assertIn("Sproutwall is starting", handle.read())
-        self.assertEqual(os.stat(os.path.join(self.home, kiosk.KIOSK_STATE_DIR)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(page).st_mode & 0o777, 0o600)
 
     def test_one_launcher_at_a_time(self):
-        state = os.path.join(self.home, kiosk.KIOSK_STATE_DIR)
-        os.makedirs(state, 0o700)
-        fd = os.open(os.path.join(state, kl.LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o600)
+        run_dir = os.path.join(self.home, kiosk.KIOSK_STATE_DIR, kl.RUN_DIR)
+        fd = os.open(os.path.join(run_dir, kl.LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o600)
         self.addCleanup(os.close, fd)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         launcher = self.launcher([True])
@@ -264,6 +288,15 @@ class LauncherFlowTests(unittest.TestCase):
         launcher.start = start_then_stop
         self.assertEqual(launcher.run(), 0)
         self.assertTrue(self.children[0].terminated)
+
+    def test_not_set_up(self):
+        for sub in (kl.RUN_DIR, kl.BROWSER_PROFILE):
+            os.rmdir(os.path.join(self.home, kl.STATE_DIR, sub))
+            launcher = self.launcher([True])
+            with self.assertRaises(kl.NotSetUp):
+                launcher.run()
+            os.makedirs(os.path.join(self.home, kl.STATE_DIR, sub), 0o700)
+        self.assertEqual(self.started, [])
 
     def test_never_as_root(self):
         with mock.patch.object(kl.os, "geteuid", return_value=0):

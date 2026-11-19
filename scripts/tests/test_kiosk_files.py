@@ -2,8 +2,11 @@
 config. Unrelated content must survive byte for byte, and a second run must
 give the same bytes as the first."""
 
+import os
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+from unittest import mock
 
 from sproutwall_lib import kiosk, kiosk_files as kf
 
@@ -140,104 +143,147 @@ class KanshiTests(unittest.TestCase):
         self.assertEqual(kf.kanshi_text(b"", "HDMI-A-1", "90"), kf.kanshi_text(None, "HDMI-A-1", "90"))
 
 
-class StatusTests(unittest.TestCase):
-    def test_file_status(self):
-        entry = {"existed": True, "original": kf.sha256(b"a"), "written": kf.sha256(b"b")}
-        self.assertEqual(kf.file_status(entry, b"b"), "as_set_up")
-        self.assertEqual(kf.file_status(entry, b"a"), "original")
-        self.assertEqual(kf.file_status(entry, b"c"), "changed")
-        self.assertEqual(kf.file_status(entry, None), "changed")
-        absent = {"existed": False, "original": None, "written": kf.sha256(b"b")}
-        self.assertEqual(kf.file_status(absent, None), "original")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DiskTests(unittest.TestCase):
     def setUp(self):
-        import tempfile
-
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dir = tmp.name
 
-    def test_write_atomic_verifies_and_leaves_no_temp(self):
-        import os
+    def path(self, name):
+        return os.path.join(self.dir, name)
 
-        path = os.path.join(self.dir, "rc.xml")
+    def test_write_atomic_verifies_and_leaves_no_temp(self):
+        path = self.path("rc.xml")
         kf.write_atomic(path, b"one", 0o640)
-        kf.write_atomic(path, b"two", 0o640)
-        self.assertEqual(kf.read_file(path), b"two")
-        self.assertEqual(kf.file_mode(path), 0o640)
+        kf.write_atomic(path, b"two", 0o640, expect=kf.observe(path))
+        seen = kf.observe(path)
+        self.assertEqual((seen.data, seen.mode), (b"two", 0o640))
         self.assertEqual(os.listdir(self.dir), ["rc.xml"])
 
     def test_write_atomic_keeps_the_old_file_when_the_write_fails(self):
-        import os
-        from unittest import mock
-
-        path = os.path.join(self.dir, "autostart")
+        path = self.path("autostart")
         kf.write_atomic(path, b"old\n", 0o644)
-        with mock.patch.object(kf.os, "replace", side_effect=OSError(28, "No space left")):
+        with mock.patch.object(kf.os, "replace", side_effect=OSError(28, "No space left")) as replace:
             with self.assertRaises(OSError):
                 kf.write_atomic(path, b"new\n", 0o644)
+        self.assertTrue(replace.called)
         self.assertEqual(kf.read_file(path), b"old\n")
         self.assertEqual(os.listdir(self.dir), ["autostart"])  # the temporary file is gone
 
     def test_write_atomic_reads_back(self):
-        import os
-        from unittest import mock
+        path = self.path("config")
+        real = kf.observe
+        calls = []
 
-        path = os.path.join(self.dir, "config")
-        real = kf.read_file
-        with mock.patch.object(kf, "read_file", side_effect=lambda p: b"other" if p == path else real(p)) as reader:
+        def observe(p):
+            calls.append(p)
+            seen = real(p)
+            return kf.Seen(True, b"other", seen.mode, seen.dev, seen.ino) if p == path and seen.exists else seen
+
+        with mock.patch.object(kf, "observe", side_effect=observe):
             with self.assertRaises(kf.WriteCheckFailed):
                 kf.write_atomic(path, b"wanted", 0o644)
-        self.assertTrue(reader.called)
+        self.assertIn(path, calls)
 
-    def test_read_file_tells_errors_from_absence(self):
-        import os
+    def test_a_change_after_the_check_stops_the_write(self):
+        path = self.path("rc.xml")
+        kf.write_atomic(path, b"checked", 0o644)
+        checked = kf.observe(path)
+        for change in ("bytes", "mode", "replaced", "removed"):
+            with self.subTest(change):
+                kf.write_atomic(path, b"checked", 0o644)
+                checked = kf.observe(path)
+                if change == "bytes":
+                    with open(path, "wb") as handle:
+                        handle.write(b"edited by Control Centre")
+                elif change == "mode":
+                    os.chmod(path, 0o600)
+                elif change == "replaced":  # same bytes and mode, new inode (an editor's save)
+                    kf.write_atomic(path, b"checked", 0o644)
+                else:
+                    os.unlink(path)
+                before = kf.observe(path)
+                with self.assertRaises(kf.ChangedMeanwhile):
+                    kf.write_atomic(path, b"ours", 0o644, expect=checked)
+                self.assertTrue(kf.observe(path).same_file(before))  # left as it was
+                self.assertEqual(sorted(os.listdir(self.dir)), [] if change == "removed" else ["rc.xml"])
+        kf.write_atomic(path, b"checked", 0o644)
+        with self.assertRaises(kf.ChangedMeanwhile):
+            kf.remove_file(path, expect=checked)
+        self.assertTrue(kf.observe(path).exists)
 
-        self.assertIsNone(kf.read_file(os.path.join(self.dir, "absent")))
-        self.assertIsNone(kf.read_file(os.path.join(self.dir, "no", "such", "folder")))
-        plain = os.path.join(self.dir, "plain")
-        kf.write_atomic(plain, b"x", 0o644)
+    def test_observe_tells_errors_and_types_from_absence(self):
+        self.assertFalse(kf.observe(self.path("absent")).exists)
+        self.assertFalse(kf.observe(os.path.join(self.dir, "no", "such", "folder")).exists)
+        plain = self.path("plain")
+        kf.write_atomic(plain, b"x", 0o640)
+        seen = kf.observe(plain)
+        self.assertEqual((seen.exists, seen.data, seen.mode, seen.sha256), (True, b"x", 0o640, kf.sha256(b"x")))
         with self.assertRaises(NotADirectoryError):
-            kf.read_file(os.path.join(plain, "below"))  # a path part that is a file
-        os.symlink(plain, os.path.join(self.dir, "link"))
+            kf.observe(os.path.join(plain, "below"))  # a path part that is a file
+        os.symlink(plain, self.path("link"))
         with self.assertRaises(kf.ManagedFileError):
-            kf.read_file(os.path.join(self.dir, "link"))
-        os.mkdir(os.path.join(self.dir, "folder"))
+            kf.observe(self.path("link"))
+        os.mkdir(self.path("folder"))
         with self.assertRaises(kf.ManagedFileError):
-            kf.read_file(os.path.join(self.dir, "folder"))
+            kf.observe(self.path("folder"))
+        os.mkfifo(self.path("fifo"))
+        with self.assertRaises(kf.ManagedFileError):
+            kf.observe(self.path("fifo"))  # never blocks, never read
 
     def test_assert_no_links(self):
-        import os
-
         os.makedirs(os.path.join(self.dir, "real", ".config"))
         kf.assert_no_links(self.dir, [os.path.join("real", ".config", "labwc", "rc.xml")])
-        os.symlink(os.path.join(self.dir, "real"), os.path.join(self.dir, "linked"))
+        os.symlink(os.path.join(self.dir, "real"), self.path("linked"))
         with self.assertRaises(kf.ManagedFileError):
             kf.assert_no_links(self.dir, [os.path.join("linked", ".config", "labwc", "rc.xml")])
-        kf.write_atomic(os.path.join(self.dir, "file"), b"x", 0o644)
+        kf.write_atomic(self.path("file"), b"x", 0o644)
         with self.assertRaises(kf.ManagedFileError):
             kf.assert_no_links(self.dir, [os.path.join("file", "labwc", "rc.xml")])
 
+    def test_remove_profile_tree_removes_links_without_following(self):
+        outside = self.path("outside")
+        os.mkdir(outside)
+        kf.write_atomic(os.path.join(outside, "keep"), b"keep", 0o644)
+        profile = self.path("browser")
+        os.makedirs(os.path.join(profile, "Default", "Cache"))
+        kf.write_atomic(os.path.join(profile, "Default", "Cookies"), b"unlock", 0o600)
+        os.symlink("host-1234", os.path.join(profile, "SingletonLock"))
+        os.symlink(outside, os.path.join(profile, "Default", "escape"))
+        kf.remove_profile_tree(profile)
+        self.assertEqual(os.listdir(profile), [])
+        self.assertEqual(os.listdir(outside), ["keep"])
 
-def manifest(**changes):
-    entry = {"existed": True, "mode": 0o644, "original": "a" * 64, "written": "b" * 64}
+
+FS = {"exists": True, "sha256": "a" * 64, "mode": 0o644}
+
+
+def state(sha="a", mode=0o644):
+    return {"exists": True, "sha256": sha * 64, "mode": mode}
+
+
+def manifest(phase="done", **changes):
+    absent = {"exists": False, "sha256": None, "mode": None}
+    files = {}
+    for key in kf.MANAGED:
+        original = absent if key == "launcher" else state("a")
+        if phase == "done":
+            files[key] = {"original": original, "installed": state("b"), "previous": None, "target": None}
+        else:
+            files[key] = {"original": original, "installed": None, "previous": state("b"), "target": state("c")}
     data = {
         "schema": 1,
-        "status": "installed",
+        "phase": phase,
+        "operation": "setup",
         "enabled": True,
         "orientation": "portrait",
         "connector": "HDMI-A-1",
         "transform": "90",
         "touch_device": "ILITEK ILITEK-TP",
         "autologin_before": "off",
-        "created_dirs": [".local/state/sproutwall/kiosk"],
-        "files": {key: dict(entry) for key in kf.MANAGED},
+        "created_dirs": [".local/state/sproutwall/kiosk", ".local/state/sproutwall/kiosk/browser"],
+        "created_files": [".local/state/sproutwall/kiosk/setup.lock", ".local/state/sproutwall/kiosk/original/rc_xml"],
+        "files": files,
     }
     data.update(changes)
     return data
@@ -246,27 +292,46 @@ def manifest(**changes):
 class ManifestTests(unittest.TestCase):
     def test_valid(self):
         kf.validate_manifest(manifest())
-        absent = manifest()
-        absent["files"]["kanshi"] = {"existed": False, "mode": None, "original": None, "written": "c" * 64}
-        kf.validate_manifest(absent)
+        kf.validate_manifest(manifest("writing"))
 
-    def test_strict(self):
-        bad_entries = (
-            {"original": "A" * 64},
-            {"original": "a" * 63},
-            {"original": "a" * 64 + "\n"},
-            {"original": " " + "a" * 63},
-            {"original": "١" * 64},
-            {"written": None},
+    def test_strict_file_states(self):
+        for change in (
+            {"sha256": "A" * 64},
+            {"sha256": "a" * 63},
+            {"sha256": "a" * 64 + "\n"},
+            {"sha256": " " + "a" * 63},
+            {"sha256": "١" * 64},
+            {"sha256": None},
             {"mode": "644"},
             {"mode": 0o10000},
-            {"existed": 1},
-        )
-        for change in bad_entries:
+            {"mode": True},
+            {"exists": 1},
+            {"extra": 1},
+        ):
             data = manifest()
-            data["files"]["rc_xml"] = dict(data["files"]["rc_xml"], **change)
+            data["files"]["rc_xml"]["installed"] = dict(state("b"), **change)
             with self.assertRaises(kf.StateDamaged, msg=change):
                 kf.validate_manifest(data)
+        data = manifest()
+        data["files"]["rc_xml"]["installed"] = {"exists": False, "sha256": "b" * 64, "mode": None}
+        with self.assertRaises(kf.StateDamaged):
+            kf.validate_manifest(data)
+
+    def test_phase_shapes(self):
+        data = manifest()
+        data["files"]["kanshi"]["target"] = state("c")  # a target in a finished run
+        with self.assertRaises(kf.StateDamaged):
+            kf.validate_manifest(data)
+        data = manifest("writing")
+        data["files"]["kanshi"]["installed"] = state("c")
+        with self.assertRaises(kf.StateDamaged):
+            kf.validate_manifest(data)
+        data = manifest()
+        data["files"]["launcher"]["original"] = state("d")  # a launcher that was there before
+        with self.assertRaises(kf.StateDamaged):
+            kf.validate_manifest(data)
+
+    def test_strict_fields(self):
         for change in (
             {"connector": "HDMI-A-1\n"},
             {"connector": "DPI-1"},
@@ -275,11 +340,14 @@ class ManifestTests(unittest.TestCase):
             {"enabled": "yes"},
             {"schema": 2},
             {"schema": True},
-            {"status": "done"},
+            {"phase": "installed"},
+            {"operation": "delete"},
             {"autologin_before": "maybe"},
             {"touch_device": "bad\x1bname"},
             {"created_dirs": ["../../etc"]},
             {"created_dirs": [".ssh"]},
+            {"created_files": [".local/state/sproutwall/kiosk/manifest.json"]},
+            {"created_files": [".bashrc"]},
             {"extra": 1},
         ):
             with self.assertRaises(kf.StateDamaged, msg=change):
@@ -289,6 +357,63 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaises(kf.StateDamaged):
             kf.validate_manifest(data)
 
+    def test_accepted_states(self):
+        done = manifest()
+        self.assertEqual(kf.accepted_states(done, "rc_xml"), [state("b")])
+        writing = manifest("writing")
+        self.assertEqual(kf.accepted_states(writing, "rc_xml"), [state("a"), state("b"), state("c")])
+        seen = {key: kf.Seen(True, b"x", 0o644) for key in kf.MANAGED}
+        self.assertEqual(kf.changed_since_setup(done, seen), list(kf.MANAGED))
+
     def test_unparsable_rc_xml_is_not_unmapped(self):
         with self.assertRaises(kf.RcXmlError):
             kf.effective_touch_output([kfk.SYSTEM_RC.encode(), b"<openbox_config>"], "ILITEK ILITEK-TP")
+
+
+class StateFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.home = kfk.temp_home(self)
+        self.state = kf.State(self.home)
+
+    def test_classify(self):
+        self.assertEqual(self.state.classify(), "absent")
+        os.makedirs(self.state.dir)
+        self.assertEqual(self.state.classify(), "leftover")
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "setup.lock"), b"")
+        self.assertEqual(self.state.classify(), "leftover")
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "notes.txt"), b"mine")
+        self.assertEqual(self.state.classify(), "foreign")
+        os.unlink(os.path.join(self.state.dir, "notes.txt"))
+        os.makedirs(os.path.join(self.state.dir, "browser"))
+        self.assertEqual(self.state.classify(), "foreign")  # a profile without a record
+        os.rmdir(os.path.join(self.state.dir, "browser"))
+        kfk.write(self.home, kiosk.KIOSK_LAUNCHER, b"#!/bin/sh\n")
+        self.assertEqual(self.state.classify(), "foreign")  # a launcher without a record
+        os.unlink(os.path.join(self.home, kiosk.KIOSK_LAUNCHER))
+        kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "manifest.json"), b"{}")
+        self.assertEqual(self.state.classify(), "manifest")
+
+    def test_lock(self):
+        lock = kf.RunLock(self.state).acquire()
+        self.assertEqual(lock.created_dirs, [".local", ".local/state", ".local/state/sproutwall", kiosk.KIOSK_STATE_DIR])
+        self.assertTrue(lock.created_file)
+        with self.assertRaises(kf.Busy):
+            kf.RunLock(self.state).acquire()
+        lock.release()
+        again = kf.RunLock(self.state).acquire()
+        self.assertEqual((again.created_dirs, again.created_file), ([], False))
+        again.release(remove=True)
+        self.assertEqual(os.listdir(self.state.dir), [])
+
+    def test_lock_file_replaced_while_waiting(self):
+        lock = kf.RunLock(self.state)
+        real_flock = kf.fcntl.flock
+
+        def flock(fd, op):
+            real_flock(fd, op)
+            os.unlink(lock.path)  # a finishing run removed the lock file meanwhile
+            kfk.write(self.home, os.path.join(kiosk.KIOSK_STATE_DIR, "setup.lock"), b"")
+
+        with mock.patch.object(kf.fcntl, "flock", side_effect=flock):
+            with self.assertRaises(kf.Busy):
+                lock.acquire()
