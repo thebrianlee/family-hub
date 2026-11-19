@@ -102,7 +102,7 @@ Run it from the top folder of the checkout; anywhere else it refuses (exit 2) wi
 
 It takes the digest of the image that `docker compose -f docker-compose.preview.yml up` would start, and checks that GitHub's build attestation for that digest was signed by `.github/workflows/image.yml` in `thebrianlee/sproutwall`, built from the published commit `--source-sha`. It starts nothing. On success it prints the start command, `docker compose -f docker-compose.preview.yml up -d --wait`, for exactly the file it checked.
 
-1. Refuses a placeholder digest, a tag-only reference (such as `:preview`), another repository, a SHA that is not exactly 40 lowercase hex characters (nothing before or after, not even a newline), and a `--digest` that differs from the compose file. The committed `docker-compose.preview.yml` holds a placeholder until the first preview is published, so it is always refused, and Docker rejects it too.
+1. Refuses a placeholder digest, a tag-only reference (such as `:preview`), another repository, a SHA that is not exactly 40 lowercase hex characters (nothing before or after, not even a newline), and a `--digest` that differs from the compose file. The committed `docker-compose.preview.yml` always holds the template token instead of a digest, because a commit cannot contain the digest of the image built from it. So it is refused as committed, and Docker rejects it too. Step 4 of the install guide writes the pinned digest into it on the device.
 2. Reads the image two ways, and both must agree: the file's one literal `image:` line (a line with a variable, `$`, is refused), and the effective configuration from `docker compose -f docker-compose.preview.yml --profile "*" config --format json`, which applies interpolation, includes and extends. That configuration must have exactly one service, `family-hub`, counting every profile, with no `build`, and an image `ghcr.io/thebrianlee/sproutwall[:tag]@sha256:<64 hex>`. `COMPOSE_FILE` and `COMPOSE_PROFILES` are removed from Docker's environment, so only this file is read; the start command passes the same `-f`, which Compose prefers over `COMPOSE_FILE`. Without Docker Compose it refuses.
 3. Requires `gh` 2.68.0 or newer (the first with `--source-digest`). Debian's own `gh` packages are older; install `gh` from GitHub's package repository.
 4. Downloads the attestation bundle with no account: an anonymous pull token from `ghcr.io`, the OCI referrers of the digest, then each Sigstore bundle. Only HTTPS, with timeouts, size limits and a sha256 check of every manifest and bundle. Redirects are never followed, with one exception: a bundle download may take exactly one hop to `https://pkg-containers.githubusercontent.com`, where GHCR serves blobs from signed links. That request carries no authorization header and may not redirect again; the sha256 check of the bytes is what makes it safe. The bundle is written to a private temporary file (mode 0600) that is deleted afterwards.
@@ -128,17 +128,17 @@ It takes the digest of the image that `docker compose -f docker-compose.preview.
 
 Messages are fixed text. gh's own output is never printed.
 
-### Still to verify once the first preview image exists
+### Checks against the first preview image
 
-The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`:
+The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`. Items marked "Done" passed on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS with gh 2.86.0 and Docker Compose 5.8.0; they still need one run on the Pi.
 
-1. Anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
-2. [미확인] (unverified): GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
-3. With an `oci://` subject, gh also reads the image from the registry: check that this works anonymously.
+1. Done: anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
+2. [미확인] (unverified): the bundle download worked, but whether GHCR answered with a redirect was not recorded. To check: GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
+3. Done: with an `oci://` subject, gh also reads the image from the registry anonymously.
 4. GitHub's apt repository has arm64 packages, and `gh --version` there is 2.68.0 or newer.
-5. The attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
-6. `verify-image` passes against the real pair, then once more with `--trusted-root` and no network.
-7. Negative tests fail with a non-zero exit: wrong signer workflow, wrong `--source-sha`, a tampered digest.
+5. Done: the attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
+6. `verify-image` passes against the real pair (done), then once more with `--trusted-root` and no network (not run yet).
+7. Negative tests fail with a non-zero exit: wrong `--source-sha` (done, exit 1), a tampered digest (done, exit 4), wrong signer workflow (not run yet).
 8. [미확인] (unverified) on the Pi: Docker's bridge routes from the host to the container address, so doctor's `GET` to `http://<container address>:3847/api/health` answers. Rootless Docker is expected to give `unknown` instead.
 9. On a dual-stack network, `0.0.0.0:3847:3847` creates no IPv6 listener (`ss -ltn` shows no `[::]:3847`) and doctor reports `app_bind` as `unknown` / `confirm_trusted_lan`.
 
