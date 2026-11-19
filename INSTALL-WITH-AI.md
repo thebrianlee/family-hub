@@ -69,17 +69,23 @@ While these still read `<SOURCE_SHA>` and `<INDEX_DIGEST>`, this guide cannot be
 
 Step 1 erases the card. Never erase a card or disk that may hold a hub's household.
 
-- **A new Pi, or a blank card:** carry on with this guide.
+Carry on to step 1 only in one of these two cases, and only once the device's owner has said so in their own words:
+
+- **The card or disk is new or blank:** it was never used in this device, or the owner knows it holds nothing they want to keep.
+- **The household is safely backed up off the device:** a backup made with the README's [Back up](README.md#back-up) steps has been copied to another computer or drive, and the owner confirms that the card may be erased.
+
+In every other case, don't erase anything:
+
 - **This device already runs Sproutwall or Family Hub:** don't put a new system on it, and don't use this guide on it. Back up, then update in place, as [Existing install / update](#existing-install--update) says. Keep the data volume.
-- **Not sure:** check first, without erasing anything. Start the device as it is. If it starts to a desktop or a login prompt, open a terminal and run:
+- **Not sure:** treat it as holding a hub. You can look for one without erasing anything. Start the device as it is, open a terminal and run:
 
   ```bash
   ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker ps -a --format '{{.Names}}'; docker volume ls -q
   ```
 
-  A hub is there if any line mentions `sproutwall`, `family-hub` or `familyhub-data`: follow the existing-install path. If `docker` says permission denied, Docker is installed and a hub may be there: erase nothing until it has been checked and backed up. If `docker` is not found and neither folder exists, there is no hub on this system.
+  If any line mentions `sproutwall`, `family-hub` or `familyhub-data`, a hub is there: follow the existing-install path. **Finding nothing does not prove there is no hub.** The household can sit in a Docker volume, under another account or in another folder, and this check cannot see those when Docker is missing, refuses permission or belongs to another account. So an empty or failed check still means "not sure": back up first, or confirm with the owner that the card is new or may be erased.
 
-Before you ever put a new system on a card that holds a hub, back it up with the README's [Back up](README.md#back-up) steps and copy the backup file off the device.
+The AI may not decide this itself. It asks the owner, and an empty result from the check above never counts as a yes.
 
 ## Start here: what to tell your AI
 
@@ -93,7 +99,7 @@ A chat-only AI cannot open your Pi. Give it the repository address too, `https:/
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
 
-1. **Questions.** Before step 1, make sure the device holds no hub ([First](#first-is-sproutwall-already-on-this-device)). Check it yourself when you can, and ask only if you cannot; this safety check is not one of the five decisions. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
+1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is not one of the five decisions. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
 2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
@@ -147,6 +153,8 @@ These are the only questions the install asks.
 
 These are all the `sudo` commands this guide can lead to. You type each one yourself in the device's Terminal; `sudo` asks for your password there. The steps show them in place.
 
+Three rows below are bundles taken from a vendor's own page: Docker's install, the GitHub CLI block, and the AI tool's uninstall. **Before asking for approval, the AI copies the exact commands it will use for each bundle that applies into the plan, one line each, with the row's purpose and undo.** An approval that did not see those lines does not cover them.
+
 | Command | Step | Why | Undo |
 | --- | --- | --- | --- |
 | `sudo apt update && sudo apt full-upgrade -y` | 3 | The normal system update. | Not reversible: updated packages are not rolled back. |
@@ -175,7 +183,7 @@ This is a known exception to the install spec, pending a decision by the maintai
 
 ## Step 1: Put the system on the card
 
-Do this only on a card with no hub on it ([First](#first-is-sproutwall-already-on-this-device)).
+Do this only once the owner has confirmed the card is new or blank, or that the household is backed up off the device ([First](#first-is-sproutwall-already-on-this-device)).
 
 1. On another computer, install [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 2. **Tier B only, first:** on your laptop, make a temporary key. It asks for a passphrase; you may leave it empty, because the key is deleted at the end.
@@ -195,7 +203,7 @@ Do this only on a card with no hub on it ([First](#first-is-sproutwall-already-o
 5. Let Imager write and verify the card, then eject it.
 6. With the Pi switched off, connect the screen and its touch connection following the screen's own instructions. Insert the card and switch on. The first start takes a few minutes.
 
-**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, on a disk with no hub on it, with SSH off unless you use tier B.
+**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, only on a disk the owner has confirmed is new, blank or backed up ([First](#first-is-sproutwall-already-on-this-device)), with SSH off unless you use tier B.
 
 ## Step 2: Open the session
 
@@ -509,7 +517,7 @@ Each doctor check that is not `pass` names one action. The same action can come 
 
 | Check | Action | What it means | What to do |
 | --- | --- | --- | --- |
-| `platform` | `use_supported_os` | The system or CPU is not 64-bit Linux (for example a 32-bit system). | Put a 64-bit system on the card ([Supported devices](#supported-devices)), but only on a card with no hub data, or only after a [backup](README.md#back-up). |
+| `platform` | `use_supported_os` | The system or CPU is not 64-bit Linux (for example a 32-bit system). | Put a 64-bit system on the card ([Supported devices](#supported-devices)), but only after the owner confirms the card holds no household data, or after a [backup](README.md#back-up) copied off the device. |
 | `docker` | `use_supported_os` | Docker Compose is missing or older than v2. | Install or upgrade Docker Engine and Compose (step 3). Never put a new system on the card for this. |
 | `docker` | `retry_local` | Docker is not running, or your account cannot reach it yet. | Check `docker info`. If you just joined the `docker` group, restart first (step 3). Then run the check again. |
 | `image_identity` | `verify_release` | The running image, or the compose file, is not the verified preview. | `docker compose -f docker-compose.preview.yml stop`, repeat step 4, and start again only after exit 0. |
