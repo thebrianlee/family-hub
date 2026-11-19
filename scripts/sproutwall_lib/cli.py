@@ -3,14 +3,15 @@
 Option values are never echoed. With --json anywhere on the command line,
 stdout gets exactly one closed-schema JSON object on every path: a doctor
 report, or the fixed fallback (result unknown, exit 2) for help, usage
-errors and crashes. scripts/sproutwall prints the same fallback if even this
+errors and crashes; for `setup kiosk`, a kiosk check object, or its fixed
+all-unknown fallback. scripts/sproutwall prints the same fallback if even this
 module cannot be imported.
 """
 
 import os
 import sys
 
-from . import compose, schema, text
+from . import compose, kiosk_detect, kiosk_setup, schema, text
 from .doctor import human_lines, run_doctor
 from .system import System
 from .verify_image import MESSAGES, verified_lines, verify_image
@@ -131,11 +132,61 @@ def _verify(args, system, root, out, err):
     return code
 
 
+def _setup_usage(out, err, json_mode, to_out=False):
+    if json_mode:
+        out.write(kiosk_setup.fallback_json() + "\n")
+    else:
+        (out if to_out else err).write(text.SETUP_USAGE + "\n")
+    return 0 if to_out and not json_mode else kiosk_setup.EXIT_USAGE
+
+
+def _setup(args, system, out, err, json_mode):
+    """`setup kiosk`. With --json anywhere, stdout gets exactly one kiosk
+    check object on every path (the fixed unknown object for help and usage
+    errors)."""
+    if not args or args[0] != "kiosk":
+        return _setup_usage(out, err, json_mode)
+    args = args[1:]
+    if any(arg in HELP for arg in args):
+        return _setup_usage(out, err, json_mode, to_out=True)
+    try:
+        options = parse_options(
+            args,
+            {
+                "--orientation": kiosk_detect.ORIENTATIONS,
+                "--check": "flag",
+                "--json": "flag",
+                "--off": "flag",
+                "--undo": "flag",
+            },
+        )
+        actions = [name for name in ("--check", "--off", "--undo") if name in options]
+        if len(actions) > 1:
+            raise UsageError()
+        if actions and "--orientation" in options:
+            raise UsageError()
+        if "--json" in options and actions != ["--check"]:
+            raise UsageError()
+    except UsageError:
+        return _setup_usage(out, err, json_mode)
+    action = actions[0][2:] if actions else "setup"
+    return kiosk_setup.run(
+        system,
+        action,
+        orientation=options.get("--orientation"),
+        json_mode="--json" in options,
+        out=out,
+        err=err,
+    )
+
+
 def _main(argv, system, root, out, err):
     json_mode = "--json" in argv
     command = argv[0] if argv else None
     if command == "doctor" and not any(arg in HELP for arg in argv[1:]):
         return _doctor(argv[1:], system, root, out, err, json_mode)
+    if command == "setup":
+        return _setup(argv[1:], system, out, err, json_mode)
     if json_mode:
         # Help, usage errors and verify-image (which has no JSON output): the
         # fixed object, so a --json caller always gets one closed-schema object.
@@ -163,8 +214,9 @@ def main(argv, system=None, root=None, out=None, err=None):
     try:
         return _main(argv, system or System(), root or default_root(), out, err)
     except (Exception, KeyboardInterrupt):  # noqa: BLE001 - fixed output only, never the error
+        setup = argv[:1] == ["setup"]
         if "--json" in argv:
-            out.write(fallback_json(argv) + "\n")
+            out.write((kiosk_setup.fallback_json() if setup else fallback_json(argv)) + "\n")
         else:
-            err.write(text.FAILED + "\n")
+            err.write((kiosk_setup.FAILED if setup else text.FAILED) + "\n")
         return 2

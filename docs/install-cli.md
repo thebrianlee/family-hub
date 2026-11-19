@@ -1,12 +1,13 @@
 # The install helper: `scripts/sproutwall`
 
-`scripts/sproutwall` is a small Python 3 tool for the guided install. It needs Python 3.11 or newer and uses only the standard library: no pip packages and no Node on the host. It runs system tools (Docker, `ip`, `systemctl`, `dpkg`, `gh`) with fixed argument lists, never through a shell, and never uses `sudo`. It sends no telemetry.
+`scripts/sproutwall` is a small Python 3 tool for the guided install. It needs Python 3.11 or newer and uses only the standard library: no pip packages and no Node on the host. It runs system tools (Docker, `ip`, `systemctl`, `dpkg`, `gh`, `wlr-randr`) with fixed argument lists, never through a shell, and never uses `sudo`. It sends no telemetry.
 
 Run it from the hub's folder:
 
 ```bash
 ./scripts/sproutwall doctor --phase running
 ./scripts/sproutwall verify-image --source-sha <commit>
+./scripts/sproutwall setup kiosk
 ```
 
 ## `doctor`: read-only checks
@@ -54,7 +55,7 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 
 **`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. `Include` paths may be quoted, as sshd allows. Only a path that does not exist is skipped, as sshd skips it (also when its folder does not exist). Wildcards are matched against a folder listing that reports its errors (an I/O error or a permission change is never read as "no matches"), sorted, and, as sshd's glob does, a name starting with `.` matches only a pattern starting with `.`. Any other problem makes the result `unknown` (`review_ssh`), because a port or password rule could hide there: a config file or included file that cannot be read, a folder that cannot be entered or that an `Include` wildcard cannot list, a path part that is a file, or an included path that is a folder. Each path is checked with a lookup that says why it failed, so "permission denied" is never mistaken for "not there".
 
-**`kiosk` marker.** The kiosk setup (a later release) adds exactly one launcher line to `~/.config/labwc/autostart`, ending with the comment `# sproutwall:kiosk-launcher`. Doctor counts the lines with that marker that are not commented out: one when `--kiosk on`, none when `--kiosk off`.
+**`kiosk` marker.** [`setup kiosk`](#setup-kiosk-the-pis-own-touch-screen) adds exactly one launcher line to `~/.config/labwc/autostart`, ending with the comment `# sproutwall:kiosk-launcher`; `setup kiosk --off` turns it into a comment. Doctor counts the lines with that marker that are not commented out: one when `--kiosk on`, none when `--kiosk off`.
 
 ### Exposure
 
@@ -140,3 +141,133 @@ The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package r
 7. Negative tests fail with a non-zero exit: wrong signer workflow, wrong `--source-sha`, a tampered digest.
 8. [미확인] (unverified) on the Pi: Docker's bridge routes from the host to the container address, so doctor's `GET` to `http://<container address>:3847/api/health` answers. Rootless Docker is expected to give `unknown` instead.
 9. On a dual-stack network, `0.0.0.0:3847:3847` creates no IPv6 listener (`ss -ltn` shows no `[::]:3847`) and doctor reports `app_bind` as `unknown` / `confirm_trusted_lan`.
+
+## `setup kiosk`: the Pi's own touch screen
+
+```text
+sproutwall setup kiosk [--orientation portrait|portrait-flipped|landscape|landscape-flipped]
+sproutwall setup kiosk --check [--json]
+sproutwall setup kiosk --off
+sproutwall setup kiosk --undo
+```
+
+It shows the hub full screen on the Pi's own screen, turned the way the screen hangs, with touch mapped to that screen. Run it as the desktop user (not with `sudo`), while that user is logged in to the Pi's desktop: from the desktop's Terminal, or from an SSH login of the same user. It finds the desktop session from the process table, not from the SSH login's environment.
+
+### The one supported path
+
+The hub runs on any 64-bit Linux, but this tool supports exactly one setup:
+
+**Raspberry Pi OS 64-bit with the desktop → the Wayland desktop (labwc) → exactly one connected HDMI or DSI screen → one touch input → Chromium.**
+
+Before it changes anything it checks, in this order, and stops at the first that fails:
+
+1. Not running as root.
+2. A Raspberry Pi running 64-bit Raspberry Pi OS (`aarch64` kernel, `arm64` userland, `/etc/rpi-issue`, a `Raspberry Pi` device-tree model, which is never printed).
+3. This user's labwc session as Raspberry Pi OS starts it: one `labwc` process with `-m` (merged configuration, so the user's files add to the system defaults instead of replacing them), and a `kanshi` started by that labwc. X11, Wayfire and images without the desktop (Lite) are refused; the tool never configures them.
+4. Chromium is installed (`/usr/bin/chromium`, or `/usr/bin/chromium-browser` on older images).
+5. No managed file, and no folder on the way to one, is a link; the saved state, if any, is intact; and no managed file was changed since the last setup (see below).
+6. No system-wide screen blanking in `/etc/xdg/labwc/autostart` (the tool only changes the user's own files).
+7. Exactly one connected screen, on HDMI or DSI. `wlr-randr --json` is asked first; older `wlr-randr` without `--json` is read in its plain format. Every output it lists counts, including a virtual one (`NOOP-1`), because kanshi applies a profile only when the connected outputs match it exactly. A screen that is connected but switched off counts as none.
+8. Exactly one touch input (see below).
+9. labwc autostart does not already start Chromium (a kiosk line added by hand), and labwc `rc.xml` can be merged safely.
+
+Everything else stops with fixed text, changes nothing, and points to the manual steps in [raspberry-pi.md](raspberry-pi.md#step-6-show-the-hub-full-screen-on-the-pis-own-screen-optional). Zero or several screens give one fixed hint: reconnect or switch on the screen you want, unplug any other screen, wait ten seconds, run it again.
+
+**An error is never read as "missing" or "off".** Only "no such file" (or a process that has just exited) counts as absent. Any other failure, such as a permission error, an I/O error or a path part that is a file, and any input that does not have exactly the expected form, means the tool cannot tell. It then stops before any edit with exit 6, and `--check` reports that item as `unknown`. This covers the process table and `/proc/<pid>/environ`, `/proc/bus/input/devices`, the output of `wlr-randr` and `dpkg`, `/etc/rpi-issue`, the device-tree model, the labwc and lightdm files, the managed files in the home folder and the state folder. Values such as hashes, connector names and the Wayland socket name are matched in full against ASCII-only patterns, so a trailing newline, a leading space or a non-ASCII digit is rejected.
+
+**The touch input.** It reads `/proc/bus/input/devices`, which every user can read and which needs no extra package, no `input` group and no root. A device counts as touch by the rule udev uses for `ID_INPUT_TOUCHSCREEN`, which is what libinput, and so labwc, treats as touch: absolute X/Y or multitouch axes, a touch button or the "direct" property, an event node, and not a pen tablet, touchpad, absolute mouse or accelerometer. The device's name there is the name labwc matches in `<touch deviceName="…">`. Several event nodes with the same name are one input. Two different names, or none, stop the run. The name is stored in the private state folder and never printed. (`libinput list-devices` gives the same names but may need root, and `udevadm` adds nothing here.)
+
+**Orientation.** `portrait` is the default and the first choice for a kitchen screen. For a screen whose own mode is landscape (wider than tall), portrait is output transform `90`, `portrait-flipped` is `270`, `landscape` is `normal` and `landscape-flipped` is `180`. For a screen whose own mode is already portrait (taller than wide), the table turns by 90 degrees: portrait is `normal`, `portrait-flipped` `180`, `landscape` `90`, `landscape-flipped` `270`. Running setup again without `--orientation` keeps the last orientation.
+
+### What it writes, and how each is undone
+
+| File (in the home folder) | Change | `--off` | `--undo` |
+| --- | --- | --- | --- |
+| `.config/kanshi/config` | A profile `sproutwall-kiosk` with `output <CONNECTOR> enable transform <T>`, placed first between `# sproutwall:kiosk-output` comments. Other profiles stay below, unchanged. Mode, position and scale are not set. | kept | original bytes back (or the file removed if it did not exist) |
+| `.config/labwc/rc.xml` | One `<touch deviceName="…" mapToOutput="<CONNECTOR>" />` line, after a `<!-- sproutwall:kiosk-touch -->` comment, just above the closing tag. A new file has only that entry. | kept | original bytes back (or removed) |
+| `.config/labwc/autostart` | Active `swayidle` lines (desktop screen blanking, as Control Centre and `raspi-config` write it) removed; one launcher line added at the end. | the launcher line becomes a comment | original bytes back (or removed), so blanking returns as it was |
+| `.local/bin/sproutwall-kiosk` | The launcher (a copy of `scripts/sproutwall_lib/kiosk_launcher.py`), mode 0755. | kept | removed (or the earlier file back) |
+| `.local/state/sproutwall/kiosk/` | Private state, mode 0700: the snapshot of the original files and which existed, their modes, a sha256 of the original and of what setup wrote for each, the orientation, connector and touch device, the autologin state before setup, the folders setup created; later the browser profile and the launcher's lock. | kept | deleted |
+
+The managed files keep their original permissions. Each is written to a new temporary file in the same folder, flushed to disk with fsync, renamed over the old file, and then read back and compared with what was meant to be written. The old file stays whole until the rename, so a failure never leaves a half-written `rc.xml`, kanshi config or autostart. The snapshot is on disk before the first managed file is written. Every run rebuilds each file from its original, so running setup twice gives the same bytes and never a second launcher line or touch entry. Folders that setup created are removed by `--undo` only if they are empty.
+
+**Edits made after setup.** The state folder keeps a sha256 of what setup wrote to each managed file. Setup, `--undo` and (for autostart) `--off` compare every managed file with it first. A file that was edited or deleted after setup, by Control Centre or by hand, stops the run with exit 5 and nothing is changed. The one exception is a run that stopped halfway, for example a full disk between two writes: the state then says a run was in progress (`writing` or `undoing`), and a file found exactly as it was before setup is accepted, so running the same command again finishes the job.
+
+**Why a text merge for `rc.xml`.** Python's ElementTree would rewrite the whole file: the default namespace becomes `ns0:`, the XML declaration, attribute quoting and spacing change. The tool therefore inserts its two lines as text and leaves every other byte alone. ElementTree is used only to check that the original and the result are well-formed with a labwc root (`openbox_config` or `labwc_config`), and that the last `<touch>` entry for the device maps to the connector. labwc searches its touch entries from the end, and with `-m` reads `/etc/xdg/labwc/rc.xml` before the user's file, so the managed entry wins. It has no `mouseEmulation`, so labwc's default applies (real touch events, so swiping scrolls in Chromium). For Raspberry Pi's own DSI displays, whose system entries set `mouseEmulation="yes"`, this is a change that `--undo` reverts.
+
+**Applying it.** After writing, it sends `SIGHUP` to this session's kanshi (it re-reads its configuration and applies the first matching profile) and to labwc (the same signal `labwc --reconfigure` sends: it re-reads `rc.xml` and remaps touch inputs). It then reads the transform back with `wlr-randr` for up to three seconds and says whether the rotation is in effect. labwc cannot report its touch mapping, so the tool asks you to tap the four corners and the centre: a rotated picture alone does not prove touch is right.
+
+**Sources for these paths.** The Raspberry Pi documentation says to set orientation in Control Centre (Screens) and lists [raindrop](https://github.com/raspberrypi-ui/raindrop) as Control Centre's screen configuration plugin. raindrop's labwc backend writes the output layout as a kanshi profile in `~/.config/kanshi/config` (reloaded with `SIGHUP`) and touch mappings as `<touch deviceName mapToOutput>` in `~/.config/labwc/rc.xml` (reloaded with `labwc --reconfigure`). Raspberry Pi's desktop package starts the session with `labwc -m`, creates an empty `~/.config/kanshi/config` at login and starts kanshi from `/etc/xdg/labwc/autostart`. Desktop screen blanking is a `swayidle` line in `~/.config/labwc/autostart` (documentation: Configure screen blanking). The exact commits are cited in `scripts/sproutwall_lib/kiosk_files.py` and `kiosk_detect.py`.
+
+### Autologin: printed, not run
+
+The screen must come back by itself after a power cut, so the desktop user must log in automatically. On Raspberry Pi OS that is `autologin-user` in lightdm's configuration, which needs root. **The tool never runs `sudo`.** It reads the current state from `/etc/lightdm/lightdm.conf` and `/etc/lightdm/lightdm.conf.d/` (readable by everyone) and, unless autologin is already on for this user, prints the one command for you to run yourself:
+
+```bash
+sudo raspi-config nonint do_boot_behaviour B4
+```
+
+Why not run it after a confirmation: during an assisted install (tier A) an assistant drives this tool, and the guide never gives an assistant sudo; you type your password only into sudo's own prompt, in a command you can read first. `raspi-config` is Raspberry Pi's own tool for this change, and a tool that cannot become root cannot make an unexpected privileged change. `--check` shows `autologin off` until it is done. If autologin was not on for this user before setup and is on after `--undo`, `--undo` prints the command that turns it off again: `sudo raspi-config nonint do_boot_behaviour B3`.
+
+### The launcher
+
+`~/.local/bin/sproutwall-kiosk` starts from labwc autostart after the desktop login, as the desktop user. It needs no Docker access.
+
+- It takes a lock in the state folder, so a second launcher exits at once, and it exits if a Chromium with its profile is already running. It never starts a second browser.
+- It asks `GET http://127.0.0.1:3847/api/health` with a 3-second timeout, every 2 seconds for the first minute and then every 10 seconds. Redirects are never followed. It opens the hub only on HTTP 200 with JSON `ok: true`.
+- After 90 seconds without that answer it shows a local page saying the hub is starting, and keeps checking every 10 seconds. When the hub is ready it closes that page and opens the hub.
+- It starts one Chromium: `--kiosk --no-first-run --noerrdialogs --disable-infobars --hide-crash-restore-bubble --password-store=basic --user-data-dir=<state>/browser http://127.0.0.1:3847/`. The profile is persistent, so the screen's unlock lasts. There is no incognito, no `--no-sandbox` and no remote debugging. `--password-store=basic` keeps Chromium from stopping at a keyring password prompt, which autologin never unlocks; the profile folder is private (0700).
+- When Chromium exits (for example Alt+F4 with a keyboard), the launcher exits; the next login starts it again. On `SIGTERM` it closes Chromium first. `--off` and `--undo` send `SIGTERM` and, if the launcher or browser is still there after ten seconds, `SIGKILL`.
+- Its health check has no fallback and no host dependency in the tests: the unit tests replace the connection, so a real hub (or anything else) listening on port 3847 does not change their result.
+
+The hub's own screensaver is part of the app and is not affected by any of this.
+
+### `--check`, `--off`, `--undo`
+
+`--check` reads, changes nothing, and prints one line per item (with `--json`, exactly one JSON object with these keys in this order and only these values):
+
+| Key | Values |
+| --- | --- |
+| `schema` | `1` |
+| `result` | `ok`, `attention`, `not_installed`, `unsupported`, `unknown` |
+| `reason` | `none`, `root`, `unsupported_os`, `no_desktop`, `other_desktop`, `session`, `no_chromium`, `cannot_tell`, `unknown` |
+| `installed` | `yes`, `no`, `damaged`, `unknown` |
+| `launch` | `on`, `off`, `duplicate`, `none`, `unknown` (launcher lines in labwc autostart) |
+| `files` | `as_set_up`, `partial`, `changed`, `none`, `unknown` (managed files against the hashes) |
+| `running` | `yes`, `no`, `unknown` |
+| `output` | `one`, `none`, `several`, `unsupported_connector`, `unknown` |
+| `orientation` | `portrait`, `portrait-flipped`, `landscape`, `landscape-flipped`, `none`, `unknown` |
+| `rotation` | `applied`, `not_applied`, `unknown` (the live transform of the configured connector) |
+| `touch` | `mapped`, `not_mapped`, `unknown` (the effective labwc entry for the stored device) |
+| `blanking` | `off`, `on`, `system`, `unknown` |
+| `autologin` | `on`, `off`, `other_user`, `unknown` |
+
+`ok` means everything is as setup left it, with the launch on or off as last chosen, and autologin on. Anything that could not be read is `unknown`, never a guess; with no definite problem but an unknown item the result is `unknown` (exit 6). Without the desktop session (for example over SSH while nobody is logged in), the live items are `unknown`. A refused check (for example as root or on another device) reports `unknown` for every item, because it looked at none. With `--json`, help and usage errors print the same object with every value `unknown` (exit 2), and so does `scripts/sproutwall` itself if the library cannot even be loaded.
+
+`--off` stops the running launcher and its browser (`SIGTERM`), turns the launcher line into a comment and keeps everything else, so `doctor --kiosk off` passes. The hub keeps running and phones still reach it. `setup kiosk` turns it back on with the same files as before.
+
+`--undo` compares each managed file with the hashes first. If any was changed after setup, for example by Control Centre or by hand, it stops and changes nothing; put the change back or remove the kiosk by hand. Otherwise it stops the launcher, records that an undo is in progress, puts back the original bytes and permissions of every file (and removes files that did not exist), checks each one, deletes the launcher, the browser profile and the snapshot, removes the folders it created if they are empty, and reloads kanshi and labwc. Setup refuses to run over changed files in the same way. Setup after `--undo` starts fresh with a new snapshot.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Done; or `--check` found everything as set up; or `--off`/`--undo` with nothing set up. |
+| 1 | `--check` needs attention, or nothing is set up yet. |
+| 2 | Usage error, or an unexpected error. The message says whether writing had started; it never claims that nothing changed. |
+| 3 | Refused: not the supported path, a link in the way, or an `rc.xml` that cannot be merged. Nothing was changed. |
+| 4 | Stopped: the screen or touch input is not ready (none, several), or a hand-made kiosk line is present. Nothing was changed. |
+| 5 | Stopped: managed files were changed after setup, or the snapshot is damaged. Nothing was changed. |
+| 6 | Stopped: something it must read could not be read or did not parse, so it cannot tell whether an edit is safe. Nothing was changed. (`--check`: an item is `unknown`.) |
+
+Messages are fixed text chosen by these outcomes. The screen is named only by its kind (HDMI or DSI); its connector name, the touch device name, paths, user names and command output are written to the config files where needed but never printed, in text or JSON. The unit tests seed a fictional user name, home path, touch device name and connector names into every input and run every subcommand in process and through the real `scripts/sproutwall` in a subprocess, capturing the real output streams, a DEBUG root logger and warnings; none of the seeded values may appear.
+
+### Still to verify on real hardware
+
+The sandbox that wrote this had no Raspberry Pi, display or touch panel. On the acceptance screen of the first physical trial, record the observed connector, native mode, touch input and OS build, then check:
+
+1. [미확인] `wlr-randr --json` on current Raspberry Pi OS prints the fields the parser reads (`name`, `enabled`, `modes[].width/height/preferred/current`, `transform`); otherwise the plain-format fallback is used.
+2. [미확인] The touch input is found and mapped: tap all four corners and the centre in the chosen orientation, after setup and again after a reboot.
+3. [미확인] kanshi applies the profile at login and after `SIGHUP`, and the rotation survives a reboot.
+4. [미확인] The panel's own mode decides portrait correctly (a natively portrait DSI panel stays at `normal`).
+5. [미확인] With autologin on, Chromium opens without a keyring prompt and without a "restore pages" bubble after a power cut; the unlock survives a reboot.
+6. [미확인] The screen stays lit past the old blanking interval; the hub's screensaver still starts.
+7. [미확인] `--off` plus reboot opens no browser, `--undo` brings back the earlier desktop behaviour, and re-enabling gives one browser after a cold boot.

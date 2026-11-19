@@ -142,6 +142,16 @@ class FakeSystem:
         self.calls = []
         self.http_calls = []
         self.http_targets = []
+        # setup kiosk: identity, process table, signals
+        self.uid_value = 1000
+        self.euid_value = 1000
+        self.user = "pi"
+        self.env = {}
+        self.procs = []
+        self.environs = {}
+        self.kills = []
+        self.executables = set()
+        self.sleeps = []
 
     # commands -------------------------------------------------------------
     def set(self, argv, value):
@@ -260,6 +270,45 @@ class FakeSystem:
 
     def userland_bits(self):
         return self.bits
+
+    # setup kiosk ----------------------------------------------------------
+    def uid(self):
+        return self.uid_value
+
+    def euid(self):
+        return self.euid_value
+
+    def username(self):
+        return self.user
+
+    def environ(self):
+        return dict(self.env)
+
+    def is_executable(self, path):
+        return path in self.executables
+
+    def processes(self):
+        """procs may be an exception (an unreadable process table)."""
+        self.process_reads = getattr(self, "process_reads", 0) + 1
+        if isinstance(self.procs, BaseException):
+            raise self.procs
+        return list(self.procs)
+
+    def process_environ(self, pid):
+        """ProcessLookupError for an unknown pid; an exception value is raised."""
+        if pid not in self.environs:
+            raise ProcessLookupError(3, "No such process")
+        value = self.environs[pid]
+        if isinstance(value, BaseException):
+            raise value
+        return dict(value)
+
+    def kill(self, pid, sig):
+        self.kills.append((pid, sig))
+        return True
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
 
     # http -----------------------------------------------------------------
     def http(self, address, method, path, body=None, headers=None, timeout=3.0):

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Sproutwall install helper: `doctor` and `verify-image`. See docs/install-cli.md.
+"""Sproutwall install helper: `doctor`, `verify-image` and `setup kiosk`. See docs/install-cli.md.
 
 This file is only a bootstrap. It installs the redaction guard before
 anything else can fail: every import, and the whole command, run inside it.
 On any unexpected failure, a run with --json still prints exactly one
 closed-schema JSON object (result unknown, every check unknown/retry_local,
-exit 2), and a run without --json prints one fixed line to stderr. Never a
+exit 2; for `setup kiosk`, the kiosk check object with every value unknown),
+and a run without --json prints one fixed line to stderr. Never a
 traceback, path or error text. It needs only the Python 3.11+ standard
 library and sends nothing anywhere.
 """
@@ -32,6 +33,16 @@ _CHECK_IDS = (
     "temporary_access",
 )
 _FAILED = "sproutwall: stopped by an unexpected error. Nothing was changed.\n"
+# `setup kiosk` may have written before failing, so its line does not say
+# "Nothing was changed". Kept in step with sproutwall_lib/kiosk_setup.py.
+_KIOSK_FAILED = (
+    "sproutwall: setup kiosk stopped by an unexpected error. "
+    "Run ./scripts/sproutwall setup kiosk --check to see what is in place.\n"
+)
+_KIOSK_FIELDS = (
+    "result", "reason", "installed", "launch", "files", "running",
+    "output", "orientation", "rotation", "touch", "blanking", "autologin",
+)
 
 
 def _phase(argv):
@@ -47,6 +58,8 @@ def _phase(argv):
 
 
 def _fallback_json(argv):
+    if argv[:1] == ["setup"]:
+        return '{"schema":1,%s}' % ",".join('"%s":"unknown"' % key for key in _KIOSK_FIELDS)
     checks = ",".join('{"id":"%s","status":"unknown","action":"retry_local"}' % i for i in _CHECK_IDS)
     return '{"schema":1,"phase":"%s","result":"unknown","checks":[%s]}' % (_phase(argv), checks)
 
@@ -59,7 +72,7 @@ def _fail_safe():
             sys.stdout.write(_fallback_json(argv) + "\n")
             sys.stdout.flush()
         else:
-            sys.stderr.write(_FAILED)
+            sys.stderr.write(_KIOSK_FAILED if argv[:1] == ["setup"] else _FAILED)
             sys.stderr.flush()
     except BaseException:  # noqa: BLE001 - nothing more can be said safely
         pass

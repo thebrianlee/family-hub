@@ -12,7 +12,7 @@ Plan for an evening. Most of the time is waiting for downloads and the first bui
 - Raspberry Pi OS **64-bit**, Bookworm or later.
 - An SSD on USB (best), or a good microSD card rated **A2**. Cheap cards make the Pi slow and can wear out. 32 GB or larger leaves room for updates and photos.
 - The official power supply for your Pi model. A weak supply causes strange crashes.
-- Optional: a screen. The official Raspberry Pi touch display or any HDMI monitor works.
+- Optional: a screen. The kiosk tool in [Step 6](#step-6-show-the-hub-full-screen-on-the-pis-own-screen-optional) needs one touch screen on HDMI or DSI; which models work with it is not tested yet [미확인]. A screen without touch can be set up by hand.
 
 **Not supported:**
 
@@ -105,52 +105,86 @@ Now do the first-run setup: choose the parent PIN, your family and your timezone
 
 ## Step 6: Show the hub full screen on the Pi's own screen (optional)
 
-This needs the desktop version of Raspberry Pi OS. The attached screen opens the hub from the Pi itself at `http://localhost:3847`.
+This needs the desktop version of Raspberry Pi OS (64-bit) and a screen with touch. The Pi then opens the hub from itself at `http://127.0.0.1:3847`, full screen, and comes back by itself after a power cut.
 
-### Turn off screen blanking
+### Set it up with the kiosk tool
 
-By default the Pi turns its screen off after some idle minutes. Turn that off:
+1. With the Pi switched off, connect the screen and its touch connection, following the screen's own instructions. Many HDMI touch screens need a separate USB cable for touch. Connect only this one screen.
+2. Switch the Pi on and log in to the desktop.
+3. Open the **Terminal** on the Pi's desktop, go to the hub's folder and run:
 
-1. Run `sudo raspi-config`.
-2. Choose **Display Options**, then **Screen Blanking**, and answer **No**.
-3. Finish and reboot.
+   ```bash
+   cd ~/sproutwall
+   ./scripts/sproutwall setup kiosk
+   ```
 
-Sproutwall has its own screensaver instead. After 10 idle minutes it shows your photos and quotes.
+   The screen turns to portrait, the usual way to hang a kitchen screen. For another way, add one of `--orientation portrait-flipped`, `--orientation landscape` or `--orientation landscape-flipped`. Running it again with another orientation changes only that.
+4. **Tap the four corners and the centre of the screen.** Each tap must land under your finger. If it does not, run `./scripts/sproutwall setup kiosk --undo` and set the screen up by hand (below).
+5. If the tool prints an autologin command, run it yourself. It needs your password, so the tool never runs it:
 
-### Log in to the desktop automatically
+   ```bash
+   sudo raspi-config nonint do_boot_behaviour B4
+   ```
 
-In `sudo raspi-config`, under **System Options**, find the boot or auto-login option (the wording differs between releases) and choose **Desktop Autologin**. This way the screen comes back by itself after a power cut.
+6. Restart with `sudo reboot`. The hub opens full screen once it is ready and asks once for the parent PIN to unlock the screen. The unlock lasts 30 days. If the hub takes more than a minute and a half to start, the screen says it is starting and opens the hub by itself when it is ready.
+7. Check it: `./scripts/sproutwall setup kiosk --check` should end with `Result: ok`.
 
-### Start Chromium full screen at login
+The tool also turns off the desktop's screen blanking, so the screen stays lit. Sproutwall has its own screensaver instead: after 10 idle minutes it shows your photos and quotes.
 
-**The exact file differs by Raspberry Pi OS release.** Current releases use a desktop called labwc. Some older Bookworm images use one called wayfire. To see which one you have, run this on the Pi while the desktop is showing:
+- **Turn the kiosk off** (it closes the kiosk browser now and no longer starts it at login; the hub keeps running and phones still reach it): `./scripts/sproutwall setup kiosk --off`. Turn it back on with `./scripts/sproutwall setup kiosk`.
+- **Remove it** and put every setting back as it was before: `./scripts/sproutwall setup kiosk --undo`.
+- To leave the kiosk for a moment, press Alt+F4 with a keyboard attached. It opens again at the next login.
 
-```bash
-ps -e | grep -E 'labwc|wayfire'
-```
+The tool supports exactly one setup: Raspberry Pi OS 64-bit with the desktop, its standard Wayland desktop (labwc), exactly one screen on HDMI or DSI, one touch input, and Chromium. On anything else it stops, changes nothing and says why; then set the screen up by hand. [docs/install-cli.md](install-cli.md#setup-kiosk-the-pis-own-touch-screen) lists every check, every file it writes and how each is undone.
 
-The browser command also changed name. Current releases call it `chromium`. Older Bookworm images call it `chromium-browser`. Run `command -v chromium chromium-browser` and use the name it prints.
+Which screens have been tried with the tool: none yet [미확인]. The model, connection and touch type of the screen used in the first physical trial are recorded then.
 
-**If you have labwc** (current releases), add this line to the file `~/.config/labwc/autostart`. Create the file if it does not exist, for example with `nano ~/.config/labwc/autostart`:
+### Set it up by hand
 
-```bash
-chromium http://localhost:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run --start-maximized &
-```
+Use this when the tool stops, for a screen without touch, or on an older image.
 
-The `&` at the end matters. This follows the official Raspberry Pi [kiosk tutorial](https://www.raspberrypi.com/tutorials/how-to-use-a-raspberry-pi-in-kiosk-mode/). On some releases your own `autostart` file replaces the desktop's built-in one, so the taskbar may not appear. That is fine for a wall screen.
+1. **Screen blanking off:** run `sudo raspi-config`, choose **Display Options**, then **Screen Blanking**, and answer **No**.
+2. **Desktop autologin:** in `sudo raspi-config`, under **System Options**, find the boot or auto-login option (the wording differs between releases) and choose **Desktop Autologin**.
+3. **Rotation and touch:** open **Control Centre**, then **Screens**. Set the screen's orientation and, if it offers one, the touchscreen it belongs to [미확인: the menu wording differs between releases]. Apply and confirm.
+4. **Start Chromium at login.** Find the browser's name with `command -v chromium chromium-browser`. On current releases (labwc), add this line to `~/.config/labwc/autostart` (create the file if needed, for example with `nano ~/.config/labwc/autostart`), using the name it printed:
 
-**If you have wayfire** (older Bookworm images), open `~/.config/wayfire.ini` and add these lines at the end. If an `[autostart]` section already exists, add only the second line to it:
+   ```bash
+   chromium http://127.0.0.1:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run &
+   ```
 
-```ini
-[autostart]
-sproutwall = chromium-browser http://localhost:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run --start-maximized
-```
+   On older Bookworm images that use wayfire (`ps -e | grep -E 'labwc|wayfire'` shows which), add to `~/.config/wayfire.ini` instead:
 
-Reboot. The hub opens full screen and asks once for the parent PIN to unlock the screen. The unlock lasts 30 days.
+   ```ini
+   [autostart]
+   sproutwall = chromium-browser http://127.0.0.1:3847 --kiosk --noerrdialogs --disable-infobars --no-first-run
+   ```
 
-Do **not** add `--incognito`. Incognito forgets the unlock every time Chromium restarts, so the screen would ask for the PIN again and again.
+5. Reboot.
 
-To leave kiosk mode for a moment, press Alt+F4 with a keyboard attached.
+Do **not** add `--incognito`. Incognito forgets the unlock every time Chromium restarts, so the screen would ask for the PIN again and again. This follows the official Raspberry Pi [kiosk tutorial](https://www.raspberrypi.com/tutorials/how-to-use-a-raspberry-pi-in-kiosk-mode/).
+
+**A hand-made line and the tool.** If you added a Chromium line by hand and then run the tool, it stops so that the screen never opens two browsers. Delete your line from `~/.config/labwc/autostart` first.
+
+### Remove the kiosk by hand
+
+`--undo` refuses when a file it manages was changed after setup (for example by Control Centre), so that your change is not overwritten. To remove the kiosk by hand instead:
+
+1. `./scripts/sproutwall setup kiosk --off` (it stops the browser even then).
+2. In `~/.config/labwc/autostart`, delete the line that ends with `# sproutwall:kiosk-launcher`. Add the screen blanking back in Control Centre if you want it.
+3. In `~/.config/labwc/rc.xml`, delete the line `<!-- sproutwall:kiosk-touch -->` and the `<touch … />` line below it.
+4. In `~/.config/kanshi/config`, delete everything from `# sproutwall:kiosk-output begin` to `# sproutwall:kiosk-output end`.
+5. Delete `~/.local/bin/sproutwall-kiosk` and the folder `~/.local/state/sproutwall/kiosk`. That folder also holds copies of the files as they were before setup, in `original/`, if you want to compare first.
+
+### Kiosk on other devices
+
+The hub runs on any 64-bit Linux computer, but the kiosk tool only sets up Raspberry Pi OS. On another device, such as a mini PC, another Linux desktop or a tablet, open the hub in a browser's kiosk mode:
+
+- On the computer that runs the hub, the address is `http://127.0.0.1:3847`. On another device on the home network, it is `http://<hub address>:3847` (see [Step 5](#step-5-find-the-hubs-address)).
+- Chromium: `chromium --kiosk --no-first-run http://127.0.0.1:3847`. Firefox: `firefox --kiosk http://127.0.0.1:3847`. Add it to the desktop's own startup programs.
+- Use a normal (persistent) profile, never a private or incognito window, so the screen's unlock lasts.
+- Turn off the device's own screen blanking and set rotation and touch in its own display settings.
+
+How this works on specific screens and desktops is not tested [미확인].
 
 ## Keep it running
 
@@ -194,7 +228,7 @@ Use your own new PIN instead of `4827`. Every screen then asks for the new PIN.
 
 ### The screen goes black
 
-- Turn off screen blanking (see [Step 6](#turn-off-screen-blanking)).
+- Turn off screen blanking: `./scripts/sproutwall setup kiosk` does it, or see [Set it up by hand](#set-it-up-by-hand).
 - Some monitors and TVs have their own power-saving setting. Check the monitor's menu.
 - Sproutwall's own screensaver shows photos and quotes, not a black screen. Tap the screen to go back to the hub.
 
@@ -231,7 +265,7 @@ The README explains [how to turn it on](../README.md#ask-the-hub) and what is se
 
 ### The screen keeps asking for the PIN
 
-- Chromium must not run in incognito mode (see [Step 6](#start-chromium-full-screen-at-login)).
+- Chromium must not run in incognito mode (see [Set it up by hand](#set-it-up-by-hand)). The kiosk tool never uses it.
 - Changing or resetting the PIN locks every screen once. Enter the new PIN.
 - The unlock lasts 30 days. After that the screen asks again.
 
