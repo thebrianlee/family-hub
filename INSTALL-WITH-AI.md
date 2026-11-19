@@ -1,16 +1,16 @@
 <!--
 MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip this block.
 
-1. Fill the pair after each preview build. Open Actions, then "Preview image", then the
-   run, then Summary. The job summary shows "Source commit" and "Image index digest".
-   Replace every occurrence of the two placeholders in this file:
-   - SOURCE_SHA in angle brackets: the full 40-character source commit.
-   - INDEX_DIGEST in angle brackets: the multi-arch index digest, with its sha256: prefix.
+1. The pinned pair. To move the guide to a newer preview build, open Actions, then
+   "Preview image", then the run, then Summary. The job summary shows "Source commit" and
+   "Image index digest". Run the maintainer checks in docs/install-cli.md against that build
+   first. Then replace both values together everywhere in this file: the full 40-character
+   source commit, and the multi-arch index digest with its sha256: prefix. They appear in the
+   pinned-preview table, in step 3 and in step 4. Never mix values from two builds.
    Leave the token published-index-digest-hex (in angle brackets, in step 4) as it is:
    it is the template token in docker-compose.preview.yml that the sed command in step 4
    replaces on the device. Never write a tag such as :preview in place of the digest.
-   There are no release tags in stage 1. Until a pair is filled, the guide is not usable;
-   the unfilled placeholders make its commands fail closed.
+   There are no release tags in stage 1.
 
 2. Open decisions:
    - Docker group. Spec 4.2 step 3 says the agent gets no membership in the docker group.
@@ -54,16 +54,16 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
 
 This guide puts Sproutwall on a Raspberry Pi, or on another 64-bit computer running Debian or Ubuntu, and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
 
-The hub needs no cloud account and no subscription. Nothing in this guide signs in to anything. The only GitHub tool used, `gh`, runs without an account.
+The hub needs no cloud account and no subscription. The hub never signs in to anything, and the only GitHub tool used, `gh`, runs without an account. If the AI assistant runs on the device itself (tier A below), that assistant signs in to its own service, and step 8 removes it.
 
-**The preview this guide pins.** The guide installs one preview build, named by two values. The maintainers fill them in after each preview build:
+**The preview this guide pins.** The guide installs one preview build, named by two values. The maintainers checked this pair, and they change both values together when they move the guide to a newer build:
 
 | | |
 | --- | --- |
-| Source commit | `<SOURCE_SHA>` |
-| Image index digest | `<INDEX_DIGEST>` |
+| Source commit | `aaf3860c2f9d390550dca76611d69a9e88c46867` |
+| Image index digest | `sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845` |
 
-While these still read `<SOURCE_SHA>` and `<INDEX_DIGEST>`, this guide cannot be used yet. The commands that need them fail on purpose, and nothing starts. Use the [manual install in the README](README.md#install-at-home) instead.
+Use exactly these two values. A newer `:preview` build may exist; this guide installs only the build named here.
 
 ## First: is Sproutwall already on this device?
 
@@ -316,8 +316,8 @@ If it prints anything, this device already has a hub. Stop and read [Existing in
 cd ~
 git clone https://github.com/thebrianlee/sproutwall.git sproutwall
 cd ~/sproutwall
-git checkout --detach <SOURCE_SHA>
-test "$(git remote get-url origin)" = "https://github.com/thebrianlee/sproutwall.git" && test "$(git rev-parse HEAD)" = "<SOURCE_SHA>" && echo "Source OK"
+git checkout --detach aaf3860c2f9d390550dca76611d69a9e88c46867
+test "$(git remote get-url origin)" = "https://github.com/thebrianlee/sproutwall.git" && test "$(git rev-parse HEAD)" = "aaf3860c2f9d390550dca76611d69a9e88c46867" && echo "Source OK"
 ```
 
 It must print `Source OK`. Don't run anything from the checkout until it does.
@@ -328,16 +328,22 @@ The code at this commit holds a template in place of the image digest, because a
 
 ```bash
 cd ~/sproutwall
-sed -i 's|@sha256:<published-index-digest-hex>"|@<INDEX_DIGEST>"|' docker-compose.preview.yml
+sed -i 's|@sha256:<published-index-digest-hex>"|@sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845"|' docker-compose.preview.yml
 git status --short
+git diff --numstat
+grep -c '@sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845"' docker-compose.preview.yml
 ```
 
-`git status --short` must list one line only: `M docker-compose.preview.yml`.
+All three must match exactly:
+
+- `git status --short` lists one line only: `M docker-compose.preview.yml`.
+- `git diff --numstat` prints one line only: `1`, `1` and `docker-compose.preview.yml` (one line removed, one added, in that file only).
+- `grep -c` prints `1`.
 
 Now check the image. Run it from this folder, the checkout's top folder:
 
 ```bash
-./scripts/sproutwall verify-image --source-sha <SOURCE_SHA> --digest <INDEX_DIGEST>
+./scripts/sproutwall verify-image --source-sha aaf3860c2f9d390550dca76611d69a9e88c46867 --digest sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845
 echo "exit $?"
 ```
 
@@ -526,11 +532,11 @@ Each doctor check that is not `pass` names one action. The same action can come 
 | `health` | `retry_local` | The hub is not healthy yet, or answered in an unexpected way. | Wait a minute and run it again. If it repeats, stop and get help. |
 | `app_bind` | `restrict_ports` | Port 3847 is reachable beyond the home network. | Stop the hub now with `docker compose -f docker-compose.preview.yml stop`. Check the router for port forwards and tunnels. Get help. Don't change the port or turn the check off. |
 | `app_bind` | `confirm_trusted_lan` | The hub is on your home network, and the device cannot prove the router forwards nothing. | Expected. Continue only if it is the only unknown and you confirmed the home-network rule in decision 3. |
-| `bridge_bind` | `restrict_ports` | The Ask bridge port 8787 is published or listens beyond the container. | Stop the hub now. `git status --short` must show only the one image line changed (step 4). Get help. |
+| `bridge_bind` | `restrict_ports` | The Ask bridge port 8787 is published or listens beyond the container. | Stop the hub now. `git status --short` and `git diff --numstat` must still match step 4: only the one image line changed. Get help. |
 | `ssh_policy` | `review_ssh` | SSH is on, allows passwords, or its settings could not be read. | Stop. Tiers A and C expect SSH off; tier B (Raspberry Pi OS only) expects key-only until step 8, then off. If it is simply on, turn it off with the install plan's line for your system: `sudo raspi-config nonint do_ssh 1` on Raspberry Pi OS, `sudo systemctl disable --now ssh.socket ssh.service` on Debian or Ubuntu. If it allows passwords during tier B, or could not be read, get help. |
 | `setup` | `open_hub` | First-run setup is not finished. | Open the hub on the device and finish setup (step 6). |
 | `read_guard` | `open_hub` | Setup is not finished, so the hub still answers without a PIN. | Finish setup now (step 6). |
-| `read_guard` | `verify_release` | Setup is finished, but the hub answers without a PIN: the screen lock is off. | Stop the hub. `git status --short` must show only the one image line changed. Repeat step 4. Never set `REQUIRE_AUTH_FOR_READS` to `0`. |
+| `read_guard` | `verify_release` | Setup is finished, but the hub answers without a PIN: the screen lock is off. | Stop the hub. `git status --short` and `git diff --numstat` must still match step 4: only the one image line changed. Repeat step 4. Never set `REQUIRE_AUTH_FOR_READS` to `0`. |
 | `kiosk` | `repair_kiosk` | The screen launcher is not in the state you chose. | `./scripts/sproutwall setup kiosk --check`, then `setup kiosk` (on) or `setup kiosk --off`. Check that `--kiosk` matches your choice. |
 | `temporary_access` | `remove_agent` | The AI tool, its folders or autostart entry, or an SSH session is still there. | Repeat step 8 for your tier, and close every SSH session. |
 | any check | `retry_local` | The check could not finish. | Wait a minute and run it again in the device's own Terminal, as your user. If it repeats, stop and get help. Don't work around it. |
