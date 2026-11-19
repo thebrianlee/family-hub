@@ -129,6 +129,7 @@ class FakeSystem:
         self.files = {}
         self.dirs = set()
         self.unlistable = set()
+        self.blocked = set()
         self.http_map = {}
         self.which_map = {}
         self.home_dir = HOME
@@ -161,6 +162,8 @@ class FakeSystem:
 
     # files ----------------------------------------------------------------
     def _file(self, path):
+        if self._blocked(path):
+            raise PermissionError(13, "Permission denied")
         if path not in self.files:
             raise FileNotFoundError(2, "No such file")
         value = self.files[path]
@@ -183,7 +186,28 @@ class FakeSystem:
         return path in self.files
 
     def listable(self, path):
-        return path not in self.unlistable
+        return path not in self.unlistable and path not in self.blocked and not self._blocked(path)
+
+    def _blocked(self, path):
+        """Under a folder this user cannot enter (mode 000)."""
+        return any(path.startswith(b.rstrip("/") + "/") for b in self.blocked)
+
+    def probe(self, path):
+        if self._blocked(path):
+            return "error"
+        if path in self.files:
+            value = self.files[path]
+            if isinstance(value, FileNotFoundError):
+                return "missing"
+            if isinstance(value, BaseException):
+                return "file"  # stat works; reading it fails
+            return "file"
+        if self.is_dir(path):
+            return "dir"
+        parent = path.rsplit("/", 1)[0]
+        if parent and parent in self.files:
+            return "error"  # a path part that is a file (ENOTDIR)
+        return "missing"
 
     def _known_paths(self):
         paths = set(self.files) | set(self.dirs)
@@ -205,7 +229,13 @@ class FakeSystem:
         )
 
     def is_dir(self, path):
-        return path in self.dirs or any(f.startswith(path.rstrip("/") + "/") for f in self.files)
+        prefix = path.rstrip("/") + "/"
+        return (
+            path in self.dirs
+            or path in self.blocked
+            or any(f.startswith(prefix) for f in self.files)
+            or any(d.startswith(prefix) for d in self.dirs | self.blocked)
+        )
 
     def which(self, name, extra_dirs=()):
         return self.which_map.get(name)

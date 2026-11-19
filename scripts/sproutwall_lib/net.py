@@ -13,6 +13,7 @@ are trusted, so LAN exposure is never reported as safe.
 
 import ipaddress
 import json
+import re
 
 LISTEN = "0A"
 ESTABLISHED = "01"
@@ -33,13 +34,26 @@ def _decode_proc_addr(hex_addr):
     raise ValueError("address length")
 
 
-def parse_proc_net_tcp(text):
-    """([(address, port, state)], complete) from one or more /proc/net/tcp{,6} tables.
+# The kernel's TCP states as /proc/net/tcp{,6} prints them: 01 ESTABLISHED
+# ... 0A LISTEN, 0B CLOSING.
+TCP_STATES = frozenset("%02X" % state for state in range(1, 12))
+_ENDPOINT = {
+    4: re.compile(r"([0-9A-F]{8}):([0-9A-F]{4})", re.ASCII),
+    6: re.compile(r"([0-9A-F]{32}):([0-9A-F]{4})", re.ASCII),
+}
 
-    Parsed line by line: a malformed line makes the result incomplete but
-    never drops the entries already read, so an exposure seen is kept.
-    Without any table header the result is incomplete.
+
+def parse_proc_net_tcp(text, version):
+    """([(address, port, state)], complete) for one /proc/net/tcp (4) or tcp6 (6) table.
+
+    Parsed line by line. A row counts only if its local and remote
+    addresses have the table's length (8 or 32 hex digits), each port is
+    exactly 4 hex digits, and its state is one of the kernel's 11 TCP states.
+    Any other row makes the table incomplete but never drops the rows
+    already read, so an exposure already seen is kept. Without a header the
+    table is incomplete.
     """
+    endpoint = _ENDPOINT[version]
     sockets = []
     headers = 0
     complete = True
@@ -50,17 +64,13 @@ def parse_proc_net_tcp(text):
         if fields[0] == "sl" and "local_address" in fields:
             headers += 1
             continue
-        try:
-            if len(fields) < 4 or not fields[0].endswith(":"):
-                raise ValueError("entry")
-            addr_hex, sep, port_hex = fields[1].partition(":")
-            state = fields[3].upper()
-            if not sep or len(state) != 2:
-                raise ValueError("entry")
-            sockets.append((_decode_proc_addr(addr_hex), int(port_hex, 16), state))
-        except ValueError:
+        local = endpoint.fullmatch(fields[1]) if len(fields) >= 4 else None
+        remote = endpoint.fullmatch(fields[2]) if len(fields) >= 4 else None
+        if not (fields[0].endswith(":") and local and remote and fields[3] in TCP_STATES):
             complete = False
-    return sockets, complete and headers > 0
+            continue
+        sockets.append((_decode_proc_addr(local.group(1)), int(local.group(2), 16), fields[3]))
+    return sockets, complete and headers == 1
 
 
 def parse_ip_addr_json(text):

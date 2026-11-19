@@ -1,5 +1,6 @@
 """Each doctor check's pass, fail and unknown branches, from fake host output."""
 
+import os
 import unittest
 
 from sproutwall_lib import checks, compose
@@ -485,8 +486,69 @@ class SshPolicyTests(unittest.TestCase):
 
     def test_missing_literal_include_is_skipped(self):
         s = healthy_pi()
-        s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/not-there.conf\n" + fakes.SSHD_CONFIG
+        s.files["/etc/ssh/sshd_config"] = (
+            "Include /etc/ssh/not-there.conf\nInclude /etc/ssh/no-folder/x.conf\n" + fakes.SSHD_CONFIG
+        )
         self.assertEqual(run("ssh_policy", s, tier="A"), PASS)
+        ssh_on(s)
+        self.assertEqual(run("ssh_policy", s, tier="B"), PASS)
+
+    def test_inaccessible_literal_include_is_unknown_not_missing(self):
+        cases = {
+            "file mode 000": lambda s: s.files.__setitem__("/etc/ssh/locked.conf", PermissionError(13, "denied")),
+            "folder mode 000": lambda s: s.blocked.add("/etc/ssh/locked.d"),
+            "part is a file": lambda s: s.files.__setitem__("/etc/ssh/locked.d", "not a folder\n"),
+            "include is a folder": lambda s: s.dirs.add("/etc/ssh/locked.conf"),
+        }
+        includes = {
+            "file mode 000": "/etc/ssh/locked.conf",
+            "folder mode 000": "/etc/ssh/locked.d/x.conf",
+            "part is a file": "/etc/ssh/locked.d/x.conf",
+            "include is a folder": "/etc/ssh/locked.conf",
+        }
+        for label, setup in cases.items():
+            for tier in ("A", "B"):
+                s = healthy_pi()
+                if tier == "B":
+                    ssh_on(s)
+                s.files["/etc/ssh/sshd_config"] = "Include %s\n" % includes[label] + fakes.SSHD_CONFIG
+                setup(s)
+                self.assertEqual(run("ssh_policy", s, tier=tier), ("unknown", "review_ssh"), (label, tier))
+
+    def test_wildcard_matches_follow_the_same_rule(self):
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config.d/50-locked.conf"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        s = healthy_pi()
+        s.dirs.add("/etc/ssh/sshd_config.d/sub.conf")  # a folder matched by *.conf
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+
+    def test_missing_main_config(self):
+        s = healthy_pi()
+        del s.files["/etc/ssh/sshd_config"]
+        self.assertEqual(run("ssh_policy", s, tier="A"), PASS)
+        ssh_on(s)
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
+        s = healthy_pi()
+        s.blocked.add("/etc/ssh")
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+
+    def test_real_probe_reports_why(self):
+        import tempfile
+
+        from sproutwall_lib.system import System
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a.conf")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("Port 22\n")
+            probe = System().probe
+            self.assertEqual(probe(path), "file")
+            self.assertEqual(probe(tmp), "dir")
+            self.assertEqual(probe(os.path.join(tmp, "none.conf")), "missing")
+            self.assertEqual(probe(os.path.join(tmp, "no-folder", "x.conf")), "missing")
+            self.assertEqual(probe(os.path.join(path, "child.conf")), "error")  # ENOTDIR
+            self.assertEqual(probe("bad\x00path"), "error")
 
     def test_listener_seen_before_a_failed_read_still_counts(self):
         s = healthy_pi()
@@ -705,19 +767,62 @@ class ParserTests(unittest.TestCase):
     def test_proc_net_tcp_round_trip(self):
         from sproutwall_lib import net
 
-        text = proc_table([("127.0.0.1", 8787, "0A")]) + proc_table([("::1", 3847, "0A")], v6=True)
-        sockets, complete = net.parse_proc_net_tcp(text)
-        self.assertEqual([(str(a), p, st) for a, p, st in sockets], [("127.0.0.1", 8787, "0A"), ("::1", 3847, "0A")])
-        self.assertTrue(complete)
-        self.assertEqual(net.parse_proc_net_tcp("garbage"), ([], False))
+        sockets, complete = net.parse_proc_net_tcp(proc_table([("127.0.0.1", 8787, "0A")]), 4)
+        self.assertEqual(([(str(a), p, st) for a, p, st in sockets], complete), ([("127.0.0.1", 8787, "0A")], True))
+        sockets, complete = net.parse_proc_net_tcp(proc_table([("::1", 3847, "0A")], v6=True), 6)
+        self.assertEqual(([(str(a), p, st) for a, p, st in sockets], complete), ([("::1", 3847, "0A")], True))
+        self.assertEqual(net.parse_proc_net_tcp("garbage", 4), ([], False))
+        self.assertEqual(net.parse_proc_net_tcp(proc_table([]) + proc_table([]), 4), ([], False))  # two headers
+        self.assertEqual(sorted(net.TCP_STATES), ["%02X" % n for n in range(1, 12)])
 
     def test_a_malformed_line_keeps_the_lines_already_read(self):
         from sproutwall_lib import net
 
         text = proc_table([("198.51.100.9", 3847, "0A")]) + "  9: ZZZZ:XYZ 00000000:0000 0A\n  10:\n"
-        sockets, complete = net.parse_proc_net_tcp(text)
+        sockets, complete = net.parse_proc_net_tcp(text, 4)
         self.assertFalse(complete)
         self.assertEqual([(str(a), p) for a, p, _ in sockets], [("198.51.100.9", 3847)])
+
+    # Each bad row: (table version, the row). Fields: sl local remote st.
+    BAD_ROWS = {
+        "state 0C": (4, "  5: 00000000:0F07 00000000:0000 0C 0 0 0"),
+        "state ZZ": (4, "  5: 00000000:0F07 00000000:0000 ZZ 0 0 0"),
+        "port 10000 hex": (4, "  5: 00000000:10000 00000000:0000 0A 0 0 0"),
+        "short port": (4, "  5: 00000000:F07 00000000:0000 0A 0 0 0"),
+        "v6 address in tcp": (4, "  5: " + "0" * 32 + ":0F07 00000000:0000 0A 0 0 0"),
+        "v4 address in tcp6": (6, "  5: 00000000:0F07 " + "0" * 32 + ":0000 0A 0 0 0"),
+        "short remote": (4, "  5: 00000000:0F07 0000:0000 0A 0 0 0"),
+        "lowercase hex": (4, "  5: 0000000a:0f07 00000000:0000 0A 0 0 0"),
+    }
+
+    def test_each_invalid_row_makes_the_table_incomplete(self):
+        from sproutwall_lib import net
+
+        for label, (version, row) in self.BAD_ROWS.items():
+            sockets, complete = net.parse_proc_net_tcp(proc_table([], v6=version == 6) + row + "\n", version)
+            self.assertEqual((sockets, complete), ([], False), label)
+
+    def test_invalid_rows_alone_are_unknown_and_never_hide_a_public_listener(self):
+        for label, (version, row) in self.BAD_ROWS.items():
+            table = "/proc/net/tcp6" if version == 6 else "/proc/net/tcp"
+            s = healthy_pi()
+            s.files[table] = proc_table([], v6=version == 6) + row + "\n"
+            self.assertEqual(run("app_bind", s), ("unknown", "retry_local"), label)
+            s = healthy_pi()
+            public = [("2001:db8::9", 3847, "0A")] if version == 6 else [("198.51.100.9", 3847, "0A")]
+            s.files[table] = proc_table(public, v6=version == 6) + row + "\n"
+            self.assertEqual(run("app_bind", s), ("fail", "restrict_ports"), label)
+
+    def test_container_tables_follow_the_same_rule(self):
+        for label, (version, row) in self.BAD_ROWS.items():
+            table = "/proc/net/tcp6" if version == 6 else "/proc/net/tcp"
+            s = healthy_pi()
+            s.set(exec_key("cat", table), ok(proc_table([], v6=version == 6) + row + "\n"))
+            self.assertEqual(run("bridge_bind", s), ("unknown", "retry_local"), label)
+            s = healthy_pi()
+            open_bridge = [("::", 8787, "0A")] if version == 6 else [("0.0.0.0", 8787, "0A")]
+            s.set(exec_key("cat", table), ok(proc_table(open_bridge, v6=version == 6) + row + "\n"))
+            self.assertEqual(run("bridge_bind", s), ("fail", "restrict_ports"), label)
 
     def test_classify(self):
         import ipaddress

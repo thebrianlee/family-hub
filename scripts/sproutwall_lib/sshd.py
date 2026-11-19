@@ -34,8 +34,9 @@ def _first_word(text):
     return stripped.split()[0] if stripped else ""
 
 
-def _unit_installed(system, unit):
-    return any(system.exists(os.path.join(directory, unit)) for directory in UNIT_DIRS)
+def _unit_absent(system, unit):
+    """True only when no unit file exists in any unit folder (ENOENT everywhere)."""
+    return all(system.probe(os.path.join(directory, unit)) == "missing" for directory in UNIT_DIRS)
 
 
 def _unit_state(system, unit):
@@ -55,7 +56,7 @@ def _unit_state(system, unit):
             states.append("off")
         elif word == "unknown" and verb == "is-active":
             states.append("off")  # not loaded
-        elif word == "" and not _unit_installed(system, unit):
+        elif word == "" and _unit_absent(system, unit):
             states.append("off")
         else:
             states.append("unknown")
@@ -90,23 +91,41 @@ def _resolve_include(pattern):
 def include_files(system, pattern):
     """The files an Include pattern names, walking it one path part at a time.
 
-    Every folder that a wildcard has to list must be listable, or the config
-    is unreadable: glob would silently skip it. A literal path that does not
-    exist is skipped, as sshd does.
+    Only a path that does not exist (ENOENT, also for a missing parent
+    folder) is skipped, as sshd skips it. Every other failure makes the
+    config unreadable: a permission error, a path part that is not a
+    folder, an I/O error, a folder that a wildcard has to list but cannot,
+    or an included path that is a folder. glob and exists() would hide
+    those as "not there", so each path is probed with a stat that says why.
     """
     parts = [part for part in _resolve_include(pattern).split("/") if part]
     candidates = ["/"]
     for index, part in enumerate(parts):
         last = index == len(parts) - 1
+        wildcard = bool(_MAGIC.search(part))
         following = []
         for folder in candidates:
-            if _MAGIC.search(part):
+            if wildcard:
                 if not system.listable(folder):
                     raise SshConfigUnreadable()
                 matches = system.glob(os.path.join(folder, part))
             else:
                 matches = [os.path.join(folder, part)]
-            following += [m for m in matches if (system.exists(m) if last else system.is_dir(m))]
+            for match in matches:
+                kind = system.probe(match)
+                if kind == "missing":
+                    continue
+                if kind == "error":
+                    raise SshConfigUnreadable()
+                if last and kind == "file":
+                    following.append(match)
+                elif not last and kind == "dir":
+                    following.append(match)
+                elif last or not wildcard:
+                    # An included folder, or a literal path part that is a
+                    # file: sshd cannot read through either.
+                    raise SshConfigUnreadable()
+                # A wildcard part that matched a file on the way: no match.
         candidates = following
     return sorted(candidates)
 
@@ -120,6 +139,9 @@ def read_directives(system, path=SSHD_CONFIG, depth=0):
     """
     if depth > 8:
         raise SshConfigUnreadable()
+    # open() reports why it failed: only ENOENT on the main config means "no
+    # SSH server config"; for an included file it found, ENOENT now (a race)
+    # and every other error are unreadable.
     try:
         text = system.read_text(path)
     except FileNotFoundError:

@@ -178,9 +178,9 @@ class Context:
 
         def read():
             sockets, complete = [], True
-            for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+            for path, version in (("/proc/net/tcp", 4), ("/proc/net/tcp6", 6)):
                 try:
-                    found, read_all = net.parse_proc_net_tcp(self.system.read_text(path))
+                    found, read_all = net.parse_proc_net_tcp(self.system.read_text(path), version)
                 except FileNotFoundError:
                     if path.endswith("tcp"):
                         complete = False  # IPv4 table must exist; a missing tcp6 means IPv6 is off
@@ -448,7 +448,7 @@ def _container_sockets(ctx, container):
     result = ctx.exec_in(container, ["cat", "/proc/net/tcp"])
     if result.rc != 0:
         return [], False
-    sockets, complete = net.parse_proc_net_tcp(result.out)
+    sockets, complete = net.parse_proc_net_tcp(result.out, 4)
     has_ipv6 = ctx.exec_in(container, ["test", "-e", "/proc/net/tcp6"]).rc
     if has_ipv6 == 1:
         return sockets, complete  # IPv6 is off in the container: no IPv6 sockets
@@ -457,7 +457,7 @@ def _container_sockets(ctx, container):
     result = ctx.exec_in(container, ["cat", "/proc/net/tcp6"])
     if result.rc != 0:
         return sockets, False
-    found, read_all = net.parse_proc_net_tcp(result.out)
+    found, read_all = net.parse_proc_net_tcp(result.out, 6)
     return sockets + found, complete and read_all
 
 

@@ -266,7 +266,10 @@ class EndToEndCanaryTests(unittest.TestCase):
             self.assertEqual(err, "")
             code, out, err = self.run_script("doctor", "--phase", phase)
             assert_clean(self, out, err, False)
-        self.assertTrue({"docker", "ip", "systemctl", "dpkg"} <= self.ran(), self.ran())
+        # Only tools doctor queries on every host: whether systemctl or dpkg run
+        # depends on the host (a readable sshd config, a 64-bit CPU), and the
+        # real sockets on 22 or 3847 must not change the result either.
+        self.assertTrue({"docker", "ip"} <= self.ran(), self.ran())
 
     def test_verify_image_reaches_gh(self):
         repo = os.path.join(self.tmp.name, "repo")

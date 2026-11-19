@@ -11,6 +11,7 @@ import ipaddress
 import os
 import platform
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass
 
@@ -99,6 +100,18 @@ class System:
 
     def is_dir(self, path):
         return os.path.isdir(path)
+
+    def probe(self, path):
+        """What a stat of path says: "file", "dir", "missing" (ENOENT only,
+        also for a missing parent folder) or "error" (permission denied, a
+        path part that is not a folder, I/O errors, loops...)."""
+        try:
+            mode = os.stat(path).st_mode
+        except FileNotFoundError:
+            return "missing"
+        except (OSError, ValueError):
+            return "error"
+        return "dir" if stat.S_ISDIR(mode) else "file"
 
     def listable(self, path):
         return os.access(path, os.R_OK | os.X_OK)
