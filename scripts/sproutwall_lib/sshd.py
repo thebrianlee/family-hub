@@ -68,9 +68,11 @@ def _unit_state(system, unit):
 
 def service_state(system, sockets, sockets_complete, ports):
     """on, off or unknown. A listener already seen counts even if a later read failed."""
+    # The units are always read, even when a listener already decides "on", so
+    # the result never depends on which source happened to be checked first.
+    states = [_unit_state(system, unit) for unit in UNITS]
     if any(state == "0A" and port in ports for _, port, state in sockets):
         return "on"
-    states = [_unit_state(system, unit) for unit in UNITS]
     if "on" in states:
         return "on"
     if "unknown" in states or not sockets_complete:
