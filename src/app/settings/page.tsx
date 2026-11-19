@@ -1,16 +1,20 @@
 "use client";
 
-// Parent settings: household, location and timezone, calendar links, Ask the
-// Hub privacy, and the PIN. Everything here is parent-only; the page asks for
-// the PIN first and locks again when the parent leaves.
+// Parent settings: household, location and timezone, calendar links, which
+// modules are on, Ask the Hub privacy, and the PIN. Everything here is
+// parent-only; the page asks for the PIN first and locks again when the parent
+// leaves.
 
 import { useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
+import ModuleToggles from "@/components/ModuleToggles";
+import { isNewerRev, useModules } from "@/components/ModulesProvider";
 import PersonEditor, { type PersonRow } from "@/components/PersonEditor";
 import PinModal from "@/components/PinModal";
 import { MEMBER_PALETTE, PARENT_COLOR_ORDER, nextUnusedColor } from "@/lib/member-theme";
 import { PIN_MAX_LENGTH, PIN_MIN_LENGTH } from "@/lib/weak-pin";
+import { applyModuleChanges, getModule, type ModuleState } from "@/modules/registry";
 
 type Household = {
   familyName: string;
@@ -122,6 +126,7 @@ export default function SettingsPage() {
               }}
             />
             <CalendarsCard calendars={snap.calendars} onSaved={setSnap} />
+            <ModulesCard />
             <PrivacyCard share={snap.privacy.askShareFirstName} onSaved={setSnap} />
             <PinCard />
             <AboutCard />
@@ -322,6 +327,145 @@ function PrivacyCard({ share, onSaved }: { share: boolean; onSaved: (s: Snapshot
         Include the child&apos;s first name so answers can be personal
       </label>
       <Status error={error} saved="" />
+    </Card>
+  );
+}
+
+const toModuleState = (data: { modules?: { id: string; enabled: boolean }[] }): ModuleState =>
+  Object.fromEntries((data.modules ?? []).map((m) => [m.id, m.enabled]));
+
+/**
+ * Settings → Modules: switch built-in features on or off. Off only hides a
+ * module from the wall; its data stays. Turning one off that others need asks
+ * first. After a change the layout re-renders, so the tab bar follows.
+ */
+function ModulesCard() {
+  const router = useRouter();
+  const { rev, syncModules, holdWatcher } = useModules();
+  const expired = useContext(SessionExpired);
+  const [state, setState] = useState<ModuleState | null>(null);
+  // The module revision `state` was read at. A snapshot replaces it only when
+  // it is newer, so an answer that lands late can't put back older switches.
+  const stateRev = useRef(-1);
+  const [confirm, setConfirm] = useState<{ id: string; alsoOff: string[] } | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+  // While mounted; and the watcher hold of a save still on its way, which
+  // ends when this card goes (ModulesProvider holdWatcher).
+  const live = useRef(false);
+  const hold = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+      hold.current?.();
+      hold.current = null;
+    };
+  }, []);
+
+  const load = useCallback(() => {
+    void fetch("/api/settings/modules", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (live.current && d && isNewerRev(stateRev.current, d.rev)) {
+          stateRev.current = d.rev;
+          setState(toModuleState(d));
+        }
+      })
+      .catch(() => null);
+  }, []);
+  // The first read, and a fresh one whenever the wall shows a newer module
+  // state than these switches: a change made on another screen that only
+  // turned modules on (one that turned any off reloads the page).
+  useEffect(() => {
+    if (stateRev.current < 0 || isNewerRev(stateRev.current, rev)) load();
+  }, [rev, load]);
+
+  const name = (id: string) => getModule(id)?.name ?? id;
+
+  // The switches stay locked (busy) until the answer is read and applied, or
+  // the save has failed. Until then the module watcher waits too, so this
+  // screen shows its own answer instead of reloading (ModulesProvider), but
+  // for HOLD_MAX_MS at most and never after this card is gone.
+  const save = async (id: string, on: boolean) => {
+    if (!state || busy) return;
+    setConfirm(null);
+    setBusy(true);
+    setError("");
+    setSaved("");
+    const revAtStart = rev;
+    const release = holdWatcher();
+    hold.current = release;
+    try {
+      const res = await fetch("/api/settings/modules", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modules: { [id]: on } }),
+      }).catch(() => null);
+      if (!res) return setError("The hub didn't answer. Check the connection.");
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403 && data.error === "Parent PIN required") {
+        expired();
+        return setError(EXPIRED);
+      }
+      if (!res.ok) return setError(typeof data.error === "string" ? data.error : "That didn't save.");
+      // Older than the switches shown: keep them, here and on the wall.
+      if (!isNewerRev(stateRev.current, data.rev)) return;
+      const next = toModuleState(data);
+      const alsoOn = Object.keys(next).filter((m) => m !== id && next[m] && !state[m]);
+      stateRev.current = data.rev;
+      setState(next);
+      setSaved(
+        on
+          ? `${name(id)} is on.${alsoOn.length ? ` ${alsoOn.map(name).join(" and ")} turned on too, because ${name(id)} needs it.` : ""}`
+          : "Hidden from the wall. Nothing is deleted; turn it back on any time."
+      );
+      // Show the saved state at once (newest revision wins, so a Today poll
+      // already in flight can't undo it), then re-render the layout too. A
+      // save that outlived its hold goes through the provider's rule like
+      // any other state.
+      syncModules({ rev: data.rev, modules: data.enabled, tabs: data.tabs }, revAtStart);
+      router.refresh();
+    } finally {
+      release();
+      if (hold.current === release) hold.current = null;
+      setBusy(false);
+    }
+  };
+
+  const toggle = (id: string, on: boolean) => {
+    if (!state) return;
+    if (!on) {
+      const next = applyModuleChanges(state, { [id]: false });
+      const alsoOff = Object.keys(next).filter((m) => m !== id && state[m] && !next[m]);
+      if (alsoOff.length) return setConfirm({ id, alsoOff });
+    }
+    void save(id, on);
+  };
+
+  return (
+    <Card
+      title="Modules"
+      note="Choose what the wall shows. Turning a module off hides it from the wall; nothing is deleted, and turning it back on brings everything back."
+    >
+      {state ? <ModuleToggles state={state} onToggle={toggle} busy={busy} /> : <p className="text-xl text-ink-soft">Loading…</p>}
+      {confirm ? (
+        <div className="grid gap-4 rounded-card border-2 border-ember p-6">
+          <p className="text-2xl font-bold">
+            Turning off {name(confirm.id)} also turns off {confirm.alsoOff.map(name).join(" and ")}. Nothing is deleted.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={() => void save(confirm.id, false)} className="btn-primary h-16 flex-1 text-2xl">
+              Turn them off
+            </button>
+            <button onClick={() => setConfirm(null)} className="btn-soft h-16 px-8 text-2xl">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      <Status error={error} saved={saved} />
     </Card>
   );
 }

@@ -1,8 +1,26 @@
 # Skills (plugins): design
 
-> **Status: Proposal, not implemented yet.** Nothing on this page exists in the code. Names, file layouts and APIs may change before the first skill ships. Open an issue labeled `skill/plugin` to discuss it.
+> **Status: Proposal, not implemented yet.** Nothing on this page exists in the code, except the built-in modules described in [Stage 1](#stage-1-built-in-modules-v0). Names, file layouts and APIs may change before the first skill ships. Open an issue labeled `skill/plugin` to discuss it.
 
 A **skill** is a small add-on that gives Sproutwall a new card, tab, daily job or Ask the Hub source. Examples: a piano practice timer, a quiz of the day, a chore rotation. The goal is that a contributor can add a skill without touching the core app, and a parent can see exactly what a skill may do before turning it on.
+
+## Stage 1: built-in modules (v0)
+
+This part exists. Today's features are **built-in modules** that a parent switches on and off, in the first-run wizard ("What should your wall show?") and in **Settings → Modules**. They are a first step toward skills, not skills: there is no third-party code and nothing is downloaded.
+
+- **Registry:** `src/modules/registry.ts`. Each entry uses a subset of the manifest fields below (`id`, `name`, `description`, `version`, `author`, `permissions.network`, `permissions.data`, `slots`, `sendsChildDataTo`) plus v0-only fields: `core`, `defaultEnabled`, `dependsOn`, `pages`, `api` and `tab`. The format is experimental and internal. It may change until stage 2 and is not a contributor API.
+- **Modules:** core (Today: clock, weather, greeting, parents' status, family rules; always on), Calendar, Routines, Points & jar, Progress & level-up, Reading log, Meals, Lists, and Ask the Hub + Daily Spark. Points & jar and Progress need Routines.
+- **Defaults:** a fresh install has everything on except Ask the Hub, the only module that sends what a child typed off the machine. An upgraded install keeps everything on, Ask included.
+- **Off means hidden:** no tab and no Today slot; its pages redirect to Today; its API answers 404 `module_off` (a parent can still read); its background refresh stops. No rows are deleted, so turning it back on shows the same data.
+- **Where:** state is the `module_state` table (migration `0002-module-state`), read through `src/lib/modules.ts`. The access check is in `src/proxy.ts`, after the screen lock, and can only refuse.
+- **Tests** check that every route belongs to a module and that the hosts in `permissions.network` match the hosts in the code.
+- **Not in v0:** third-party skills, per-module settings, a delete-data action, permission-upgrade prompts and per-kid enable.
+
+### Known limits
+
+- A request that is already on its way when a module is switched off is not cancelled. Each new request, fallback and redirect hop checks first (`src/lib/module-fetch.ts`).
+- Other screens follow a switch-off within 60 seconds, or at once on a `sproutwall:datachanged` event or when the tab is shown again (`src/components/ModulesProvider.tsx`).
+- An Ask question refused because Ask was switched off after the hub accepted it still uses its slot in the rate limit.
 
 ## Prerequisites
 

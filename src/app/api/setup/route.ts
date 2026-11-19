@@ -3,6 +3,7 @@ import { hashPin } from "@/lib/auth";
 import { applyHouseholdTimezone, getDb } from "@/lib/db";
 import { getSetting, setSetting } from "@/lib/queries";
 import { HouseholdPlan, MemberError, replaceHousehold, validateHousehold } from "@/lib/household";
+import { type ModuleChanges, parseModuleChanges, setEnabled } from "@/lib/modules";
 import { pinProblem } from "@/lib/weak-pin";
 import { blockedResponse } from "@/lib/blocked-response";
 
@@ -60,6 +61,14 @@ async function handlePost(req: NextRequest): Promise<NextResponse> {
       throw err;
     }
   }
+  // "What should your wall show?": { [module id]: boolean }. Missing (older
+  // clients) or "recommended" (the wizard's skip button) means the defaults.
+  let modules: ModuleChanges = {};
+  if (body.modules !== undefined && body.modules !== "recommended") {
+    const checked = parseModuleChanges(body.modules);
+    if (!checked.ok) return NextResponse.json({ error: checked.error }, { status: 400 });
+    modules = checked.changes;
+  }
   const hashed = hashPin(pin);
   // Re-check and claim inside one synchronous transaction. The check at the
   // top can be stale: another setup may have finished while this request's
@@ -78,6 +87,7 @@ async function handlePost(req: NextRequest): Promise<NextResponse> {
     setSetting("weather_lon", String(longitude));
     // Same transaction: a second setup can never see a half-replaced household.
     if (plan) replaceHousehold(plan);
+    setEnabled(modules, { actor: "setup" });
     setSetting("setup_complete", "1");
     return true;
   })();

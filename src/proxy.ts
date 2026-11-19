@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { isDbBlocked } from "@/lib/db";
+import { isEnabled } from "@/lib/modules";
 import { DEVICE_COOKIE, PARENT_COOKIE, readsLocked, setupComplete, verifyCookie } from "@/lib/session";
+import { moduleForPath } from "@/modules/registry";
 
 // Access policy for every request. Routes repeat the parent checks themselves
 // (src/lib/guard.ts), so this file is the first layer, not the only one.
@@ -15,6 +17,10 @@ import { DEVICE_COOKIE, PARENT_COOKIE, readsLocked, setupComplete, verifyCookie 
 // - Writes are parent-only by default. KID_WRITES lists the routes a kid may
 //   use from an unlocked screen; inside them, parent-only actions (redeem,
 //   event delete, removing an activity) are checked by the route.
+// - A module a parent switched off (Settings → Modules) disappears: its pages
+//   redirect to /today and its API answers 404 module_off, except reads with a
+//   parent cookie. This runs after the lock, so a locked screen learns nothing
+//   about which modules exist, and it can only refuse, never allow.
 
 const KID_WRITES = new Set([
   "/api/myday",
@@ -47,6 +53,15 @@ export function sameOrigin(req: NextRequest): boolean {
     return Boolean(host) && new URL(origin).host === host;
   } catch {
     return false;
+  }
+}
+
+/** The path as the router will see it, so "/api/l%69sts" can't skip the module gate. */
+function decodedPath(pathname: string): string {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
   }
 }
 
@@ -85,6 +100,19 @@ export function proxy(req: NextRequest): NextResponse {
     url.pathname = "/unlock";
     url.search = `?next=${encodeURIComponent(pathname)}`;
     return NextResponse.redirect(url);
+  }
+
+  const owner = moduleForPath(decodedPath(pathname));
+  if (owner && !owner.core && !isEnabled(owner.id)) {
+    if (!isApi) {
+      const url = req.nextUrl.clone();
+      url.pathname = "/today";
+      url.search = "";
+      return NextResponse.redirect(url);
+    }
+    // Checked before the kid allowlist: a write to a module that is off is
+    // refused for everyone, parents included.
+    if (isWrite || !parent) return refuse(404, "module_off");
   }
 
   if (isWrite && !KID_WRITES.has(pathname) && !parent) return refuse(403, "Parent PIN required");

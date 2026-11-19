@@ -5,9 +5,12 @@
 // them finish a book, or start a new one by search. Book-level detail lives on
 // the routine, not hidden under Rewards.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { answerGate } from "@/lib/answer-gate";
+import { coverPreviewSrc } from "@/lib/cover-preview";
 import { KidId } from "@/lib/family";
 import { useMembers } from "./MembersProvider";
+import { useModules } from "./ModulesProvider";
 import Modal from "./Modal";
 import Keypad from "./Keypad";
 import SoftKeyboard from "./SoftKeyboard";
@@ -46,20 +49,41 @@ export default function ReadingSheet({
   onLogged: (msg: string, close: boolean) => void;
 }) {
   const { memberOf } = useMembers();
+  // Points are still earned with Points & jar off; the "+N" is just not shown.
+  const { isOn } = useModules();
+  const plus = (n: number) => (isOn("rewards") ? ` +${n}` : "");
+  // Shown, and fetching, only while Reading is on, whatever the parent passes.
+  const active = open && isOn("reading");
+  const activeRef = useRef(active);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [minutes, setMinutes] = useState("");
   const [mode, setMode] = useState<"main" | "search">("main");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // Each open, for each kid and routine, starts over (src/lib/answer-gate.ts):
+  // an answer that lands after the sheet closed or Reading went off, from an
+  // earlier open, for another kid, or overtaken by a newer request is dropped.
+  const [gates] = useState(() => ({ load: answerGate(), search: answerGate() }));
+  const key = `${kid}:${templateId}`;
 
   const load = useCallback(() => {
-    if (!kid) return;
-    fetch(`/api/reading?kid=${kid}`).then((r) => r.json()).then((d) => setSummary(d.summary)).catch(() => {});
-  }, [kid]);
+    if (!kid || !activeRef.current) return;
+    const ticket = gates.load.take(key);
+    fetch(`/api/reading?kid=${kid}`)
+      .then((r) => r.json())
+      .then((d) => { if (activeRef.current && gates.load.isCurrent(ticket)) setSummary(d.summary); })
+      .catch(() => {});
+  }, [kid, key, gates]);
+  // Fresh on every open; the book, minutes and search go as soon as the sheet
+  // closes, switches kids or Reading is switched off.
   useEffect(() => {
-    if (open) { load(); setMode("main"); setMinutes(""); setQuery(""); setResults(null); }
-  }, [open, load]);
+    activeRef.current = active;
+    gates.load.reset(active ? key : "");
+    gates.search.reset(active ? key : "");
+    setMode("main"); setMinutes(""); setQuery(""); setResults(null); setSummary(null);
+    if (active) load();
+  }, [active, key, load, gates]);
 
   const post = (body: Record<string, unknown>) =>
     fetch("/api/reading", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kid, ...body }) });
@@ -72,7 +96,7 @@ export default function ReadingSheet({
       const body = await res.json().catch(() => ({}));
       window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       load();
-      if (res.ok) onLogged(`📚 "${b.title}" goes on the shelf! +${body.earned ?? 15}`, false);
+      if (res.ok) onLogged(`📚 "${b.title}" goes on the shelf!${plus(body.earned ?? 15)}`, false);
     } finally { setBusy(false); }
   };
 
@@ -88,12 +112,19 @@ export default function ReadingSheet({
   };
 
   const runSearch = async () => {
-    if (query.trim().length < 2) return;
+    if (!activeRef.current || query.trim().length < 2) return;
+    const ticket = gates.search.take(key);
+    const current = () => activeRef.current && gates.search.isCurrent(ticket);
     setBusy(true);
     try {
       const res = await fetch(`/api/books/search?q=${encodeURIComponent(query.trim())}`);
-      setResults((await res.json()).results ?? []);
-    } catch { setResults([]); } finally { setBusy(false); }
+      const found = (await res.json()).results ?? [];
+      if (current()) setResults(found);
+    } catch { if (current()) setResults([]); } finally { setBusy(false); }
+  };
+  const leaveSearch = () => {
+    gates.search.reset(key);
+    setMode("main"); setResults(null); setQuery("");
   };
 
   // Log tonight's minutes → ticks the Reading routine.
@@ -110,7 +141,7 @@ export default function ReadingSheet({
       window.dispatchEvent(new CustomEvent("sproutwall:datachanged"));
       if (res.ok && !body.alreadyDone) {
         const name = memberOf(kid).name;
-        onLogged(body.bucketDone ? `🎉 ${name} finished the evening! +${body.earned}` : `📖 ${m} ${unit} logged · +${body.earned}`, true);
+        onLogged(body.bucketDone ? `🎉 ${name} finished the evening!${plus(body.earned)}` : `📖 ${m} ${unit} logged${isOn("rewards") ? ` · +${body.earned}` : ""}`, true);
       } else {
         onClose();
       }
@@ -120,7 +151,7 @@ export default function ReadingSheet({
   const name = kid ? memberOf(kid).name : "";
 
   return (
-    <Modal open={open} onClose={onClose} title={`📖 ${name}'s Reading`} wide>
+    <Modal open={active} onClose={onClose} title={`📖 ${name}'s Reading`} wide>
       {mode === "main" ? (
         <div className="flex flex-col gap-5 min-h-0 overflow-y-auto pr-1">
           {/* current books */}
@@ -183,8 +214,8 @@ export default function ReadingSheet({
             {results?.map((r, i) => (
               <button key={i} disabled={busy} onClick={() => startBook(r)} className="tile px-5 py-3 flex items-center gap-4 text-left active:bg-cream-sunken disabled:opacity-50">
                 {r.thumbnail ? (
-                   
-                  <img src={r.thumbnail} alt="" className="w-[52px] h-[76px] rounded-lg object-cover shrink-0 shadow-tile" />
+                  // Through the hub, never from the book site (src/lib/cover-preview.ts).
+                  <img src={coverPreviewSrc(r.thumbnail)} alt="" className="w-[52px] h-[76px] rounded-lg object-cover shrink-0 shadow-tile" />
                 ) : (
                   <div className="w-[52px] h-[76px] rounded-lg bg-cream-sunken flex items-center justify-center text-2xl shrink-0">📕</div>
                 )}
@@ -196,7 +227,7 @@ export default function ReadingSheet({
             ))}
             {results && results.length === 0 && <div className="text-xl font-bold text-ink-faint text-center py-6">Nothing found — try different words.</div>}
           </div>
-          <button onClick={() => { setMode("main"); setResults(null); setQuery(""); }} className="btn-soft px-6 py-3 text-xl self-start shrink-0">← Back</button>
+          <button onClick={leaveSearch} className="btn-soft px-6 py-3 text-xl self-start shrink-0">← Back</button>
         </div>
       )}
     </Modal>

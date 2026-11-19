@@ -5,6 +5,7 @@ import { getQuotes, getFamilyRules } from "@/lib/spark";
 import { getSetting } from "@/lib/queries";
 import { getWeather } from "@/lib/weather";
 import { isDemoMode, demoShowFaces } from "@/lib/demo";
+import { isEnabled } from "@/lib/modules";
 import { photoDir } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
@@ -34,7 +35,9 @@ export async function GET() {
     // Art slides deferred — drop images into data/photos for now; a separate
     // art folder + route can come back when someone wants it.
     art: [],
-    quotes: [...getQuotes(), ...getFamilyRules()],
+    // Generated quotes come from the Ask bridge (spark_cache), so they go with
+    // the Ask module; the family rules are core.
+    quotes: [...(isEnabled("ask") ? getQuotes() : []), ...getFamilyRules()],
     idleMinutes: Number(getSetting("screensaver_idle_min", "10")),
     sleepStart: getSetting("sleep_start", "21:30"),
     sleepEnd: getSetting("sleep_end", "06:00"),

@@ -2,8 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import ModuleToggles from "@/components/ModuleToggles";
 import PersonEditor, { MAX_NAME, type PersonRow } from "@/components/PersonEditor";
 import { MEMBER_PALETTE, PARENT_COLOR_ORDER, nextUnusedColor } from "@/lib/member-theme";
+import { TOGGLEABLE_MODULES, applyModuleChanges, defaultModuleState, type ModuleState } from "@/modules/registry";
 
 const SAMPLE_NAME = "The Calder family";
 const SAMPLE_GREETING = "Calders";
@@ -35,6 +37,13 @@ export default function SetupScreen() {
     { key: 2, name: "", age: "", preReader: false, color: PARENT_COLOR_ORDER[0] },
   ]);
   const usedColors = () => [...kids, ...parents].map((p) => p.color);
+
+  // "What should your wall show?": one answer. Skipping keeps the recommended
+  // set (every module but Ask) and sends "recommended".
+  const [modules, setModules] = useState<ModuleState>(defaultModuleState);
+  const [modulesSkipped, setModulesSkipped] = useState(false);
+  const houseRef = useRef<HTMLHeadingElement>(null);
+  const offNames = TOGGLEABLE_MODULES.filter((m) => !modules[m.id]).map((m) => m.name);
 
   // Start from this browser's timezone instead of a fixed US zone. Done after
   // mount so the server-rendered HTML and the first client render match.
@@ -112,6 +121,7 @@ export default function SetupScreen() {
           latitude,
           longitude,
           household,
+          modules: modulesSkipped ? "recommended" : modules,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -198,7 +208,45 @@ export default function SetupScreen() {
           </div>
         )}
 
-        <h2 className="mt-10 text-4xl font-extrabold tracking-tight">The house</h2>
+        <h2 className="mt-10 text-4xl font-extrabold tracking-tight">What should your wall show?</h2>
+        {modulesSkipped ? (
+          <div className="mt-4 flex items-center justify-between gap-4 rounded-card bg-cream-raised px-6 py-5 shadow-tile">
+            <p className="text-xl leading-snug text-ink-soft">
+              The recommended set: everything except Ask the Hub. You can change this any time in Settings → Modules.
+            </p>
+            <button type="button" onClick={() => setModulesSkipped(false)} className="btn-soft h-14 shrink-0 px-6 text-xl">
+              Choose
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="mt-3 text-xl leading-snug text-ink-soft">
+              Turn off what your family won&apos;t use. Nothing is deleted, and you can change this any time in Settings →
+              Modules.
+            </p>
+            <div className="mt-4">
+              <ModuleToggles
+                state={modules}
+                firstRun
+                onToggle={(id, on) => setModules((current) => applyModuleChanges(current, { [id]: on }))}
+              />
+            </div>
+            {offNames.length > 0 && <p className="mt-3 text-xl text-ink-faint">Off: {offNames.join(", ")}.</p>}
+            <button
+              type="button"
+              onClick={() => {
+                setModules(defaultModuleState());
+                setModulesSkipped(true);
+                houseRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+              className="btn-soft mt-4 h-16 w-full text-2xl"
+            >
+              Skip, use recommended
+            </button>
+          </>
+        )}
+
+        <h2 ref={houseRef} className="mt-10 text-4xl font-extrabold tracking-tight">The house</h2>
         <div className="mt-4 grid gap-5">
           <Field label="Household name" value={familyName} onChange={setFamilyName} />
           <Field label="Greeting name" value={greeting} onChange={setGreeting} />

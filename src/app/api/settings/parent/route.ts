@@ -25,6 +25,8 @@ import {
   validateHousehold,
 } from "@/lib/household";
 import { refreshIcsNow } from "@/lib/ics";
+import { ModuleOffError } from "@/lib/module-fetch";
+import { isEnabled } from "@/lib/modules";
 import { getSetting, setSetting } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
@@ -77,11 +79,29 @@ async function apply(req: NextRequest, body: Record<string, unknown>): Promise<N
       }
       const normalized = parseCalendarLink(body.url);
       if (!normalized.ok) return NextResponse.json({ error: normalized.error }, { status: 400 });
-      const reachable = await checkCalendarLink(normalized.value);
+      // Calendar switched off contacts no feed, not even to check the link.
+      // The link is still saved, and the next refresh after Calendar is back
+      // on pulls it in.
+      if (!isEnabled("calendar")) {
+        saveCalendarLink(owner, normalized.value);
+        break;
+      }
+      let reachable: Awaited<ReturnType<typeof checkCalendarLink>>;
+      try {
+        reachable = await checkCalendarLink(normalized.value);
+      } catch (err) {
+        // Calendar was switched off before the check's next request started:
+        // saved as in the off case above, and nothing more is contacted.
+        if (!(err instanceof ModuleOffError)) throw err;
+        saveCalendarLink(owner, normalized.value);
+        break;
+      }
       if (!reachable.ok) return NextResponse.json({ error: reachable.error }, { status: 400 });
       saveCalendarLink(owner, reachable.value);
       // Pull the new events in the background; the response doesn't wait.
-      void refreshIcsNow().catch(() => {});
+      // Checked again: Calendar can have been switched off during the check.
+      // (Each feed request inside the refresh checks once more, moduleGet.)
+      if (isEnabled("calendar")) void refreshIcsNow().catch(() => {});
       break;
     }
     case "privacy": {

@@ -9,6 +9,7 @@ import { randomBytes } from "crypto";
 import fs from "fs";
 import path from "path";
 import { getDb } from "./db";
+import { ModuleOffError, moduleFetch, moduleGet } from "./module-fetch";
 import { coversDir } from "./paths";
 import { safeGet, type SafeGetter } from "./safe-fetch";
 
@@ -21,11 +22,14 @@ export interface BookSearchResult {
 }
 
 /** Primary: Open Library (keyless, generous quota). Fallback: Google Books
- *  (keyless but shared anonymous quota — often exhausted). */
+ *  (keyless but shared anonymous quota — often exhausted). Every request
+ *  goes through moduleFetch, so with Reading switched off neither starts and
+ *  a ModuleOffError is thrown: no fallback after it. */
 export async function searchBooks(query: string): Promise<BookSearchResult[]> {
   try {
     return await searchOpenLibrary(query);
   } catch (err) {
+    if (err instanceof ModuleOffError) throw err;
     console.error("[books] Open Library failed, trying Google Books:", String(err));
     return searchGoogleBooks(query);
   }
@@ -35,7 +39,7 @@ async function searchOpenLibrary(query: string): Promise<BookSearchResult[]> {
   const url =
     `https://openlibrary.org/search.json?q=${encodeURIComponent(query)}` +
     `&limit=8&fields=title,author_name,first_publish_year,cover_i,isbn`;
-  const res = await fetch(url, {
+  const res = await moduleFetch("reading", url, {
     cache: "no-store",
     signal: AbortSignal.timeout(8000),
     headers: { "User-Agent": "Sproutwall (+https://github.com/thebrianlee/sproutwall)" },
@@ -62,7 +66,7 @@ async function searchGoogleBooks(query: string): Promise<BookSearchResult[]> {
   const url =
     `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}` +
     `&maxResults=8&printType=books&fields=items(volumeInfo(title,authors,industryIdentifiers,imageLinks,publishedDate))`;
-  const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(8000) });
+  const res = await moduleFetch("reading", url, { cache: "no-store", signal: AbortSignal.timeout(8000) });
   if (!res.ok) throw new Error(`Google Books HTTP ${res.status}`);
   const data = await res.json();
   const items: Record<string, unknown>[] = data.items ?? [];
@@ -87,8 +91,12 @@ async function searchGoogleBooks(query: string): Promise<BookSearchResult[]> {
   });
 }
 
-/** Find and cache covers for books added before cover support (or manually). */
-export async function backfillCovers(): Promise<{ filled: number; missed: number }> {
+/** Find and cache covers for books added before cover support (or manually).
+ *  A book counts as filled only when its cover was saved; a cover that
+ *  failed for any reason is missed. Stops at the first request refused
+ *  because Reading was switched off, without counting that book. `get` is
+ *  injectable for tests; production always uses safeGet. */
+export async function backfillCovers(get: SafeGetter = safeGet): Promise<{ filled: number; missed: number }> {
   const db = getDb();
   const bare = db
     .prepare("SELECT id, title, author FROM books WHERE cover_path IS NULL")
@@ -99,14 +107,16 @@ export async function backfillCovers(): Promise<{ filled: number; missed: number
     try {
       const results = await searchBooks(b.author ? `${b.title} ${b.author}` : b.title);
       const hit = results.find((r) => r.thumbnail);
-      if (hit?.thumbnail) {
-        await cacheCover(b.id, hit.thumbnail);
-        if (hit.isbn) db.prepare("UPDATE books SET isbn=COALESCE(isbn, ?) WHERE id=?").run(hit.isbn, b.id);
-        filled++;
-      } else {
+      if (!hit?.thumbnail) {
         missed++;
+        continue;
       }
-    } catch {
+      await storeCover(b.id, hit.thumbnail, get);
+      if (hit.isbn) db.prepare("UPDATE books SET isbn=COALESCE(isbn, ?) WHERE id=?").run(hit.isbn, b.id);
+      filled++;
+    } catch (err) {
+      if (err instanceof ModuleOffError) break;
+      console.error(`[books] backfill missed book ${b.id}:`, String(err));
       missed++;
     }
   }
@@ -129,12 +139,13 @@ export function isAllowedCoverUrl(raw: string): boolean {
   }
 }
 
-/** `get` is injectable for tests; production always uses safeGet. */
+/** Each hop goes through moduleGet, so no hop starts once Reading is off
+ *  (ModuleOffError). `get` is injectable for tests; production always uses safeGet. */
 export async function downloadCover(raw: string, get: SafeGetter = safeGet): Promise<Buffer> {
   let current = raw;
   for (let hop = 0; hop <= COVER_MAX_REDIRECTS; hop++) {
     if (!isAllowedCoverUrl(current)) throw new Error("cover host not allowed");
-    const res = await get(current, { maxBytes: COVER_MAX_BYTES, timeoutMs: 15_000, accept: "image/*" });
+    const res = await moduleGet("reading", current, { maxBytes: COVER_MAX_BYTES, timeoutMs: 15_000, accept: "image/*" }, get);
     if (res.status >= 300 && res.status < 400 && res.location) {
       current = new URL(res.location, current).toString();
       continue;
@@ -151,29 +162,37 @@ export async function downloadCover(raw: string, get: SafeGetter = safeGet): Pro
 }
 
 /**
- * Download a cover image and attach it to a book row. Fire-and-forget safe.
- * The image is written to a new temp file in the covers folder ("wx": created
- * here, never an existing file or symlink) and renamed over the target, so
- * whatever sits at the target, a symlink included, is replaced rather than
- * written through. A local process with write access to the data folder is
- * out of scope (see readContained in paths.ts).
+ * Download a cover image and attach it to a book row; throws when it was not
+ * saved (ModuleOffError while Reading is off). The image is written to a new
+ * temp file in the covers folder ("wx": created here, never an existing file
+ * or symlink) and renamed over the target, so whatever sits at the target, a
+ * symlink included, is replaced rather than written through. A local process
+ * with write access to the data folder is out of scope (see readContained in
+ * paths.ts).
  */
-export async function cacheCover(bookId: number, url: string): Promise<void> {
+async function storeCover(bookId: number, url: string, get: SafeGetter): Promise<void> {
+  const buf = await downloadCover(url, get);
+  const dir = coversDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `book-${bookId}.jpg`;
+  const tmp = path.join(dir, `.${file}.${randomBytes(8).toString("hex")}.tmp`);
   try {
-    const buf = await downloadCover(url);
-    const dir = coversDir();
-    fs.mkdirSync(dir, { recursive: true });
-    const file = `book-${bookId}.jpg`;
-    const tmp = path.join(dir, `.${file}.${randomBytes(8).toString("hex")}.tmp`);
-    try {
-      fs.writeFileSync(tmp, buf, { flag: "wx" });
-      fs.renameSync(tmp, path.join(dir, file));
-    } catch (err) {
-      fs.rmSync(tmp, { force: true });
-      throw err;
-    }
-    getDb().prepare("UPDATE books SET cover_path=? WHERE id=?").run(`/api/covers/${file}`, bookId);
+    fs.writeFileSync(tmp, buf, { flag: "wx" });
+    fs.renameSync(tmp, path.join(dir, file));
   } catch (err) {
-    console.error(`[books] cover cache failed for book ${bookId}:`, String(err));
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  getDb().prepare("UPDATE books SET cover_path=? WHERE id=?").run(`/api/covers/${file}`, bookId);
+}
+
+/** storeCover, fire-and-forget safe: never rejects; true only when the cover was saved. */
+export async function cacheCover(bookId: number, url: string, get: SafeGetter = safeGet): Promise<boolean> {
+  try {
+    await storeCover(bookId, url, get);
+    return true;
+  } catch (err) {
+    if (!(err instanceof ModuleOffError)) console.error(`[books] cover cache failed for book ${bookId}:`, String(err));
+    return false;
   }
 }

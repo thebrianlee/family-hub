@@ -3,12 +3,17 @@
 // TODAY — the family dashboard, first thing the wall shows. One calm page that
 // answers a kid's three questions (what do I do, where is everyone, what's for
 // dinner) and gives parents a Hearth-style Family Rhythm pulse. Everything taps
-// through to its own tab; nothing is editable here.
+// through to its own tab; nothing is editable here. A module that is switched
+// off (Settings → Modules) leaves its fields out of /api/today, and its slot
+// isn't shown. An answer read at an older module revision than the one shown
+// is dropped whole, and every module's slot also needs isOn(), so a late
+// answer can't bring back a module that has been switched off.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATUS_EMOJI, PARENT_STATUSES, ParentId, ParentStatus } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
+import { todayAnswerAction, useModules, type TabInfo } from "@/components/ModulesProvider";
 import Avatar from "@/components/Avatar";
 import Modal from "@/components/Modal";
 import PinModal from "@/components/PinModal";
@@ -16,22 +21,27 @@ import { MEAL_TYPES } from "@/lib/meals";
 
 interface Ev { id: string; member: string; title: string; date: string; start?: string; end?: string; location?: string; }
 interface Merged { key: string; title: string; start?: string; members: string[]; }
-interface KidSnap { kid: string; done: number; total: number; mood: string | null; earnedToday: number; }
+// done/total come with Routines, earnedToday with Points & jar.
+interface KidSnap { kid: string; done?: number; total?: number; mood: string | null; earnedToday?: number; }
 interface Rhythm { score: number; label: string; dims: { key: string; label: string; emoji: string; pct: number }[]; }
 interface Rule { id: number; text: string; sort: number; emoji: string; }
 interface KidQuestion { id: number; kid: string; question: string; answer: string; created_at: string; }
 interface MealCell { name: string; emoji: string; }
+// Optional fields belong to a module and are missing while it is switched off.
 interface Today {
-  events: Ev[];
+  events?: Ev[];
   weather: { temp: number; hi: number; lo: number; emoji: string; label: string } | null;
   statuses: Record<string, ParentStatus>;
-  balances: Record<string, number>;
-  spark: { kind: string; text: string; attribution?: string; label: string };
-  rhythm: Rhythm;
+  balances?: Record<string, number>;
+  spark?: { kind: string; text: string; attribution?: string; label: string };
+  rhythm?: Rhythm;
   rules: Rule[];
   kids: KidSnap[];
-  meals: { slots: Record<string, MealCell | null> } | null;
+  meals?: { slots: Record<string, MealCell | null> } | null;
   greeting?: string;
+  tabs?: TabInfo[];
+  modules?: string[];
+  modulesRev?: number;
 }
 
 const MOOD_EMOJI: Record<string, string> = { great: "😄", good: "🙂", ok: "😐", sad: "😢", mad: "😠" };
@@ -139,18 +149,57 @@ function RhythmGauge({ score, label }: { score: number; label: string }) {
 export default function TodayPage() {
   const router = useRouter();
   const { kids, parents, memberOf } = useMembers();
+  const { isOn, rev, syncModules } = useModules();
   const [t, setT] = useState<Today | null>(null);
   // Parent status editing: PIN, then picker (carried over from the old root view).
   const [pinFor, setPinFor] = useState<ParentId | null>(null);
   const [statusFor, setStatusFor] = useState<ParentId | null>(null);
   const [pin, setPin] = useState("");
+  // The newest module revision this page knows: the provider's, or that of an
+  // answer it has just taken (the provider catches up on the next render).
+  const revShown = useRef(rev);
   useEffect(() => {
-    const f = () => fetch("/api/today").then((r) => r.json()).then(setT).catch(() => {});
+    revShown.current = Math.max(revShown.current, rev);
+  }, [rev]);
+  // An answer that lands after this page was left is not used at all: it
+  // would hand its module state to the screen now shown.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const show = useCallback(
+    (d: Today, revAtStart: number) => {
+      if (!mounted.current) return;
+      const action = todayAnswerAction(revAtStart, revShown.current, d.modulesRev);
+      // The database was replaced (restore): start over from the server.
+      if (action === "reload") return window.location.reload();
+      // Read before a newer module state: keep what is shown, take nothing.
+      if (action === "drop" || typeof d.modulesRev !== "number") return;
+      revShown.current = d.modulesRev;
+      setT(d);
+      if (Array.isArray(d.tabs) && Array.isArray(d.modules)) {
+        // The provider's rule: a module switched off reloads the page.
+        syncModules({ rev: d.modulesRev, modules: d.modules, tabs: d.tabs }, revAtStart);
+      }
+    },
+    [syncModules]
+  );
+  useEffect(() => {
+    const f = () => {
+      const revAtStart = revShown.current;
+      return fetch("/api/today")
+        .then((r) => r.json())
+        .then((d: Today) => show(d, revAtStart))
+        .catch(() => {});
+    };
     f();
     const iv = setInterval(f, 5 * 60_000);
     window.addEventListener("sproutwall:datachanged", f);
     return () => { clearInterval(iv); window.removeEventListener("sproutwall:datachanged", f); };
-  }, []);
+  }, [show]);
   const setStatus = async (status: ParentStatus) => {
     if (!statusFor) return;
     await fetch("/api/status", {
@@ -160,18 +209,38 @@ export default function TodayPage() {
     });
     setStatusFor(null);
     setPin("");
-    fetch("/api/today").then((r) => r.json()).then(setT).catch(() => {});
+    const revAtStart = revShown.current;
+    fetch("/api/today")
+      .then((r) => r.json())
+      .then((d: Today) => show(d, revAtStart))
+      .catch(() => {});
   };
 
   const [rulesOpen, setRulesOpen] = useState(false);
   // Recent questions feed the Curiosity card; asking lives on the /ask tab.
+  const askOn = isOn("ask");
   const [questions, setQuestions] = useState<KidQuestion[]>([]);
   useEffect(() => {
+    if (!askOn) {
+      setQuestions([]);
+      return;
+    }
     fetch("/api/ask").then((r) => r.json()).then((d) => setQuestions(d.questions ?? [])).catch(() => {});
-  }, []);
+  }, [askOn]);
+
+  // A module's slots, cards and links show only while it is on and the answer
+  // carries its field, so neither an older answer nor an older module state
+  // alone can show a module that is off.
+  const routinesOn = isOn("routines");
+  const showPlan = isOn("calendar") && t?.events !== undefined;
+  const showMeals = isOn("meals") && t?.meals !== undefined;
+  const showRings = routinesOn && t?.rhythm !== undefined;
+  const rhythm = routinesOn ? t?.rhythm : undefined;
+  const balances = isOn("rewards") ? t?.balances : undefined;
+  const spark = askOn ? t?.spark : undefined;
 
   const today = new Date();
-  const merged = t ? mergeToday(t.events) : [];
+  const merged = t?.events ? mergeToday(t.events) : [];
   const nowMin = today.getHours() * 60 + today.getMinutes();
   const nextIdx = merged.findIndex((m) => mins(m.start) >= nowMin);
 
@@ -210,11 +279,11 @@ export default function TodayPage() {
         )}
 
         {/* Family Rhythm — the weekly pulse (Hearth's four dimensions), up top */}
-        {t?.rhythm && (
+        {rhythm && (
           <div className="card px-8 py-6 flex items-center gap-8 shrink-0">
-            <RhythmGauge score={t.rhythm.score} label={t.rhythm.label} />
+            <RhythmGauge score={rhythm.score} label={rhythm.label} />
             <div className="flex-1 grid grid-cols-2 gap-x-10 gap-y-4">
-              {t.rhythm.dims.map((d) => (
+              {rhythm.dims.map((d) => (
                 <div key={d.key}>
                   <div className="flex items-center justify-between text-xl font-bold text-ink-soft mb-1.5">
                     <span>{d.emoji} {d.label}</span>
@@ -229,27 +298,41 @@ export default function TodayPage() {
           </div>
         )}
 
-        {/* Kids — big faces with progress rings. Tap → Routines. */}
+        {/* Kids — big faces with progress rings (Routines). Tap → Routines. */}
         <div className="grid gap-5 shrink-0" style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.min(kids.length, 4))}, minmax(0, 1fr))` }}>
           {kids.map((k) => {
             const snap = t?.kids.find((s) => s.kid === k.id);
-            const pct = snap && snap.total > 0 ? snap.done / snap.total : 0;
+            const done = snap?.done ?? 0;
+            const total = snap?.total ?? 0;
+            const pct = total > 0 ? done / total : 0;
+            const line = [
+              showRings ? (snap?.total !== undefined ? `${done}/${total}` : "…") : null,
+              balances ? `⭐${balances[k.id] ?? 0}` : null,
+            ].filter(Boolean);
             return (
-              <button key={k.id} onClick={() => router.push("/my-day")} className="card p-6 flex flex-col items-center gap-2.5 active:bg-cream-sunken">
+              <button
+                key={k.id}
+                onClick={showRings ? () => router.push("/my-day") : undefined}
+                disabled={!showRings}
+                className="card p-6 flex flex-col items-center gap-2.5 active:bg-cream-sunken"
+              >
                 <div className="relative">
-                  <ProgressRing member={k.id} pct={pct} color={k.theme.fill} size={156} />
+                  {showRings ? (
+                    <ProgressRing member={k.id} pct={pct} color={k.theme.fill} size={156} />
+                  ) : (
+                    <Avatar member={k.id} size={156} />
+                  )}
                   {snap?.mood && <span className="absolute -bottom-1 -right-1 text-5xl">{MOOD_EMOJI[snap.mood]}</span>}
                 </div>
                 <div className={`text-3xl font-extrabold ${k.theme.textDeep}`}>{k.name}</div>
-                <div className="text-xl font-bold text-ink-soft tabular-nums">
-                  {snap ? `${snap.done}/${snap.total}` : "…"} · ⭐{t?.balances[k.id] ?? 0}
-                </div>
+                {line.length > 0 && <div className="text-xl font-bold text-ink-soft tabular-nums">{line.join(" · ")}</div>}
               </button>
             );
           })}
         </div>
 
         {/* Today's plan — tap → Calendar */}
+        {showPlan && (
         <div className="shrink-0">
           <div className="eyebrow mb-2">Today&apos;s plan</div>
           {merged.length === 0 ? (
@@ -276,8 +359,10 @@ export default function TodayPage() {
             </div>
           )}
         </div>
+        )}
 
         {/* Meals today — tap → Meals */}
+        {showMeals && (
         <div className="shrink-0">
           <div className="eyebrow mb-2">Today&apos;s meals</div>
           <div className="grid grid-cols-4 gap-4">
@@ -293,9 +378,10 @@ export default function TodayPage() {
             })}
           </div>
         </div>
+        )}
 
         {/* Curiosity — what the kids have been asking. Tap → the Ask tab. */}
-        {questions.length > 0 && (
+        {askOn && questions.length > 0 && (
           <button onClick={() => router.push("/ask")} className="card px-7 py-5 text-left active:bg-cream-sunken shrink-0">
             <div className="flex items-center justify-between mb-3">
               <div className="eyebrow">💡 Curiosity — what we&apos;ve asked</div>
@@ -317,13 +403,13 @@ export default function TodayPage() {
 
         {/* Spark + where the parents are */}
         <div className="flex gap-4 shrink-0 pb-1">
-          {t?.spark && (
+          {spark && (
             <div className="card flex-1 px-8 py-6">
-              <div className="eyebrow mb-2">✨ {t.spark.label}</div>
+              <div className="eyebrow mb-2">✨ {spark.label}</div>
               <div className="text-3xl font-extrabold leading-snug">
-                {t.spark.kind === "quote" ? `“${t.spark.text}”` : t.spark.text}
+                {spark.kind === "quote" ? `“${spark.text}”` : spark.text}
               </div>
-              {t.spark.attribution && <div className="mt-2 text-xl font-bold text-ink-soft">— {t.spark.attribution}</div>}
+              {spark.attribution && <div className="mt-2 text-xl font-bold text-ink-soft">— {spark.attribution}</div>}
             </div>
           )}
           <div className="card px-6 py-5 flex flex-col justify-center gap-3 shrink-0">

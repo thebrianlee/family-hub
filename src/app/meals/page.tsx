@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Modal from "@/components/Modal";
+import { useModules } from "@/components/ModulesProvider";
 import SoftKeyboard from "@/components/SoftKeyboard";
 import FilterMenu, { FilterRow } from "@/components/FilterMenu";
 import { MEAL_TYPES } from "@/lib/meals";
@@ -30,6 +31,8 @@ function initialView(): MView {
 }
 
 export default function MealsPage() {
+  // "Add to List" writes into Lists, so it goes when Lists is switched off.
+  const listsOn = useModules().isOn("lists");
   const [view, setView] = useState<MView>(initialView);
   const [anchor, setAnchor] = useState(todayIso());
   const [days, setDays] = useState<MealDay[]>([]);
@@ -193,7 +196,7 @@ export default function MealsPage() {
             <SoftKeyboard value={field === "name" ? name : ingText} onChange={field === "name" ? setName : setIngText} onDone={field === "name" ? () => setField("ing") : save} doneLabel={field === "name" ? "Next →" : "Save meal"} />
             <div className="flex gap-3 justify-center flex-wrap">
               <button onClick={save} disabled={!name.trim()} className="btn-primary px-8 py-3 text-xl disabled:opacity-40">Save</button>
-              <button onClick={addToList} disabled={!ingText.trim()} className="btn-soft px-8 py-3 text-xl disabled:opacity-40" style={{ color: editType?.color }}>🛒 Add to List</button>
+              {listsOn && <button onClick={addToList} disabled={!ingText.trim()} className="btn-soft px-8 py-3 text-xl disabled:opacity-40" style={{ color: editType?.color }}>🛒 Add to List</button>}
               <button onClick={clear} className="btn-soft px-6 py-3 text-xl">Clear</button>
             </div>
           </div>

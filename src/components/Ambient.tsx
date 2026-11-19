@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useModules } from "./ModulesProvider";
 
 interface Quote {
   kind: string;
@@ -41,11 +42,18 @@ function inSleepWindow(now: Date, start: string, end: string): boolean {
   return s <= e ? n >= s && n < e : n >= s || n < e; // window may cross midnight
 }
 
+/** The quotes to show. The family rules are core; the other quotes come with
+ *  Ask (/api/ambient), so while Ask is off only the rules are shown, even from
+ *  a config read before it was switched off. */
+export function deckQuotes(quotes: Quote[], askOn: boolean): Quote[] {
+  return askOn ? quotes : quotes.filter((q) => q.kind === "rule");
+}
+
 /** Deterministic slide deck: strictly alternate photo ↔ quote. Photos repeat
  *  cyclically, so even a single family photo stays on screen half the time. */
-function buildDeck(cfg: AmbientConfig): Slide[] {
+function buildDeck(cfg: AmbientConfig, askOn: boolean): Slide[] {
   const images = [...cfg.photos, ...cfg.art].map((src) => ({ type: "image" as const, src }));
-  const quotes = cfg.quotes.map((quote) => ({ type: "quote" as const, quote }));
+  const quotes = deckQuotes(cfg.quotes, askOn).map((quote) => ({ type: "quote" as const, quote }));
   if (!images.length) return quotes;
   if (!quotes.length) return images;
   const pairs = Math.max(images.length, Math.min(quotes.length, 6));
@@ -77,6 +85,7 @@ function QuoteCard({ quote }: { quote: Quote }) {
 
 export default function Ambient({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const askOn = useModules().isOn("ask");
   const [cfg, setCfg] = useState<AmbientConfig | null>(null);
   const [saver, setSaver] = useState(false);
   const [slideIdx, setSlideIdx] = useState(0);
@@ -153,7 +162,7 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
     return () => clearInterval(t);
   }, [saver]);
 
-  const deck = cfg ? buildDeck(cfg) : [];
+  const deck = cfg ? buildDeck(cfg, askOn) : [];
   const current = deck.length ? deck[slideIdx % deck.length] : null;
   const next = deck.length ? deck[(slideIdx + 1) % deck.length] : null;
 

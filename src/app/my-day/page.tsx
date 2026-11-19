@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KidId, Kid } from "@/lib/family";
 import { useMembers } from "@/components/MembersProvider";
+import { useModules } from "@/components/ModulesProvider";
 import Avatar from "@/components/Avatar";
 import Confetti from "@/components/Confetti";
 import Modal from "@/components/Modal";
@@ -17,7 +18,7 @@ import Keypad from "@/components/Keypad";
 import SoftKeyboard from "@/components/SoftKeyboard";
 import ReadingSheet from "@/components/ReadingSheet";
 import FilterMenu, { FilterRow } from "@/components/FilterMenu";
-import KidRewards, { Progress, Reward } from "@/components/KidRewards";
+import KidRewards, { Progress, Reward, Wallet } from "@/components/KidRewards";
 
 type Bucket = "morning" | "afternoon" | "evening";
 const BUCKETS: Bucket[] = ["morning", "afternoon", "evening"];
@@ -109,6 +110,12 @@ function currentBucket(): Bucket {
 
 export default function MyDayPage() {
   const { kids, memberOf } = useMembers();
+  // Points & jar, Progress and Reading are modules of their own: when one is
+  // switched off, its fetches, links and numbers are left out here.
+  const { isOn } = useModules();
+  const rewardsOn = isOn("rewards");
+  const progressOn = isOn("progress");
+  const readingOn = isOn("reading");
   const [days, setDays] = useState<Day[] | null>(null);
   const [celebrate, setCelebrate] = useState<string | null>(null);
   const [hideCompleted, setHideCompleted] = useState(false);
@@ -129,11 +136,20 @@ export default function MyDayPage() {
   // kid header, tap the header for the full drill-down.
   const [all, setAll] = useState<Progress[] | null>(null);
   const [rewards, setRewards] = useState<Reward[]>([]);
+  const [wallets, setWallets] = useState<Wallet[]>([]);
   const [drillKid, setDrillKid] = useState<KidId | null>(null);
   const loadRewards = useCallback(() => {
-    fetch("/api/progress").then((r) => r.json()).then((d) => setAll(d.all ?? [])).catch(() => {});
-    fetch("/api/balance").then((r) => r.json()).then((d) => setRewards(d.rewards ?? [])).catch(() => {});
-  }, []);
+    if (progressOn) fetch("/api/progress").then((r) => r.json()).then((d) => setAll(d.all ?? [])).catch(() => {});
+    if (rewardsOn) {
+      fetch("/api/balance")
+        .then((r) => r.json())
+        .then((d) => {
+          setRewards(d.rewards ?? []);
+          setWallets(d.kids ?? []);
+        })
+        .catch(() => {});
+    }
+  }, [progressOn, rewardsOn]);
   const [trackFor, setTrackFor] = useState<{ kid: KidId; item: Item } | null>(null);
   const [trackValue, setTrackValue] = useState("");
   const [readingFor, setReadingFor] = useState<{ kid: KidId; item: Item } | null>(null);
@@ -164,13 +180,13 @@ export default function MyDayPage() {
   // Deep-link: /my-day?read=<kid id> opens that kid's reading drill-down.
   const readParamDone = useRef(false);
   useEffect(() => {
-    if (readParamDone.current || !days) return;
+    if (readParamDone.current || !days || !readingOn) return;
     const p = new URLSearchParams(window.location.search).get("read");
     if (!p) return;
     const day = days.find((d) => d.kid === p);
     const item = day && BUCKETS.flatMap((b) => day.buckets[b]).find((i) => i.detail_kind === "reading");
     if (item) { setReadingFor({ kid: p as KidId, item }); readParamDone.current = true; }
-  }, [days]);
+  }, [days, readingOn]);
 
   const banner = (msg: string, ms = 2600) => {
     setCelebrate(msg);
@@ -208,10 +224,12 @@ export default function MyDayPage() {
       const body = await res.json();
       if (res.ok && !body.alreadyDone) {
         const name = memberOf(kid).name;
+        // Points are still earned with Points & jar off, just not shown.
+        const points = rewardsOn ? ` +${body.earned}${body.allDoneBonus ? ` +${body.allDoneBonus} bonus` : ""}` : "";
         if (body.bucketDone) {
-          banner(`🎉 ${name} finished ${BUCKET_META[body.bucketDone as Bucket].label}! +${body.earned}${body.allDoneBonus ? ` +${body.allDoneBonus} bonus` : ""}`, 3400);
+          banner(`🎉 ${name} finished ${BUCKET_META[body.bucketDone as Bucket].label}!${points}`, 3400);
         } else {
-          banner(`+${body.earned} for ${name}`, 1800);
+          banner(rewardsOn ? `+${body.earned} for ${name}` : `✓ ${item.label}`, 1800);
         }
       }
     } finally {
@@ -222,7 +240,8 @@ export default function MyDayPage() {
 
   const tap = (kid: KidId, item: Item) => {
     // Reading drills into the book flow (even if already done, to finish a book).
-    if (item.detail_kind === "reading") {
+    // With the Reading log off it is a plain tracked routine.
+    if (item.detail_kind === "reading" && readingOn) {
       setReadingFor({ kid, item });
       return;
     }
@@ -272,7 +291,7 @@ export default function MyDayPage() {
     return (
       <button
         onClick={() => tap(k.id, it)}
-        disabled={it.done && it.detail_kind !== "reading"}
+        disabled={it.done && !(readingOn && it.detail_kind === "reading")}
         className={`touch-target shrink-0 ${pre ? "min-h-[100px]" : "min-h-[84px]"} rounded-card flex items-center gap-3.5 px-4 text-left transition-all active:scale-[0.98] ${
           it.done ? `${k.theme.bg} text-white` : "bg-cream-raised shadow-tile"
         }`}
@@ -286,13 +305,13 @@ export default function MyDayPage() {
             <span className={`block text-lg font-bold mt-0.5 ${it.done ? "text-white/80" : "text-ink-faint"}`}>{it.freq ?? "Job"}</span>
           ) : it.done && it.tracked && it.amount != null ? (
             <span className="block text-lg font-bold text-white/80 mt-0.5">{it.amount} {it.unit}</span>
-          ) : it.detail_kind === "reading" && !it.done ? (
+          ) : it.detail_kind === "reading" && readingOn && !it.done ? (
             <span className="block text-lg font-bold text-ink-faint mt-0.5">tap for your book</span>
           ) : it.tracked && !it.done ? (
             <span className="block text-lg font-bold text-ink-faint mt-0.5">tap to log {it.unit}</span>
           ) : null}
         </span>
-        {it.type === "job" && !it.done && (
+        {it.type === "job" && !it.done && rewardsOn && (
           <span className={`shrink-0 rounded-full px-3 py-1 text-lg font-extrabold ${k.theme.bgSoft} ${k.theme.text}`}>+{it.points}</span>
         )}
         {it.type !== "job" && !it.done && !pre && it.streak > 1 && (
@@ -368,14 +387,18 @@ export default function MyDayPage() {
             const day = dayFor(k.id);
             const allItems = day ? [...BUCKETS.flatMap((b) => day.buckets[b]), ...day.jobs] : [];
             const doneCount = allItems.filter((i) => i.done).length;
-            const prog = all?.find((p) => p.kid === k.id) ?? null;
-            const goalPct = prog?.goal ? Math.min(100, Math.round((prog.balance / prog.goal.cost) * 100)) : 0;
-            const goalReady = !!prog?.goal && (prog?.balance ?? 0) >= prog.goal.cost;
+            const prog = progressOn ? all?.find((p) => p.kid === k.id) ?? null : null;
+            const wallet = rewardsOn ? wallets.find((w) => w.kid === k.id) ?? null : null;
+            const goalPct = wallet?.goal ? Math.min(100, Math.round((wallet.balance / wallet.goal.cost) * 100)) : 0;
+            const goalReady = !!wallet?.goal && wallet.balance >= wallet.goal.cost;
+            // Tap → the progress drill-down, or straight to the rewards menu
+            // without Progress (KidRewards), or nothing with both off.
+            const drillable = progressOn || rewardsOn;
             return (
               <div
                 key={k.id}
-                onClick={() => setDrillKid(k.id)}
-                className={`card ${k.theme.bgSoft} px-5 pt-4 pb-3 flex flex-col gap-3 cursor-pointer active:opacity-95`}
+                onClick={drillable ? () => setDrillKid(k.id) : undefined}
+                className={`card ${k.theme.bgSoft} px-5 pt-4 pb-3 flex flex-col gap-3 ${drillable ? "cursor-pointer active:opacity-95" : ""}`}
               >
                 <div className="flex items-center gap-3">
                   <Avatar member={k.id} size={64} />
@@ -399,23 +422,27 @@ export default function MyDayPage() {
                   </button>
                 </div>
                 {/* Reward strip — the payoff, visible where the work happens */}
+                {drillable && (
                 <div className="flex items-center gap-2.5">
-                  <span className={`shrink-0 rounded-full bg-cream-raised px-3 py-1 text-xl font-extrabold ${k.theme.text}`}>⭐ {prog?.balance ?? 0}</span>
+                  {rewardsOn && (
+                    <span className={`shrink-0 rounded-full bg-cream-raised px-3 py-1 text-xl font-extrabold ${k.theme.text}`}>⭐ {wallet?.balance ?? 0}</span>
+                  )}
                   {(prog?.routineStreak ?? 0) > 0 && (
                     <span className="shrink-0 rounded-full bg-cream-raised px-3 py-1 text-xl font-extrabold text-ink-soft">🔥 {prog!.routineStreak}</span>
                   )}
-                  {prog?.goal ? (
+                  {!rewardsOn ? null : wallet?.goal ? (
                     <span className="flex-1 min-w-0 flex items-center gap-2">
-                      <span className="shrink-0 text-lg font-extrabold truncate max-w-[7rem]">{prog.goal.emoji} {prog.goal.label}</span>
+                      <span className="shrink-0 text-lg font-extrabold truncate max-w-[7rem]">{wallet.goal.emoji} {wallet.goal.label}</span>
                       <span className="flex-1 h-3 rounded-full bg-cream-raised overflow-hidden">
                         <span className="block h-full rounded-full transition-all duration-700" style={{ width: `${goalPct}%`, background: goalReady ? "#7FA576" : k.theme.fill }} />
                       </span>
-                      <span className="shrink-0 text-sm font-bold text-ink-faint tabular-nums">{goalReady ? "ready!" : `${prog.balance}/${prog.goal.cost}`}</span>
+                      <span className="shrink-0 text-sm font-bold text-ink-faint tabular-nums">{goalReady ? "ready!" : `${wallet.balance}/${wallet.goal.cost}`}</span>
                     </span>
                   ) : (
                     <span className="flex-1 text-right text-lg font-bold text-ink-faint truncate">🎁 pick a reward →</span>
                   )}
                 </div>
+                )}
               </div>
             );
           })}
@@ -498,7 +525,7 @@ export default function MyDayPage() {
       )}
 
       {/* Reward drill-down + menu (folded in from the old Rewards tab) */}
-      <KidRewards drillKid={drillKid} onClose={() => setDrillKid(null)} all={all} rewards={rewards} reload={loadRewards} />
+      <KidRewards drillKid={drillKid} onClose={() => setDrillKid(null)} all={all} rewards={rewards} wallets={wallets} reload={loadRewards} />
 
       {/* Mood picker */}
       <Modal open={moodFor !== null} onClose={() => setMoodFor(null)} title={moodFor ? `How is ${memberOf(moodFor).name} feeling?` : ""}>
@@ -537,7 +564,7 @@ export default function MyDayPage() {
 
       {/* Reading drill-down: current book, log minutes, start/finish */}
       <ReadingSheet
-        open={readingFor !== null}
+        open={readingOn && readingFor !== null}
         kid={readingFor?.kid ?? null}
         templateId={readingFor?.item.id ?? null}
         unit={readingFor?.item.unit ?? "min"}
@@ -670,6 +697,9 @@ function EditRoutine(props: {
   ntracked: boolean; setNtracked: (b: boolean) => void;
 }) {
   const { day, emojiChoices, taskBox, onAddPreset, onRemove, onAdd } = props;
+  // With Points & jar off, point values are hidden here. A new item still
+  // saves the stepper's current value (props.nv), and stored values stay.
+  const rewardsOn = useModules().isOn("rewards");
   const all = useMemo(
     () => (day ? BUCKETS.flatMap((b) => day.buckets[b].map((i) => ({ ...i, bucket: b }))) : []),
     [day]
@@ -718,7 +748,7 @@ function EditRoutine(props: {
                   <span className="text-3xl">{item.emoji}</span>
                   <span className="flex-1 text-2xl font-bold">{item.label}</span>
                   {item.tracked && <span className="text-lg font-bold text-ink-faint uppercase">logs {item.unit}</span>}
-                  <span className="text-xl font-bold text-ink-soft">+{item.points}</span>
+                  {rewardsOn && <span className="text-xl font-bold text-ink-soft">+{item.points}</span>}
                   <button onClick={() => onRemove(item.id)} className="btn-soft px-4 py-2 text-xl">
                     Remove
                   </button>
@@ -739,7 +769,7 @@ function EditRoutine(props: {
                 <span className="text-3xl">{item.emoji}</span>
                 <span className="flex-1 text-2xl font-bold">{item.label}</span>
                 {item.freq && <span className="text-lg font-bold text-ink-faint">{item.freq}</span>}
-                <span className="text-xl font-bold text-ink-soft">+{item.points}</span>
+                {rewardsOn && <span className="text-xl font-bold text-ink-soft">+{item.points}</span>}
                 <button onClick={() => onRemove(item.id)} className="btn-soft px-4 py-2 text-xl">
                   Remove
                 </button>
@@ -781,11 +811,13 @@ function EditRoutine(props: {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-1.5">
-            <button onClick={() => props.setNv(String(Math.max(0, Number(props.nv || "2") - 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">−</button>
-            <span className="w-12 text-center text-2xl font-extrabold tabular-nums">+{props.nv || "2"}</span>
-            <button onClick={() => props.setNv(String(Math.min(20, Number(props.nv || "2") + 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">+</button>
-          </div>
+          {rewardsOn && (
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => props.setNv(String(Math.max(0, Number(props.nv || "2") - 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">−</button>
+              <span className="w-12 text-center text-2xl font-extrabold tabular-nums">+{props.nv || "2"}</span>
+              <button onClick={() => props.setNv(String(Math.min(20, Number(props.nv || "2") + 1)))} className="touch-target w-12 h-12 rounded-tile bg-cream-sunken text-2xl font-bold">+</button>
+            </div>
+          )}
           <button
             onClick={() => props.setNtracked(!props.ntracked)}
             className={`touch-target rounded-tile px-4 py-3 text-xl font-bold ${props.ntracked ? "bg-ink text-cream" : "bg-cream-raised text-ink-soft shadow-tile"}`}

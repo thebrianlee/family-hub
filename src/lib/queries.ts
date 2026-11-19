@@ -1139,6 +1139,16 @@ export interface KidReading {
   shelf: ShelfBook[];
 }
 
+// The only cover address a screen is given: a cover cached on the hub and
+// served by /api/covers (src/lib/books.ts writes nothing else).
+// Anything else in the column, from an edited or restored database, is
+// dropped, so the browser never loads a cover from another host.
+const LOCAL_COVER = /^\/api\/covers\/book-\d+\.jpg$/;
+
+export function localCoverPath(value: unknown): string | null {
+  return typeof value === "string" && LOCAL_COVER.test(value) ? value : null;
+}
+
 export function getReading(kid: KidId): KidReading {
   const db = getDb();
   const reading = db
@@ -1148,6 +1158,7 @@ export function getReading(kid: KidId): KidReading {
        FROM books WHERE kid=? AND status='reading' ORDER BY id DESC`
     )
     .all(kid) as ReadingBook[];
+  for (const b of reading) b.cover_path = localCoverPath(b.cover_path);
   const finishedThisYear = (
     db
       .prepare(
@@ -1182,7 +1193,7 @@ export function getReading(kid: KidId): KidReading {
     reading,
     finishedThisYear,
     streak: streakFromDates(dates),
-    shelf: shelf.map((b) => ({ ...b, hasNote: !!b.hasNote })),
+    shelf: shelf.map((b) => ({ ...b, cover_path: localCoverPath(b.cover_path), hasNote: !!b.hasNote })),
   };
 }
 
