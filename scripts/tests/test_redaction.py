@@ -10,17 +10,20 @@ pass by stopping early. The canaries are assembled from pieces so secret
 scanners do not flag them.
 """
 
+import contextlib
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
-from sproutwall_lib import attestation, checks, cli, compose, schema
+from sproutwall_lib import attestation, checks, cli, compose
 from sproutwall_lib.system import CommandResult, HttpResponse
 
 from . import fakes
@@ -37,6 +40,44 @@ HUB_IP = "10.66.77.88"  # the seeded container address must not be printed eithe
 
 SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(SCRIPTS, "sproutwall")
+REPO = os.path.dirname(SCRIPTS)
+
+# The closed schema of spec 4.3, written out here on purpose instead of
+# imported from sproutwall_lib.schema, so a change there cannot also change
+# what this test expects.
+EXPECTED_KEYS = ["schema", "phase", "result", "checks"]
+EXPECTED_CHECK_KEYS = ["id", "status", "action"]
+EXPECTED_IDS = [
+    "platform", "docker", "image_identity", "storage", "health", "app_bind",
+    "bridge_bind", "ssh_policy", "setup", "read_guard", "kiosk", "temporary_access",
+]
+EXPECTED_PHASES = ["running", "configured", "final"]
+EXPECTED_TIERS = ["A", "B", "C"]
+EXPECTED_RESULTS = {"pass", "fail", "unknown"}
+EXPECTED_STATUSES = {"pass", "fail", "unknown", "not_applicable"}
+EXPECTED_ACTIONS = {
+    "none", "use_supported_os", "verify_release", "restore_storage", "restrict_ports",
+    "confirm_trusted_lan", "review_ssh", "open_hub", "repair_kiosk", "remove_agent", "retry_local",
+}
+
+
+def assert_closed_schema(test, stdout):
+    lines = stdout.splitlines()
+    test.assertEqual(len(lines), 1, "exactly one JSON object")
+    report = json.loads(lines[0])
+    test.assertEqual(list(report), EXPECTED_KEYS)
+    test.assertIs(type(report["schema"]), int)
+    test.assertEqual(report["schema"], 1)
+    test.assertIn(report["phase"], EXPECTED_PHASES)
+    test.assertIn(report["result"], EXPECTED_RESULTS)
+    test.assertEqual([check.get("id") for check in report["checks"]], EXPECTED_IDS)
+    for check in report["checks"]:
+        test.assertEqual(list(check), EXPECTED_CHECK_KEYS)
+        test.assertIn(check["status"], EXPECTED_STATUSES)
+        test.assertIn(check["action"], EXPECTED_ACTIONS)
+    statuses = {check["status"] for check in report["checks"]}
+    expected = "fail" if "fail" in statuses else "unknown" if "unknown" in statuses else "pass"
+    test.assertEqual(report["result"], expected)
 
 
 def assert_clean(test, out, err, json_mode):
@@ -45,9 +86,30 @@ def assert_clean(test, out, err, json_mode):
         test.assertNotIn(canary, text)
         test.assertNotIn(canary.lower(), text.lower())
     if json_mode:
-        lines = out.splitlines()
-        test.assertEqual(len(lines), 1)
-        schema.validate(json.loads(lines[0]))
+        assert_closed_schema(test, out)
+
+
+def run_in_process(argv, system):
+    """cli.main with its own streams, while also capturing the real process
+    streams, the root logger (DEBUG) and warnings: anything written outside
+    the given streams shows up in the third value."""
+    out, err = io.StringIO(), io.StringIO()
+    stray_out, stray_err, log = io.StringIO(), io.StringIO(), io.StringIO()
+    handler = logging.StreamHandler(log)
+    handler.setLevel(logging.DEBUG)
+    root_logger = logging.getLogger()
+    old_level = root_logger.level
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.DEBUG)
+    try:
+        with warnings.catch_warnings(record=True) as caught, contextlib.redirect_stdout(stray_out), contextlib.redirect_stderr(stray_err):
+            warnings.simplefilter("always")
+            code = cli.main(argv, system=system, root=ROOT, out=out, err=err)
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(old_level)
+    stray = stray_out.getvalue() + stray_err.getvalue() + log.getvalue() + "".join(str(w.message) for w in caught)
+    return code, out.getvalue(), err.getvalue(), stray
 
 
 class SeededSystem(fakes.FakeSystem):
@@ -136,15 +198,15 @@ def reached_hub(test, system, phase):
 
 class InProcessCanaryTests(unittest.TestCase):
     def run_all(self, make_system, expect_codes, reached):
-        for phase in schema.PHASES:
-            for tier in schema.TIERS:
+        for phase in EXPECTED_PHASES:
+            for tier in EXPECTED_TIERS:
                 for json_mode in (True, False):
                     argv = ["doctor", "--phase", phase, "--tier", tier] + (["--json"] if json_mode else [])
                     system = make_system()
-                    out, err = io.StringIO(), io.StringIO()
-                    code = cli.main(argv, system=system, root=ROOT, out=out, err=err)
+                    code, out, err, stray = run_in_process(argv, system)
                     self.assertIn(code, expect_codes, argv)
-                    assert_clean(self, out.getvalue(), err.getvalue(), json_mode)
+                    assert_clean(self, out, err, json_mode)
+                    self.assertEqual(stray, "", "nothing outside the given streams, no log record, no warning")
                     reached(system, phase)
 
     def test_success_path(self):
@@ -177,11 +239,11 @@ class InProcessCanaryTests(unittest.TestCase):
             s.set(compose.config_argv(fakes.COMPOSE), CommandResult(0, fakes.compose_config_json(), SEED))
             s.set(["gh", "--version"], CommandResult(0, "gh version 2.89.0 (2026-03-26)\n", SEED))
             s.set(["gh", "attestation", "verify"], gh_result)
-            out, err = io.StringIO(), io.StringIO()
             with mock.patch.object(attestation, "fetch_bundles", lambda digest, opener=None: bundles):
-                cli.main(["verify-image", "--source-sha", fakes.SOURCE_SHA], system=s, root=ROOT, out=out, err=err)
+                _, out, err, stray = run_in_process(["verify-image", "--source-sha", fakes.SOURCE_SHA], s)
             self.assertIn(("gh", "attestation", "verify"), [argv[:3] for argv, _ in s.calls], gh_result)
-            assert_clean(self, out.getvalue(), err.getvalue(), False)
+            assert_clean(self, out, err, False)
+            self.assertEqual(stray, "")
 
 
 FAKE_TOOL = r'''#!%(python)s
@@ -240,9 +302,10 @@ class EndToEndCanaryTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, *args, script=SCRIPT, env=None):
+    def run_script(self, *args, script=SCRIPT, env=None, cwd=REPO):
         proc = subprocess.run(
             [sys.executable, script] + list(args),
+            cwd=cwd,
             env=env or self.env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -259,7 +322,7 @@ class EndToEndCanaryTests(unittest.TestCase):
             return {line.split()[0] for line in handle if line.strip()}
 
     def test_doctor_json_and_human(self):
-        for phase in schema.PHASES:
+        for phase in EXPECTED_PHASES:
             code, out, err = self.run_script("doctor", "--json", "--phase", phase, "--tier", "B")
             self.assertIn(code, (1, 2))
             assert_clean(self, out, err, True)
@@ -284,7 +347,7 @@ class EndToEndCanaryTests(unittest.TestCase):
         script = os.path.join(repo, "scripts", "sproutwall")
         for rc, expected in (("1", 1), ("0", 0)):
             env = dict(self.env, FAKE_GH_RC=rc)
-            code, out, err = self.run_script("verify-image", "--source-sha", fakes.SOURCE_SHA, "--bundle", bundle, script=script, env=env)
+            code, out, err = self.run_script("verify-image", "--source-sha", fakes.SOURCE_SHA, "--bundle", bundle, script=script, env=env, cwd=repo)
             self.assertEqual(code, expected, err)
             assert_clean(self, out, err, False)
         with open(self.log, encoding="utf-8") as handle:

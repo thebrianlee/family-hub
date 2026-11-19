@@ -308,12 +308,15 @@ class CliOutputTests(unittest.TestCase):
         self.assertIn(SOURCE_SHA, out)
         self.assertNotIn(TOKEN, out + err)
 
-    def test_start_command_uses_exactly_the_verified_file(self):
-        code, out, _ = self.run_cli(["verify-image", "--source-sha", SOURCE_SHA], gh_system())
-        self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines()[-1], "Next: docker compose -f docker-compose.preview.yml up -d --wait")
-        self.assertEqual(os.path.basename(COMPOSE), "docker-compose.preview.yml")
-        self.assertEqual(compose.compose_path(ROOT), COMPOSE)
+    def test_refused_outside_the_checkout_top_folder(self):
+        for where in ("/elsewhere", ROOT + "/scripts", FileNotFoundError(2, "cwd was deleted")):
+            s = gh_system()
+            s.current_dir = where
+            code, out, err = self.run_cli(["verify-image", "--source-sha", SOURCE_SHA], s)
+            self.assertEqual(code, vi.EXIT_REFUSED, where)
+            self.assertEqual(out, "")
+            self.assertEqual(err, "Run this from the top folder of the Sproutwall checkout.\n")
+            self.assertEqual(s.calls, [], "nothing runs")
 
     def test_cleanup_failure_message_is_fixed(self):
         import tempfile as real_tempfile
@@ -350,6 +353,83 @@ class CliOutputTests(unittest.TestCase):
         code, out, err = self.run_cli(["verify-image", "--pin", "482915"], gh_system())
         self.assertEqual(code, 2)
         self.assertNotIn("482915", out + err)
+
+
+
+FAKE_TOOLS = r'''#!%(python)s
+import os, sys
+name = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+if name == "docker" and "config" in args:
+    sys.stdout.write(%(config)r)
+    sys.exit(0)
+if name == "gh" and args[:1] == ["--version"]:
+    sys.stdout.write("gh version 2.89.0 (2026-03-26)\n")
+    sys.exit(0)
+if name == "gh" and args[:1] == ["attestation"]:
+    sys.exit(0)
+sys.exit(1)
+'''
+
+
+class StartCommandFileTests(unittest.TestCase):
+    """The real script from a temporary checkout: the printed start command,
+    resolved against the folder it ran in, is the very file it verified."""
+
+    def setUp(self):
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        self.subprocess, self.sys = subprocess, sys
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = os.path.join(self.tmp.name, "checkout")
+        scripts = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.makedirs(os.path.join(self.repo, "scripts"))
+        shutil.copy(os.path.join(scripts, "sproutwall"), os.path.join(self.repo, "scripts", "sproutwall"))
+        shutil.copytree(os.path.join(scripts, "sproutwall_lib"), os.path.join(self.repo, "scripts", "sproutwall_lib"))
+        self.compose_file = os.path.join(self.repo, compose.PREVIEW_COMPOSE)
+        with open(self.compose_file, "w", encoding="utf-8") as handle:
+            handle.write(compose_text())
+        self.bundle = os.path.join(self.tmp.name, "bundle.jsonl")
+        with open(self.bundle, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        bin_dir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(bin_dir)
+        for name in ("docker", "gh"):
+            path = os.path.join(bin_dir, name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(FAKE_TOOLS % {"python": sys.executable, "config": compose_config_json()})
+            os.chmod(path, 0o755)
+        self.env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_from(self, cwd):
+        proc = self.subprocess.run(
+            [self.sys.executable, os.path.join(self.repo, "scripts", "sproutwall"), "verify-image",
+             "--source-sha", SOURCE_SHA, "--bundle", self.bundle],
+            cwd=cwd, env=self.env, stdin=self.subprocess.DEVNULL, stdout=self.subprocess.PIPE,
+            stderr=self.subprocess.PIPE, timeout=60, check=False,
+        )
+        return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
+
+    def test_printed_file_resolves_to_the_verified_file(self):
+        code, out, err = self.run_from(self.repo)
+        self.assertEqual(code, 0, err)
+        command = out.splitlines()[-1]
+        self.assertTrue(command.startswith("Next: docker compose -f "), command)
+        printed = command.split(" -f ", 1)[1].split(" ", 1)[0]
+        self.assertFalse(os.path.isabs(printed))
+        self.assertTrue(os.path.samefile(os.path.join(self.repo, printed), self.compose_file))
+        self.assertNotIn(self.tmp.name, out + err)
+
+    def test_refused_from_another_folder(self):
+        for cwd in (self.tmp.name, os.path.join(self.repo, "scripts")):
+            code, out, err = self.run_from(cwd)
+            self.assertEqual((code, out, err), (2, "", "Run this from the top folder of the Sproutwall checkout.\n"), cwd)
 
 
 if __name__ == "__main__":

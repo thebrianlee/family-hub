@@ -12,6 +12,8 @@ const headers = { "cache-control": "no-store" };
 // household. `setup` says whether first-run setup is finished, for the install
 // helper (scripts/sproutwall doctor). Anyone on the network can already tell
 // that from the setup screen, and /api/setup answers 409 once it is done.
+// It costs the success path one extra read-only settings lookup; the blocked
+// 503 answer below is unchanged and reads nothing more.
 export function GET() {
   try {
     getDb().prepare("SELECT 1").get();

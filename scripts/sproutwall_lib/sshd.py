@@ -8,6 +8,7 @@ doctor never uses sudo). Any include that cannot be read or listed makes the
 config unreadable, which is reported as unknown.
 """
 
+import fnmatch
 import os
 import re
 import shlex
@@ -84,6 +85,23 @@ def service_state(system, sockets, sockets_complete, ports):
 _MAGIC = re.compile(r"[*?[]")
 
 
+def wildcard_matches(system, folder, part):
+    """Sorted paths in folder whose name matches the pattern part, as glob(3)
+    matches by default: a leading "." only when the part starts with ".".
+    The listing raises on any error (EIO, permissions), which makes the
+    config unreadable; Python's glob would answer "no matches" instead.
+    """
+    try:
+        names = system.listdir(folder)
+    except OSError:
+        raise SshConfigUnreadable() from None
+    return [
+        os.path.join(folder, name)
+        for name in sorted(names)
+        if (part.startswith(".") or not name.startswith(".")) and fnmatch.fnmatchcase(name, part)
+    ]
+
+
 def _resolve_include(pattern):
     return pattern if os.path.isabs(pattern) else os.path.join("/etc/ssh", pattern)
 
@@ -96,7 +114,8 @@ def include_files(system, pattern):
     config unreadable: a permission error, a path part that is not a
     folder, an I/O error, a folder that a wildcard has to list but cannot,
     or an included path that is a folder. glob and exists() would hide
-    those as "not there", so each path is probed with a stat that says why.
+    those as "not there", so folders are listed with a listing that raises
+    and each path is probed with a stat that says why.
     """
     parts = [part for part in _resolve_include(pattern).split("/") if part]
     candidates = ["/"]
@@ -106,9 +125,7 @@ def include_files(system, pattern):
         following = []
         for folder in candidates:
             if wildcard:
-                if not system.listable(folder):
-                    raise SshConfigUnreadable()
-                matches = system.glob(os.path.join(folder, part))
+                matches = wildcard_matches(system, folder, part)
             else:
                 matches = [os.path.join(folder, part)]
             for match in matches:

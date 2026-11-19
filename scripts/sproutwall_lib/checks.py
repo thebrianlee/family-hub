@@ -571,25 +571,40 @@ def _launches_agent(text):
 def check_temporary_access(ctx):
     system = ctx.system
     home = system.home()
+    incomplete = False
     extra = [os.path.join(home, ".local", "bin"), os.path.join(home, "bin"), os.path.join(home, ".npm-global", "bin")]
     if any(system.which(name, extra) for name in AGENT_COMMANDS):
         return fail("remove_agent")
-    if any(system.exists(os.path.join(home, rel)) for rel in AGENT_PATHS):
-        return fail("remove_agent")
-    launchers = system.glob(os.path.join(home, ".config", "autostart", "*.desktop")) + system.glob(
-        os.path.join(home, ".config", "systemd", "user", "*.service")
-    )
-    for path in launchers:
+    for rel in AGENT_PATHS:
+        kind = system.probe(os.path.join(home, rel))
+        if kind == "error":
+            incomplete = True  # cannot tell; a definite finding below still fails
+        elif kind != "missing":
+            return fail("remove_agent")
+    for folder, suffix in (
+        (os.path.join(home, ".config", "autostart"), ".desktop"),
+        (os.path.join(home, ".config", "systemd", "user"), ".service"),
+    ):
         try:
-            if _launches_agent(system.read_text(path)):
-                return fail("remove_agent")
+            names = system.listdir(folder)  # raises instead of answering "none"
+        except FileNotFoundError:
+            continue
         except OSError:
-            return INCOMPLETE
+            incomplete = True
+            continue
+        for name in sorted(names):
+            if not name.endswith(suffix):
+                continue
+            try:
+                if _launches_agent(system.read_text(os.path.join(folder, name))):
+                    return fail("remove_agent")
+            except OSError:
+                incomplete = True
     sockets, sockets_complete = ctx.host_sockets()
     ports = ctx.ssh_ports()
     if any(st == net.ESTABLISHED and port in ports for _, port, st in sockets):
         return fail("remove_agent")  # an SSH session into the Pi is still open
-    if not sockets_complete or ctx.ssh_config()[0] == "unreadable":
+    if incomplete or not sockets_complete or ctx.ssh_config()[0] == "unreadable":
         return INCOMPLETE
     return PASS
 

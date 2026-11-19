@@ -128,11 +128,14 @@ class FakeSystem:
         self.commands = {}
         self.files = {}
         self.dirs = set()
-        self.unlistable = set()
-        self.blocked = set()
+        self.unlistable = set()  # listing raises PermissionError
+        self.list_errors = {}  # folder -> exception its listing raises
+        self.blocked = set()  # folders this user cannot enter (mode 000)
+        self.probe_errors = set()  # paths whose stat fails (EACCES, EIO...)
         self.http_map = {}
         self.which_map = {}
         self.home_dir = HOME
+        self.current_dir = ROOT
         self.os_name = "Linux"
         self.arch = "aarch64"
         self.bits = "64bit"
@@ -185,15 +188,12 @@ class FakeSystem:
     def is_file(self, path):
         return path in self.files
 
-    def listable(self, path):
-        return path not in self.unlistable and path not in self.blocked and not self._blocked(path)
-
     def _blocked(self, path):
         """Under a folder this user cannot enter (mode 000)."""
         return any(path.startswith(b.rstrip("/") + "/") for b in self.blocked)
 
     def probe(self, path):
-        if self._blocked(path):
+        if self._blocked(path) or path in self.probe_errors:
             return "error"
         if path in self.files:
             value = self.files[path]
@@ -210,23 +210,24 @@ class FakeSystem:
         return "missing"
 
     def _known_paths(self):
-        paths = set(self.files) | set(self.dirs)
+        paths = set(self.files) | set(self.dirs) | set(self.blocked)
         for path in list(paths):
             parts = path.split("/")
             for size in range(2, len(parts)):
                 paths.add("/".join(parts[:size]))
         return paths
 
-    def glob(self, pattern):
-        """Like glob.glob: one path component per pattern component."""
-        wanted = pattern.split("/")
-        return sorted(
-            path
-            for path in self._known_paths()
-            if len(path.split("/")) == len(wanted)
-            and all(fnmatch.fnmatchcase(part, want) for part, want in zip(path.split("/"), wanted))
-            and not any(path.startswith(u.rstrip("/") + "/") for u in self.unlistable)
-        )
+    def listdir(self, path):
+        """Like os.listdir: raises on any failure, and in no particular order."""
+        if path in self.list_errors:
+            raise self.list_errors[path]
+        if path in self.unlistable or path in self.blocked or self._blocked(path):
+            raise PermissionError(13, "Permission denied")
+        if not self.is_dir(path):
+            raise FileNotFoundError(2, "No such file or directory")
+        prefix = path.rstrip("/") + "/"
+        names = {p[len(prefix):].split("/")[0] for p in self._known_paths() if p.startswith(prefix)}
+        return sorted(names, reverse=True)  # deliberately not sorted the way callers need
 
     def is_dir(self, path):
         prefix = path.rstrip("/") + "/"
@@ -242,6 +243,14 @@ class FakeSystem:
 
     def home(self):
         return self.home_dir
+
+    def cwd(self):
+        if isinstance(self.current_dir, BaseException):
+            raise self.current_dir
+        return self.current_dir
+
+    def same_dir(self, first, second):
+        return first.rstrip("/") == second.rstrip("/")
 
     def sysname(self):
         return self.os_name

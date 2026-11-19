@@ -5,7 +5,6 @@ themselves, so tests can replace it with canned outputs. Command output and
 error text is returned to the caller for parsing and is never printed.
 """
 
-import glob
 import http.client
 import ipaddress
 import os
@@ -92,14 +91,8 @@ class System:
     def read_text(self, path):
         return self.read_bytes(path).decode("utf-8", "replace")
 
-    def exists(self, path):
-        return os.path.lexists(path)
-
     def is_file(self, path):
         return os.path.isfile(path)
-
-    def is_dir(self, path):
-        return os.path.isdir(path)
 
     def probe(self, path):
         """What a stat of path says: "file", "dir", "missing" (ENOENT only,
@@ -113,11 +106,18 @@ class System:
             return "error"
         return "dir" if stat.S_ISDIR(mode) else "file"
 
-    def listable(self, path):
-        return os.access(path, os.R_OK | os.X_OK)
+    def cwd(self):
+        return os.getcwd()
 
-    def glob(self, pattern):
-        return sorted(glob.glob(pattern))
+    def same_dir(self, first, second):
+        try:
+            return os.path.samefile(first, second)
+        except (OSError, ValueError):
+            return False
+
+    def listdir(self, path):
+        """The names in a folder. Raises OSError on any failure (never an empty answer)."""
+        return os.listdir(path)
 
     def which(self, name, extra_dirs=()):
         dirs = os.environ.get("PATH", "").split(os.pathsep) + [d for d in extra_dirs if d]

@@ -44,15 +44,15 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 | `setup` | `/api/health` reports `setup: true` (first-run setup is finished). From `configured`. |
 | `read_guard` | An anonymous `GET /api/modules` (no cookie) is refused with 401. From `configured`. |
 | `kiosk` | The kiosk launcher matches `--kiosk`. From `final`. |
-| `temporary_access` | No installation-only assistant CLI, its credentials or autostart entry is left in the home folder, and no SSH session into the Pi is open. From `final`. |
+| `temporary_access` | No installation-only assistant CLI, its credentials or autostart entry is left in the home folder, and no SSH session into the Pi is open. A location that cannot be checked makes it `unknown`, but anything found still fails. From `final`. |
 
 `not_applicable` is used only for the phase omissions marked "From" above.
 
 **`platform`.** It accepts any 64-bit Linux that the image supports: the kernel is `aarch64` or `x86_64`, and the userland is 64-bit too (`dpkg --print-architecture` says `arm64` or `amd64`; on systems without dpkg, how Python was built). A Raspberry Pi 4, 5, 400, 500 or Compute Module 4/5 with 64-bit Raspberry Pi OS passes, as do other arm64 boards and amd64 mini PCs. A 32-bit OS or CPU (`armv7l`, `armv6l`, `i686`, or an `armhf`/`i386` userland on a 64-bit kernel) and non-Linux systems fail with `use_supported_os`. The device model is never read or printed.
 
-**`setup`.** The health answer carries one boolean, `setup`, from the hub's `setup_complete` setting (only when the database is readable; the blocked 503 answer is unchanged). It tells an anonymous visitor nothing new: the setup screen, and `/api/setup` answering 409 once setup is done, already show it. `setup: false` fails with `open_hub`; no answer, or an image from before the field existed, is `unknown`.
+**`setup`.** The health answer carries one boolean, `setup`, from the hub's `setup_complete` setting. On the success path that is one extra read-only settings lookup; the blocked 503 answer is unchanged and reads nothing more. It tells an anonymous visitor nothing new: the setup screen, and `/api/setup` answering 409 once setup is done, already show it. `setup: false` fails with `open_hub`; no answer, or an image from before the field existed, is `unknown`.
 
-**`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. `Include` paths may be quoted, as sshd allows. Only a path that does not exist is skipped, as sshd skips it (also when its folder does not exist). Any other problem makes the result `unknown` (`review_ssh`), because a port or password rule could hide there: a config file or included file that cannot be read, a folder that cannot be entered or that an `Include` wildcard cannot list, a path part that is a file, or an included path that is a folder. Each path is checked with a lookup that says why it failed, so "permission denied" is never mistaken for "not there".
+**`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. `Include` paths may be quoted, as sshd allows. Only a path that does not exist is skipped, as sshd skips it (also when its folder does not exist). Wildcards are matched against a folder listing that reports its errors (an I/O error or a permission change is never read as "no matches"), sorted, and, as sshd's glob does, a name starting with `.` matches only a pattern starting with `.`. Any other problem makes the result `unknown` (`review_ssh`), because a port or password rule could hide there: a config file or included file that cannot be read, a folder that cannot be entered or that an `Include` wildcard cannot list, a path part that is a file, or an included path that is a folder. Each path is checked with a lookup that says why it failed, so "permission denied" is never mistaken for "not there".
 
 **`kiosk` marker.** The kiosk setup (a later release) adds exactly one launcher line to `~/.config/labwc/autostart`, ending with the comment `# sproutwall:kiosk-launcher`. Doctor counts the lines with that marker that are not commented out: one when `--kiosk on`, none when `--kiosk off`.
 
@@ -97,6 +97,8 @@ The JSON is built only from the fixed check ids, the status and action names and
 sproutwall verify-image --source-sha <40-hex commit> [--digest sha256:<64-hex>] [--bundle FILE] [--trusted-root FILE]
 ```
 
+Run it from the top folder of the checkout; anywhere else it refuses (exit 2) with "Run this from the top folder of the Sproutwall checkout." That way the start command it prints, which names the compose file relative to the current folder, is always the file it checked, and it never prints an absolute path.
+
 It takes the digest of the image that `docker compose -f docker-compose.preview.yml up` would start, and checks that GitHub's build attestation for that digest was signed by `.github/workflows/image.yml` in `thebrianlee/sproutwall`, built from the published commit `--source-sha`. It starts nothing. On success it prints the start command, `docker compose -f docker-compose.preview.yml up -d --wait`, for exactly the file it checked.
 
 1. Refuses a placeholder digest, a tag-only reference (such as `:preview`), another repository, a SHA that is not exactly 40 lowercase hex characters (nothing before or after, not even a newline), and a `--digest` that differs from the compose file. The committed `docker-compose.preview.yml` holds a placeholder until the first preview is published, so it is always refused, and Docker rejects it too.
@@ -118,7 +120,7 @@ It takes the digest of the image that `docker compose -f docker-compose.preview.
 | --- | --- |
 | 0 | Verified. It prints the digest, the signer workflow and the commit, then the start command. |
 | 1 | Not verified: gh refused the attestation, or timed out. |
-| 2 | Refused before checking: bad arguments, the compose file, or no Docker Compose to read it. |
+| 2 | Refused before checking: not run from the checkout's top folder, bad arguments, the compose file, or no Docker Compose to read it. |
 | 3 | `gh` is missing or older than 2.68.0. |
 | 4 | The attestation bundle could not be downloaded, or failed its digest or size checks. |
 | 5 | Its temporary files could not be removed. This wins in every case, even over a successful check or an unexpected error, and the image counts as not verified: remove the `sproutwall-verify-*` folders in the system's temporary folder, then run it again. |

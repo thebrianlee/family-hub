@@ -39,6 +39,7 @@ EXIT_NO_BUNDLE = 4
 EXIT_CLEANUP = 5
 
 MESSAGES = {
+    "cwd": "Run this from the top folder of the Sproutwall checkout.",
     "bad_sha": "Refused: --source-sha must be the full 40-character lowercase commit SHA from the guide.",
     "bad_digest": "Refused: --digest must be sha256: followed by 64 lowercase hex characters.",
     "bad_file": "Refused: the file given with --bundle or --trusted-root was not found.",
@@ -152,6 +153,15 @@ def verify_image(
     fetch=None,
 ):
     """(exit code, message key, verified digest or None). Starts nothing."""
+    # The start command it prints names the compose file relative to the
+    # current folder; that is the verified file only from the checkout's top
+    # folder. Refusing elsewhere also means no absolute path is ever printed.
+    try:
+        here = system.cwd()
+    except OSError:
+        return EXIT_REFUSED, "cwd", None
+    if not system.same_dir(here, os.path.dirname(compose_file)):
+        return EXIT_REFUSED, "cwd", None
     if not isinstance(source_sha, str) or not SOURCE_SHA_RE.fullmatch(source_sha):
         return EXIT_REFUSED, "bad_sha", None
     if published_digest is not None and not compose.is_digest(published_digest):

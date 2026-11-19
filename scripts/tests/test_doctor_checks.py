@@ -523,6 +523,47 @@ class SshPolicyTests(unittest.TestCase):
         s.dirs.add("/etc/ssh/sshd_config.d/sub.conf")  # a folder matched by *.conf
         self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
 
+    def test_listing_errors_are_never_no_matches(self):
+        import errno
+
+        for tier in ("A", "B"):
+            s = healthy_pi()
+            if tier == "B":
+                ssh_on(s)
+            s.list_errors["/etc/ssh/sshd_config.d"] = OSError(errno.EIO, "Input/output error")
+            self.assertEqual(run("ssh_policy", s, tier=tier), ("unknown", "review_ssh"), tier)
+
+    def test_wildcards_skip_dotfiles_like_glob3(self):
+        s = healthy_pi()
+        ssh_on(s)
+        s.files["/etc/ssh/sshd_config.d/.90-hidden.conf"] = "PasswordAuthentication yes\n"
+        self.assertEqual(run("ssh_policy", s, tier="B"), PASS)
+        s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/sshd_config.d/.*.conf\n" + fakes.SSHD_CONFIG
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+
+    def test_wildcard_results_are_sorted(self):
+        from sproutwall_lib import sshd
+
+        s = healthy_pi()
+        for name in ("50-b.conf", "10-a.conf", "90-c.conf", "notes.txt", ".hidden.conf"):
+            s.files["/etc/ssh/sshd_config.d/" + name] = "\n"
+        self.assertEqual(s.listdir("/etc/ssh/sshd_config.d")[0], "notes.txt")  # the fake lists out of order
+        expected = ["/etc/ssh/sshd_config.d/" + n for n in ("10-a.conf", "50-b.conf", "90-c.conf")]
+        self.assertEqual(sshd.include_files(s, "/etc/ssh/sshd_config.d/*.conf"), expected)
+        self.assertEqual(sshd.wildcard_matches(s, "/etc/ssh/sshd_config.d", "*.conf"), expected)
+        # First match wins in sshd, so the order decides: 10-a says no, 90-c says yes.
+        s.files["/etc/ssh/sshd_config.d/10-a.conf"] = "Port 2200\n"
+        s.files["/etc/ssh/sshd_config.d/90-c.conf"] = "Port 2299\n"
+        self.assertEqual(sshd.ports(sshd.read_directives(s)), [22, 2200, 2299])
+
+    def test_unit_file_lookup_error_is_unknown(self):
+        s = healthy_pi()
+        s.set(["systemctl", "is-active", "ssh.socket"], ok("", "Failed to connect to bus", rc=1))
+        s.probe_errors.add("/lib/systemd/system/ssh.socket")
+        self.assertEqual(run("ssh_policy", s), ("unknown", "review_ssh"))
+        s.probe_errors.clear()
+        self.assertEqual(run("ssh_policy", s), PASS)  # every unit folder says ENOENT: not installed
+
     def test_missing_main_config(self):
         s = healthy_pi()
         del s.files["/etc/ssh/sshd_config"]
@@ -747,6 +788,18 @@ class TemporaryAccessTests(unittest.TestCase):
         self.assertEqual(run("temporary_access", s, phase="final", tier="C"), ("fail", "remove_agent"))
         s = healthy_pi()
         s.files[HOME + "/.config/autostart/helper.desktop"] = "[Desktop Entry]\nExec=/usr/local/bin/gemini --resume\n"
+        self.assertEqual(run("temporary_access", s, phase="final"), ("fail", "remove_agent"))
+
+    def test_listing_and_lookup_errors_are_unknown_but_findings_still_fail(self):
+        import errno
+
+        s = healthy_pi()
+        s.list_errors[HOME + "/.config/autostart"] = OSError(errno.EIO, "Input/output error")
+        self.assertEqual(run("temporary_access", s, phase="final"), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.probe_errors.add(HOME + "/.codex")
+        self.assertEqual(run("temporary_access", s, phase="final"), ("unknown", "retry_local"))
+        s.files[HOME + "/.config/systemd/user/helper.service"] = "[Service]\nExecStart=/usr/bin/env codex serve\n"
         self.assertEqual(run("temporary_access", s, phase="final"), ("fail", "remove_agent"))
 
     def test_fail_when_an_ssh_session_is_open(self):
