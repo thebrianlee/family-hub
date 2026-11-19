@@ -3,19 +3,27 @@
 Checks receive a System and never call subprocess, open() or sockets
 themselves, so tests can replace it with canned outputs. Command output and
 error text is returned to the caller for parsing and is never printed.
+
+`setup kiosk` also asks it for the process table, signals and the user's
+identity. Its own files under the home folder are read and written directly
+(kiosk_files.py); tests point the home folder at a temporary directory.
 """
 
 import http.client
 import ipaddress
 import os
 import platform
+import pwd
+import re
 import shutil
 import stat
 import subprocess
+import time
 from dataclasses import dataclass
 
 HUB_PORT = 3847
 MAX_HTTP_BODY = 64 * 1024
+PID_RE = re.compile(r"[1-9][0-9]{0,9}", re.ASCII)  # use with fullmatch
 
 
 @dataclass(frozen=True)
@@ -135,6 +143,94 @@ class System:
     def userland_bits(self):
         """"64bit" or "32bit": how this Python (a userland program) was built."""
         return platform.architecture()[0]
+
+    # setup kiosk -----------------------------------------------------------
+    def uid(self):
+        return os.getuid()
+
+    def euid(self):
+        return os.geteuid()
+
+    def username(self):
+        """This user's login name. Compared with config values; never printed."""
+        return pwd.getpwuid(os.getuid()).pw_name
+
+    def environ(self):
+        return dict(os.environ)
+
+    def is_executable(self, path):
+        """True if this user may run path (call after probe() said "file")."""
+        return os.access(path, os.X_OK)
+
+    def processes(self):
+        """[(pid, uid, comm, argv)] for every process.
+
+        Raises OSError when /proc cannot be listed, or when one of this
+        user's own processes cannot be read for any reason other than having
+        just exited. Another user's process that cannot be read is left out:
+        the kiosk only looks at its own user's processes.
+        """
+        me = os.getuid()
+        found = []
+        for name in os.listdir("/proc"):
+            if not PID_RE.fullmatch(name):
+                continue
+            base = os.path.join("/proc", name)
+            try:
+                owner = os.stat(base).st_uid
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # exited meanwhile
+            try:
+                with open(os.path.join(base, "comm"), "rb") as handle:
+                    comm = handle.read(64)
+                with open(os.path.join(base, "cmdline"), "rb") as handle:
+                    raw = handle.read(64 * 1024)
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # exited meanwhile
+            except OSError:
+                if owner == me:
+                    raise
+                continue
+            comm = comm[:-1] if comm.endswith(b"\n") else comm
+            argv = [part.decode("utf-8", "surrogateescape") for part in raw.split(b"\0") if part]
+            found.append((int(name), owner, comm.decode("utf-8", "surrogateescape"), argv))
+        return found
+
+    def process_environ(self, pid):
+        """{name: value} of one of this user's processes.
+
+        Raises ProcessLookupError if the process is gone, and OSError for any
+        other failure (never an empty answer)."""
+        try:
+            with open("/proc/%d/environ" % int(pid), "rb") as handle:
+                raw = handle.read(256 * 1024 + 1)
+        except FileNotFoundError as error:
+            raise ProcessLookupError(3, "gone") from error
+        if len(raw) > 256 * 1024:
+            raise OSError(27, "environment too large")
+        env = {}
+        for item in raw.split(b"\0"):
+            if not item:
+                continue
+            key, sep, value = item.partition(b"=")
+            if not sep:
+                raise OSError(22, "malformed environment")
+            env[key.decode("utf-8", "surrogateescape")] = value.decode("utf-8", "surrogateescape")
+        return env
+
+    def kill(self, pid, sig):
+        """Send sig to pid: "sent", "gone" (ESRCH: it has exited) or
+        "denied" (EPERM or any other failure)."""
+        try:
+            os.kill(int(pid), sig)
+        except ProcessLookupError:
+            return "gone"
+        except OSError:
+            return "denied"
+        return "sent"
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
 
     def http(self, address, method, path, body=None, headers=None, timeout=3.0):
         """One request to the hub at a container address. No proxy, no redirects.

@@ -46,7 +46,10 @@ REMEDIES = {
         "turn it off from the Pi's own desktop when the install is done."
     ),
     "open_hub": "Open the hub on the Pi and finish first-run setup with the parent PIN.",
-    "repair_kiosk": "The kiosk launcher is not in the state you chose. Run the guide's kiosk step again.",
+    "repair_kiosk": (
+        "The kiosk launcher is not in the state you chose. Run ./scripts/sproutwall setup kiosk --check, "
+        "then setup kiosk (on) or setup kiosk --off again."
+    ),
     "remove_agent": (
         "Installation-time access is still present. Remove the installation-only assistant, its "
         "credentials and autostart entries, and close temporary SSH sessions, as the guide shows."
@@ -74,9 +77,16 @@ VERIFY_USAGE = (
     "usage: sproutwall verify-image --source-sha <40-hex commit> [--digest sha256:<64-hex>] "
     "[--bundle FILE] [--trusted-root FILE]"
 )
+SETUP_USAGE = (
+    "usage: sproutwall setup kiosk [--orientation portrait|portrait-flipped|landscape|landscape-flipped]\n"
+    "       sproutwall setup kiosk --check [--json]\n"
+    "       sproutwall setup kiosk --off\n"
+    "       sproutwall setup kiosk --undo"
+)
 USAGE = (
     "usage: sproutwall <command>\n"
     "  doctor        read-only checks of this Pi and the running hub\n"
     "  verify-image  check the preview image's attestation before starting it\n"
+    "  setup kiosk   show the hub full screen on the Pi's own touch screen\n"
     "See docs/install-cli.md."
 )
