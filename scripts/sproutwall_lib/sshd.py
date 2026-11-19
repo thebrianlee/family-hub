@@ -9,6 +9,8 @@ config unreadable, which is reported as unknown.
 """
 
 import os
+import re
+import shlex
 
 SSHD_CONFIG = "/etc/ssh/sshd_config"
 UNITS = ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket")
@@ -76,8 +78,35 @@ def service_state(system, sockets, sockets_complete, ports):
     return "off"
 
 
+_MAGIC = re.compile(r"[*?[]")
+
+
 def _resolve_include(pattern):
     return pattern if os.path.isabs(pattern) else os.path.join("/etc/ssh", pattern)
+
+
+def include_files(system, pattern):
+    """The files an Include pattern names, walking it one path part at a time.
+
+    Every folder that a wildcard has to list must be listable, or the config
+    is unreadable: glob would silently skip it. A literal path that does not
+    exist is skipped, as sshd does.
+    """
+    parts = [part for part in _resolve_include(pattern).split("/") if part]
+    candidates = ["/"]
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        following = []
+        for folder in candidates:
+            if _MAGIC.search(part):
+                if not system.listable(folder):
+                    raise SshConfigUnreadable()
+                matches = system.glob(os.path.join(folder, part))
+            else:
+                matches = [os.path.join(folder, part)]
+            following += [m for m in matches if (system.exists(m) if last else system.is_dir(m))]
+        candidates = following
+    return sorted(candidates)
 
 
 def read_directives(system, path=SSHD_CONFIG, depth=0):
@@ -114,12 +143,12 @@ def read_directives(system, path=SSHD_CONFIG, depth=0):
             in_match = args.lower() != "all"
             continue
         if keyword == "include":
-            for pattern in args.split():
-                pattern = _resolve_include(pattern)
-                folder = os.path.dirname(pattern)
-                if system.exists(folder) and not system.listable(folder):
-                    raise SshConfigUnreadable()
-                for included in system.glob(pattern):
+            try:
+                patterns = shlex.split(args)  # sshd accepts quoted paths
+            except ValueError:
+                raise SshConfigUnreadable() from None
+            for pattern in patterns:
+                for included in include_files(system, pattern):
                     for keyword2, args2, match2 in read_directives(system, included, depth + 1) or []:
                         directives.append((keyword2, args2, match2 or in_match))
             continue

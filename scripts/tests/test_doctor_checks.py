@@ -226,10 +226,12 @@ class HealthTests(unittest.TestCase):
             s.http_map[("GET", "/api/health")] = HttpResponse(status, body)
             self.assertEqual(run("health", s), ("fail", "retry_local"), (status, body))
 
-    def test_fail_when_nothing_listens(self):
-        s = healthy_pi()
-        s.http_map[("GET", "/api/health")] = HttpResponse(None, error="refused")
-        self.assertEqual(run("health", s), ("fail", "verify_release"))
+    def test_unknown_when_the_container_address_does_not_answer(self):
+        for error in ("refused", "timeout", "error"):
+            s = healthy_pi()
+            s.http_map[("GET", "/api/health")] = HttpResponse(None, error=error)
+            self.assertEqual(run("health", s), ("unknown", "retry_local"), error)
+            self.assertEqual(len(s.http_calls), 1, "no second try anywhere else")
 
     def test_unknown_on_timeout(self):
         s = healthy_pi()
@@ -284,6 +286,17 @@ class AppBindTests(unittest.TestCase):
         s.files["/proc/net/tcp6"] = PermissionError(13, "denied")
         s.set(["ip", "-j", "addr", "show"], ok(rc=1))
         self.assertEqual(run("app_bind", s), ("fail", "restrict_ports"))
+
+    def test_malformed_later_line_never_hides_a_public_listener(self):
+        s = healthy_pi()
+        s.files["/proc/net/tcp"] = proc_table([("198.51.100.9", 3847, "0A")]) + "  7: garbage\n"
+        self.assertEqual(run("app_bind", s), ("fail", "restrict_ports"))
+        s = healthy_pi()
+        s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 3847, "0A")]) + "  7: garbage\n"
+        self.assertEqual(run("app_bind", s), ("unknown", "retry_local"))
+        s = healthy_pi()
+        s.set(exec_key("cat", "/proc/net/tcp"), ok(proc_table([("0.0.0.0", 8787, "0A")]) + "  7: garbage\n"))
+        self.assertEqual(run("bridge_bind", s), ("fail", "restrict_ports"))
 
     def test_lan_address_bind_is_still_not_verified_safe(self):
         s = healthy_pi()
@@ -448,6 +461,33 @@ class SshPolicyTests(unittest.TestCase):
         s.files["/etc/ssh/sshd_config"] = PermissionError(13, "denied")
         self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
 
+    def test_quoted_include_paths_are_read(self):
+        s = healthy_pi()
+        ssh_on(s)
+        s.files["/etc/ssh/sshd_config"] = 'Include "/etc/ssh/my conf.d/*.conf"\n' + fakes.SSHD_CONFIG
+        s.files["/etc/ssh/my conf.d/90-pw.conf"] = "PasswordAuthentication yes\n"
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+        s.files["/etc/ssh/sshd_config"] = 'Include "/etc/ssh/unbalanced\n' + fakes.SSHD_CONFIG
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
+
+    def test_wildcard_folders_must_be_listable(self):
+        s = healthy_pi()
+        ssh_on(s)
+        s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/*.d/*.conf\n" + fakes.SSHD_CONFIG
+        s.files["/etc/ssh/extra.d/90-pw.conf"] = "PasswordAuthentication yes\n"
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+        s.unlistable.add("/etc/ssh/extra.d")
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/*.d/*.conf\n" + fakes.SSHD_CONFIG
+        s.unlistable.add("/etc/ssh")
+        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+
+    def test_missing_literal_include_is_skipped(self):
+        s = healthy_pi()
+        s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/not-there.conf\n" + fakes.SSHD_CONFIG
+        self.assertEqual(run("ssh_policy", s, tier="A"), PASS)
+
     def test_listener_seen_before_a_failed_read_still_counts(self):
         s = healthy_pi()
         s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 22, "0A")])
@@ -498,31 +538,96 @@ class SetupAndReadGuardTests(unittest.TestCase):
         from sproutwall_lib.doctor import run_doctor
 
         not_ready = [
-            ok(fakes.health_state("starting")),
-            ok(fakes.health_state("unhealthy")),
-            ok(fakes.health_state("healthy", "restarting")),
-            ok('{"health":null,"status":"running"}'),  # no healthcheck at all
+            ok(fakes.hub_state("starting")),
+            ok(fakes.hub_state("unhealthy")),
+            ok(fakes.hub_state("healthy", "restarting")),
+            ok(fakes.hub_state(None)),  # no healthcheck at all
             ok("", "Error: No such container", rc=1),
             CommandResult(None, missing=True),
         ]
         for state in not_ready:
             s = healthy_pi()
-            s.set(["docker", "inspect", "--type", "container", "--format", checks.HEALTH_FORMAT], state)
-            report = run_doctor(s, ROOT, "final")
-            self.assertEqual(s.http_calls, [], state)
-            by_id = {c["id"]: (c["status"], c["action"]) for c in report["checks"]}
-            for check_id in ("health", "setup", "read_guard"):
-                self.assertEqual(by_id[check_id], ("unknown", "retry_local"), (state, check_id))
+            s.set(["docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT], state)
+            self.assert_no_requests(run_doctor(s, ROOT, "final"), s, state)
         for broken in (ok(rc=1), ok(fakes.CID + "\n" + "d" * 64 + "\n"), CommandResult(None, missing=True)):
             s = healthy_pi()
             s.set(["docker", "compose", "-f", COMPOSE, "ps", "--all", "--quiet"], broken)
             run_doctor(s, ROOT, "final")
             self.assertEqual(s.http_calls, [], broken)
 
-    def test_health_state_is_read_with_a_narrow_format(self):
-        self.assertIn(".State.Health.Status", checks.HEALTH_FORMAT)
-        self.assertNotIn("Config", checks.HEALTH_FORMAT)
-        self.assertNotIn("Log", checks.HEALTH_FORMAT)
+    def assert_no_requests(self, report, system, label):
+        self.assertEqual(system.http_calls, [], label)
+        by_id = {c["id"]: (c["status"], c["action"]) for c in report["checks"]}
+        for check_id in ("health", "setup", "read_guard"):
+            self.assertEqual(by_id[check_id], ("unknown", "retry_local"), (label, check_id))
+
+    def test_requests_go_to_the_inspected_container_address(self):
+        import ipaddress
+
+        from sproutwall_lib.doctor import run_doctor
+
+        s = healthy_pi()
+        run_doctor(s, ROOT, "final")
+        self.assertEqual([path for _, path, _, _ in s.http_calls], ["/api/health", "/api/modules"])
+        self.assertEqual(s.http_targets, [ipaddress.ip_address(fakes.HUB_IP)] * 2)
+        hub_reads = [argv for argv, _ in s.calls if len(argv) > 5 and argv[5] == checks.HUB_FORMAT]
+        self.assertEqual(hub_reads, [("docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT, fakes.CID)])
+        s = healthy_pi()
+        s.set(["docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT], ok(fakes.hub_state(addresses=("", "fd12:3456::7"))))
+        run_doctor(s, ROOT, "final")
+        self.assertEqual(s.http_targets, [ipaddress.ip_address("fd12:3456::7")] * 2)
+
+    def test_zero_requests_without_exactly_one_private_container_address(self):
+        from sproutwall_lib.doctor import run_doctor
+
+        cases = {
+            "no address": fakes.hub_state(addresses=("", "")),
+            "no networks": fakes.hub_state(addresses=()),
+            "two addresses": fakes.hub_state(addresses=(fakes.HUB_IP, "fd12:3456::7")),
+            "two networks": fakes.hub_state(addresses=(fakes.HUB_IP, "", "10.9.0.4", "")),
+            "host network": fakes.hub_state(network_mode="host", addresses=("", "")),
+            "host network with address": fakes.hub_state(network_mode="host"),
+            "public": fakes.hub_state(addresses=("203.0.113.5", "")),
+            "global v6": fakes.hub_state(addresses=("", "2001:db8::5")),
+            "loopback": fakes.hub_state(addresses=("127.0.0.1", "")),
+            "link-local": fakes.hub_state(addresses=("169.254.0.9", "")),
+            "zone": fakes.hub_state(addresses=("", "fd12::7%eth0")),
+            "garbage": fakes.hub_state(addresses=("hub.local", "")),
+            "other container": fakes.hub_state(cid="d" * 64),
+            "short id": fakes.hub_state(cid=fakes.CID[:12]),
+        }
+        for label, state in cases.items():
+            s = healthy_pi()
+            s.set(["docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT], ok(state))
+            self.assert_no_requests(run_doctor(s, ROOT, "final"), s, label)
+
+    def test_no_loopback_fallback_even_in_the_real_client(self):
+        from sproutwall_lib.system import System
+
+        for target in ("127.0.0.1", "localhost", None, b"127.0.0.1"):
+            self.assertIsNone(System().http(target, "GET", "/api/health").status)
+
+    def test_container_address_never_appears_in_output(self):
+        import io
+
+        from sproutwall_lib import cli
+
+        address = "10.77.66.55"
+        for argv in (["doctor", "--json", "--phase", "final"], ["doctor", "--phase", "final"]):
+            for response in (fakes.health_response(), HttpResponse(None, error="refused"), HttpResponse(503, b'{"ok":false,"code":"x"}')):
+                s = healthy_pi()
+                s.set(["docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT], ok(fakes.hub_state(addresses=(address, ""))))
+                s.http_map[("GET", "/api/health")] = response
+                out, err = io.StringIO(), io.StringIO()
+                cli.main(argv, system=s, root=ROOT, out=out, err=err)
+                self.assertTrue(s.http_calls)
+                self.assertNotIn(address, out.getvalue() + err.getvalue())
+
+    def test_hub_format_requests_only_id_health_network_mode_and_addresses(self):
+        self.assertIn(".State.Health.Status", checks.HUB_FORMAT)
+        self.assertIn(".NetworkSettings.Networks", checks.HUB_FORMAT)
+        for field in (".Config", "Env", "Log", "MacAddress", "Aliases", "Mounts", ".Name"):
+            self.assertNotIn(field, checks.HUB_FORMAT)
 
     def test_read_guard_pass_fail_unknown(self):
         self.assertEqual(run("read_guard", healthy_pi(), phase="configured"), PASS)
@@ -601,10 +706,18 @@ class ParserTests(unittest.TestCase):
         from sproutwall_lib import net
 
         text = proc_table([("127.0.0.1", 8787, "0A")]) + proc_table([("::1", 3847, "0A")], v6=True)
-        parsed = [(str(a), p, st) for a, p, st in net.parse_proc_net_tcp(text)]
-        self.assertEqual(parsed, [("127.0.0.1", 8787, "0A"), ("::1", 3847, "0A")])
-        with self.assertRaises(ValueError):
-            net.parse_proc_net_tcp("garbage")
+        sockets, complete = net.parse_proc_net_tcp(text)
+        self.assertEqual([(str(a), p, st) for a, p, st in sockets], [("127.0.0.1", 8787, "0A"), ("::1", 3847, "0A")])
+        self.assertTrue(complete)
+        self.assertEqual(net.parse_proc_net_tcp("garbage"), ([], False))
+
+    def test_a_malformed_line_keeps_the_lines_already_read(self):
+        from sproutwall_lib import net
+
+        text = proc_table([("198.51.100.9", 3847, "0A")]) + "  9: ZZZZ:XYZ 00000000:0000 0A\n  10:\n"
+        sockets, complete = net.parse_proc_net_tcp(text)
+        self.assertFalse(complete)
+        self.assertEqual([(str(a), p) for a, p, _ in sockets], [("198.51.100.9", 3847)])
 
     def test_classify(self):
         import ipaddress

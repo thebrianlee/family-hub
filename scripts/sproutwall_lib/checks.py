@@ -15,6 +15,7 @@ from .system import command_env
 
 COMPOSE_VERSION = re.compile(r"v?(\d+)\.(\d+)", re.ASCII)
 CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}", re.ASCII)
+FULL_CONTAINER_ID = re.compile(r"[0-9a-f]{64}", re.ASCII)
 HOST_ARCH = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}
 
 APP_PORT = 3847
@@ -33,10 +34,16 @@ CONTAINER_FORMAT = (
     '"port_bindings":{{json .HostConfig.PortBindings}},"mounts":{{json .Mounts}}}'
 )
 IMAGE_FORMAT = '{"id":{{json .Id}},"repo_digests":{{json .RepoDigests}},"arch":{{json .Architecture}},"os":{{json .Os}}}'
-# Docker's own health state of the container, and nothing else.
-HEALTH_FORMAT = (
-    '{"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},'
-    '"status":{{json .State.Status}}}'
+# One read of the hub container: its full id, Docker's health state, its
+# network mode and its network addresses. Nothing else (no environment, no
+# names, no MAC addresses). Health and address come from the same call, so
+# they always describe the same container.
+HUB_FORMAT = (
+    '{"id":{{json .Id}},'
+    '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},'
+    '"status":{{json .State.Status}},'
+    '"network_mode":{{json .HostConfig.NetworkMode}},'
+    '"addresses":[{{range .NetworkSettings.Networks}}{{json .IPAddress}},{{json .GlobalIPv6Address}},{{end}}null]}'
 )
 
 # Installation-only assistant CLIs and their credential/config locations
@@ -173,12 +180,16 @@ class Context:
             sockets, complete = [], True
             for path in ("/proc/net/tcp", "/proc/net/tcp6"):
                 try:
-                    sockets += net.parse_proc_net_tcp(self.system.read_text(path))
+                    found, read_all = net.parse_proc_net_tcp(self.system.read_text(path))
                 except FileNotFoundError:
                     if path.endswith("tcp"):
                         complete = False  # IPv4 table must exist; a missing tcp6 means IPv6 is off
-                except (OSError, ValueError):
+                    continue
+                except OSError:
                     complete = False
+                    continue
+                sockets += found
+                complete = complete and read_all
             return sockets, complete
 
         return self._once("sockets", read)
@@ -197,32 +208,46 @@ class Context:
 
         return self._once("interfaces", read)
 
-    def hub_ready(self):
-        """True only when Docker reports the one hub container running and healthy.
+    def hub_target(self):
+        """The healthy hub container's own bridge address, or None.
 
-        Its own healthcheck has then already opened (and, on first start,
-        created) the database, so a GET from doctor cannot be the request
-        that initializes storage. Doctor sends no HTTP request otherwise.
+        Doctor talks to the hub only at this address, never at 127.0.0.1,
+        so the answer comes from the container whose health was read. It
+        must be the one container of the preview project, running and
+        healthy in Docker's view (its own healthcheck has then already
+        opened the database, so doctor's GET cannot be the request that
+        creates it), not on host networking, with exactly one private
+        address. Otherwise None, and doctor sends no request at all.
         """
 
         def ask():
             state = self.docker()
             if not state.ok or len(state.containers) != 1:
-                return False
+                return None
             cid = state.containers[0].cid
-            result = self.system.run(["docker", "inspect", "--type", "container", "--format", HEALTH_FORMAT, cid])
+            result = self.system.run(["docker", "inspect", "--type", "container", "--format", HUB_FORMAT, cid])
             data = _json_object(result.out) if result.rc == 0 else None
-            return data is not None and data.get("health") == "healthy" and data.get("status") == "running"
+            if data is None:
+                return None
+            full_id = data.get("id")
+            if not isinstance(full_id, str) or not FULL_CONTAINER_ID.fullmatch(full_id) or not full_id.startswith(cid):
+                return None
+            if data.get("health") != "healthy" or data.get("status") != "running":
+                return None
+            if data.get("network_mode") == "host":
+                return None
+            return net.container_address(data.get("addresses"))
 
-        return self._once("ready", ask)
+        return self._once("target", ask)
 
     def hub_get(self, path):
-        """(HTTP response, JSON object or None) for a GET to the hub, or None when not ready."""
-        if not self.hub_ready():
+        """(HTTP response, JSON object or None) for a GET to the hub container, or None."""
+        target = self.hub_target()
+        if target is None:
             return None
 
         def ask():
-            resp = self.system.http("GET", path, headers={"Accept": "application/json"})
+            resp = self.system.http(target, "GET", path, headers={"Accept": "application/json"})
             body = _json_object(resp.body.decode("utf-8", "replace")) if resp.status is not None else None
             return resp, body
 
@@ -372,7 +397,7 @@ def check_health(ctx):
         return INCOMPLETE  # not healthy in Docker's view: no request is sent
     resp, body = answer
     if resp.status is None:
-        return fail("verify_release") if resp.error == "refused" else INCOMPLETE
+        return INCOMPLETE  # refused, timed out or unroutable: never retried elsewhere
     if resp.status == 200 and body is not None and body.get("ok") is True:
         return PASS
     if resp.status == 503 and body is not None and body.get("ok") is False and isinstance(body.get("code"), str):
@@ -420,27 +445,20 @@ def check_app_bind(ctx):
 
 def _container_sockets(ctx, container):
     """(sockets read, complete) in the container's network namespace, IPv4 and IPv6."""
-    sockets = []
     result = ctx.exec_in(container, ["cat", "/proc/net/tcp"])
-    try:
-        if result.rc != 0:
-            return sockets, False
-        sockets += net.parse_proc_net_tcp(result.out)
-    except ValueError:
-        return sockets, False
+    if result.rc != 0:
+        return [], False
+    sockets, complete = net.parse_proc_net_tcp(result.out)
     has_ipv6 = ctx.exec_in(container, ["test", "-e", "/proc/net/tcp6"]).rc
     if has_ipv6 == 1:
-        return sockets, True  # IPv6 is off in the container: no IPv6 sockets
+        return sockets, complete  # IPv6 is off in the container: no IPv6 sockets
     if has_ipv6 != 0:
         return sockets, False
     result = ctx.exec_in(container, ["cat", "/proc/net/tcp6"])
-    try:
-        if result.rc != 0:
-            return sockets, False
-        sockets += net.parse_proc_net_tcp(result.out)
-    except ValueError:
+    if result.rc != 0:
         return sockets, False
-    return sockets, True
+    found, read_all = net.parse_proc_net_tcp(result.out)
+    return sockets + found, complete and read_all
 
 
 def check_bridge_bind(ctx):

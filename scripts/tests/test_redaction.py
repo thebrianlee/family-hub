@@ -2,20 +2,25 @@
 
 Fictional names, an iCal URL with a query token, a PIN, an API key and a
 cookie are seeded into command stdout and stderr, file contents, exception
-messages and the health JSON, on success and failure paths. None may appear
-on stdout or stderr, and --json stdout must stay one closed-schema object.
-The canaries are assembled from pieces so secret scanners do not flag them.
+messages, the health JSON and gh's output, on success and failure paths.
+None may appear on stdout or stderr, and --json stdout must stay one
+closed-schema object. Every scenario also asserts that it reached the code
+path whose output it seeds (the fake was called), so a canary test cannot
+pass by stopping early. The canaries are assembled from pieces so secret
+scanners do not flag them.
 """
 
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-from sproutwall_lib import cli, schema
+from sproutwall_lib import attestation, checks, cli, compose, schema
 from sproutwall_lib.system import CommandResult, HttpResponse
 
 from . import fakes
@@ -28,13 +33,15 @@ PIN = "482915"
 ICAL = "webcal://calendar.example.test/ical/basic.ics?token=" + ICAL_TOKEN
 CANARIES = ("Riley", "Quinn", ICAL, ICAL_TOKEN, "?token=", PIN, API_KEY, "canaryQuinnKey", COOKIE, "cookieRiley")
 SEED = "household Riley and Quinn; calendar %s; pin %s; key %s; cookie %s" % (ICAL, PIN, API_KEY, COOKIE)
+HUB_IP = "10.66.77.88"  # the seeded container address must not be printed either
 
-SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "sproutwall")
+SCRIPTS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT = os.path.join(SCRIPTS, "sproutwall")
 
 
 def assert_clean(test, out, err, json_mode):
     text = out + err
-    for canary in CANARIES:
+    for canary in CANARIES + (HUB_IP,):
         test.assertNotIn(canary, text)
         test.assertNotIn(canary.lower(), text.lower())
     if json_mode:
@@ -51,7 +58,8 @@ class SeededSystem(fakes.FakeSystem):
         return CommandResult(result.rc, result.out, SEED, result.missing, result.timed_out)
 
 
-def seeded_success():
+def seeded_pi():
+    """A healthy Pi whose every input carries the seed, and whose HTTP is reached."""
     base = healthy_pi()
     s = SeededSystem()
     s.__dict__.update({k: v for k, v in base.__dict__.items() if k != "calls"})
@@ -65,8 +73,14 @@ def seeded_success():
         {"Type": "bind", "Source": "/home/Quinn/" + ICAL_TOKEN, "Destination": "/photos", "RW": True},
     ]
     s.set(["docker", "inspect", "--type", "container"], CommandResult(0, fakes.container_json(mounts=mounts, env=[SEED]), SEED))
+    hub = json.loads(fakes.hub_state(addresses=(HUB_IP, "")))
+    hub["labels"] = {"riley": SEED}
+    s.set(["docker", "inspect", "--type", "container", "--format", checks.HUB_FORMAT], CommandResult(0, json.dumps(hub), SEED))
     s.set(["docker", "image", "inspect"], CommandResult(0, fakes.image_json(labels={"riley": SEED}), SEED))
     s.set(["docker", "version", "--format", "{{.Server.Version}}"], CommandResult(0, "27.3.1 " + SEED, SEED))
+    config = json.loads(fakes.compose_config_json())
+    config["x-seed"] = SEED
+    s.set(compose.config_argv(fakes.COMPOSE), CommandResult(0, json.dumps(config), SEED))
     s.set(
         ["ip", "-j", "addr", "show"],
         CommandResult(0, json.dumps([{"ifname": "Riley-wlan", "label": SEED, "addr_info": [{"family": "inet", "local": "192.168.1.50", "label": SEED}]}]), ""),
@@ -74,6 +88,20 @@ def seeded_success():
     health = {"ok": True, "version": "0.1.0-preview.0", "schema": 3, "setup": True, "household": "Riley", "calendar": ICAL, "pin": PIN, "key": API_KEY, "cookie": COOKIE}
     s.http_map[("GET", "/api/health")] = HttpResponse(200, json.dumps(health).encode())
     s.http_map[("GET", "/api/modules")] = HttpResponse(401, SEED.encode())
+    return s
+
+
+def seeded_http_failure():
+    """Docker says healthy, then the hub answers with seeded errors or raises them."""
+    s = seeded_pi()
+    s.http_map[("GET", "/api/health")] = HttpResponse(503, json.dumps({"ok": False, "code": SEED, "detail": API_KEY}).encode())
+    s.http_map[("GET", "/api/modules")] = OSError(SEED)
+    return s
+
+
+def seeded_http_exception():
+    s = seeded_pi()
+    s.http_map[("GET", "/api/health")] = RuntimeError(SEED)
     return s
 
 
@@ -92,63 +120,106 @@ class FailingSystem(fakes.FakeSystem):
     def which(self, name, extra_dirs=()):
         raise RuntimeError(SEED)
 
-    def http(self, method, path, body=None, headers=None, timeout=3.0):
-        if path == "/api/modules":
-            raise OSError(SEED)
-        return HttpResponse(503, json.dumps({"ok": False, "code": SEED, "detail": API_KEY}).encode())
+
+def reached_commands(test, system, *names):
+    called = {argv[0] for argv, _ in system.calls}
+    for name in names:
+        test.assertIn(name, called)
+
+
+def reached_hub(test, system, phase):
+    paths = [path for _, path, _, _ in system.http_calls]
+    test.assertIn("/api/health", paths, phase)
+    if phase != "running":
+        test.assertIn("/api/modules", paths, phase)
 
 
 class InProcessCanaryTests(unittest.TestCase):
-    def run_all(self, make_system, expect_codes):
+    def run_all(self, make_system, expect_codes, reached):
         for phase in schema.PHASES:
             for tier in schema.TIERS:
                 for json_mode in (True, False):
                     argv = ["doctor", "--phase", phase, "--tier", tier] + (["--json"] if json_mode else [])
+                    system = make_system()
                     out, err = io.StringIO(), io.StringIO()
-                    code = cli.main(argv, system=make_system(), root=ROOT, out=out, err=err)
+                    code = cli.main(argv, system=system, root=ROOT, out=out, err=err)
                     self.assertIn(code, expect_codes, argv)
                     assert_clean(self, out.getvalue(), err.getvalue(), json_mode)
+                    reached(system, phase)
 
     def test_success_path(self):
-        self.run_all(seeded_success, (0, 2))
+        def reached(system, phase):
+            reached_commands(self, system, "docker", "ip", "systemctl", "dpkg")
+            reached_hub(self, system, phase)
 
-    def test_failure_path(self):
-        self.run_all(FailingSystem, (1,))
+        self.run_all(seeded_pi, (0, 2), reached)
 
-    def test_verify_image_paths(self):
-        from sproutwall_lib import verify_image as vi
+    def test_hub_error_answers(self):
+        self.run_all(seeded_http_failure, (1, 2), lambda system, phase: reached_hub(self, system, phase))
 
-        for gh_result in (CommandResult(0, SEED, SEED), CommandResult(1, SEED, SEED), CommandResult(None, timed_out=True)):
-            s = fakes.FakeSystem()
+    def test_hub_request_raising(self):
+        self.run_all(seeded_http_exception, (1, 2), lambda system, phase: reached_hub(self, system, phase))
+
+    def test_failing_commands_and_files(self):
+        # The unreadable sshd config stops ssh_policy before systemctl (unknown), by design.
+        self.run_all(FailingSystem, (1,), lambda system, phase: reached_commands(self, system, "docker", "ip", "dpkg"))
+
+    def test_verify_image_gh_output(self):
+        bundles = [{"seed": SEED}]
+        for gh_result in (
+            CommandResult(0, SEED, SEED),
+            CommandResult(1, SEED, SEED),
+            CommandResult(None, timed_out=True),
+            RuntimeError(SEED),
+        ):
+            s = SeededSystem()
             s.files[fakes.COMPOSE] = "# " + SEED + "\n" + fakes.compose_text()
+            s.set(compose.config_argv(fakes.COMPOSE), CommandResult(0, fakes.compose_config_json(), SEED))
             s.set(["gh", "--version"], CommandResult(0, "gh version 2.89.0 (2026-03-26)\n", SEED))
             s.set(["gh", "attestation", "verify"], gh_result)
             out, err = io.StringIO(), io.StringIO()
-            original = vi.attestation.fetch_bundles
-            vi.attestation.fetch_bundles = lambda digest, opener=None: [{"seed": SEED}]
-            try:
+            with mock.patch.object(attestation, "fetch_bundles", lambda digest, opener=None: bundles):
                 cli.main(["verify-image", "--source-sha", fakes.SOURCE_SHA], system=s, root=ROOT, out=out, err=err)
-            finally:
-                vi.attestation.fetch_bundles = original
+            self.assertIn(("gh", "attestation", "verify"), [argv[:3] for argv, _ in s.calls], gh_result)
             assert_clean(self, out.getvalue(), err.getvalue(), False)
+
+
+FAKE_TOOL = r'''#!%(python)s
+import os, sys
+name = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+with open(%(log)r, "a", encoding="utf-8") as log:
+    log.write(name + " " + " ".join(args[:2]) + "\n")
+seed = %(seed)r
+sys.stderr.write(seed)
+if name == "docker" and "config" in args:
+    sys.stdout.write(%(config)r)
+    sys.exit(0)
+if name == "gh" and args[:1] == ["--version"]:
+    sys.stdout.write("gh version 2.89.0 (2026-03-26)\n")
+    sys.exit(0)
+sys.stdout.write(seed)
+sys.exit(int(os.environ.get("FAKE_GH_RC", "1")) if name == "gh" else 1)
+'''
 
 
 class EndToEndCanaryTests(unittest.TestCase):
     """The real script, real subprocesses: fake docker, ip, systemctl, dpkg
-    and gh on PATH print the seed and fail; HOME holds seeded files; the
-    environment holds seeded variables."""
+    and gh on PATH print the seed (and log that they ran); HOME holds seeded
+    files; the environment holds seeded variables."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = self.tmp.name
         bin_dir = os.path.join(root, "bin")
         home = os.path.join(root, "home")
+        self.log = os.path.join(root, "calls.log")
         os.makedirs(bin_dir)
         os.makedirs(os.path.join(home, ".config", "labwc"))
         os.makedirs(os.path.join(home, ".codex"))
         with open(os.path.join(home, ".config", "labwc", "autostart"), "w", encoding="utf-8") as handle:
             handle.write("# " + SEED + "\n")
-        tool = "#!%s\nimport sys\nsys.stdout.write(%r)\nsys.stderr.write(%r)\nsys.exit(1)\n" % (sys.executable, SEED, SEED)
+        tool = FAKE_TOOL % {"python": sys.executable, "log": self.log, "seed": SEED, "config": fakes.compose_config_json()}
         for name in ("docker", "ip", "systemctl", "dpkg", "gh"):
             path = os.path.join(bin_dir, name)
             with open(path, "w", encoding="utf-8") as handle:
@@ -169,10 +240,10 @@ class EndToEndCanaryTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, *args):
+    def run_script(self, *args, script=SCRIPT, env=None):
         proc = subprocess.run(
-            [sys.executable, SCRIPT] + list(args),
-            env=self.env,
+            [sys.executable, script] + list(args),
+            env=env or self.env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -180,6 +251,12 @@ class EndToEndCanaryTests(unittest.TestCase):
             check=False,
         )
         return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
+
+    def ran(self):
+        if not os.path.exists(self.log):
+            return set()
+        with open(self.log, encoding="utf-8") as handle:
+            return {line.split()[0] for line in handle if line.strip()}
 
     def test_doctor_json_and_human(self):
         for phase in schema.PHASES:
@@ -189,6 +266,28 @@ class EndToEndCanaryTests(unittest.TestCase):
             self.assertEqual(err, "")
             code, out, err = self.run_script("doctor", "--phase", phase)
             assert_clean(self, out, err, False)
+        self.assertTrue({"docker", "ip", "systemctl", "dpkg"} <= self.ran(), self.ran())
+
+    def test_verify_image_reaches_gh(self):
+        repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(os.path.join(repo, "scripts"))
+        shutil.copy(SCRIPT, os.path.join(repo, "scripts", "sproutwall"))
+        shutil.copytree(os.path.join(SCRIPTS, "sproutwall_lib"), os.path.join(repo, "scripts", "sproutwall_lib"))
+        with open(os.path.join(repo, compose.PREVIEW_COMPOSE), "w", encoding="utf-8") as handle:
+            handle.write("# " + SEED + "\n" + fakes.compose_text())
+        bundle = os.path.join(self.tmp.name, "Riley-bundle.jsonl")
+        with open(bundle, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"seed": SEED}) + "\n")
+        script = os.path.join(repo, "scripts", "sproutwall")
+        for rc, expected in (("1", 1), ("0", 0)):
+            env = dict(self.env, FAKE_GH_RC=rc)
+            code, out, err = self.run_script("verify-image", "--source-sha", fakes.SOURCE_SHA, "--bundle", bundle, script=script, env=env)
+            self.assertEqual(code, expected, err)
+            assert_clean(self, out, err, False)
+        with open(self.log, encoding="utf-8") as handle:
+            calls = handle.read()
+        self.assertIn("docker compose", calls)
+        self.assertIn("gh attestation", calls)
 
     def test_bad_arguments(self):
         code, out, err = self.run_script("doctor", "--json", "--phase", "Riley", "--pin", PIN)

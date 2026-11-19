@@ -231,6 +231,29 @@ class VerifyRunTests(unittest.TestCase):
                 shutil.rmtree(leftover, ignore_errors=True)
         self.assertEqual(vi.EXIT_CLEANUP, 5)
 
+    def test_cleanup_failure_wins_over_an_unexpected_error(self):
+        def exploding_fetch(digest, opener=None):
+            raise RuntimeError("Quinn " + TOKEN)
+
+        import tempfile as real_tempfile
+
+        with real_tempfile.TemporaryDirectory() as own:
+            original = real_tempfile.mkdtemp
+            make = lambda prefix: original(prefix=prefix, dir=own)  # noqa: E731
+            with mock.patch.object(vi.tempfile, "mkdtemp", make):
+                with mock.patch.object(vi.shutil, "rmtree", lambda *a, **k: None):
+                    self.assertEqual(vi.verify_image(gh_system(), COMPOSE, SOURCE_SHA, fetch=exploding_fetch), (vi.EXIT_CLEANUP, "cleanup", None))
+                # Cleanup works: the unexpected error goes on to the CLI's fixed handler.
+                with self.assertRaises(RuntimeError):
+                    vi.verify_image(gh_system(), COMPOSE, SOURCE_SHA, fetch=exploding_fetch)
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(attestation, "fetch_bundles", exploding_fetch):
+                    with mock.patch.object(vi.shutil, "rmtree", lambda *a, **k: None):
+                        code = cli.main(["verify-image", "--source-sha", SOURCE_SHA], system=gh_system(), root=ROOT, out=out, err=err)
+                self.assertEqual(code, vi.EXIT_CLEANUP)
+                self.assertEqual(out.getvalue(), "")
+                self.assertNotIn(TOKEN, err.getvalue())
+
     def test_temp_files_removed_on_failure(self):
         s = gh_system(verify=self.recording_gh(rc=1))
         code, key, digest = vi.verify_image(s, COMPOSE, SOURCE_SHA, fetch=fake_fetch)

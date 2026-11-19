@@ -1,4 +1,4 @@
-"""The only place that touches the host: commands, files and loopback HTTP.
+"""The only place that touches the host: commands, files and HTTP to the hub container.
 
 Checks receive a System and never call subprocess, open() or sockets
 themselves, so tests can replace it with canned outputs. Command output and
@@ -7,13 +7,13 @@ error text is returned to the caller for parsing and is never printed.
 
 import glob
 import http.client
+import ipaddress
 import os
 import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
 
-HUB_HOST = "127.0.0.1"
 HUB_PORT = 3847
 MAX_HTTP_BODY = 64 * 1024
 
@@ -97,6 +97,9 @@ class System:
     def is_file(self, path):
         return os.path.isfile(path)
 
+    def is_dir(self, path):
+        return os.path.isdir(path)
+
     def listable(self, path):
         return os.access(path, os.R_OK | os.X_OK)
 
@@ -120,9 +123,16 @@ class System:
         """"64bit" or "32bit": how this Python (a userland program) was built."""
         return platform.architecture()[0]
 
-    def http(self, method, path, body=None, headers=None, timeout=3.0):
-        """One request to the hub on loopback. No proxy, no redirects followed."""
-        conn = http.client.HTTPConnection(HUB_HOST, HUB_PORT, timeout=timeout)
+    def http(self, address, method, path, body=None, headers=None, timeout=3.0):
+        """One request to the hub at a container address. No proxy, no redirects.
+
+        address must be an ipaddress object (the hub container's own bridge
+        address); anything else is refused without a connection, so there is
+        no fallback to a host name or to loopback.
+        """
+        if not isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            return HttpResponse(None, error="error")
+        conn = http.client.HTTPConnection(str(address), HUB_PORT, timeout=timeout)
         try:
             conn.request(method, path, body=body, headers=dict(headers or {}))
             resp = conn.getresponse()

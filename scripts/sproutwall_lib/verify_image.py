@@ -173,12 +173,19 @@ def verify_image(
         return EXIT_TOOL, "gh_old", None
 
     workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)  # mode 0700
+    error = None
+    outcome = (EXIT_NOT_VERIFIED, "gh_failed", None)
     try:
         outcome = _verify_in(workdir, system, digest, source_sha, bundle, trusted_root, opener, fetch)
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+    except BaseException as raised:  # noqa: BLE001 - cleaned up first, then re-raised (never printed)
+        error = raised
+    shutil.rmtree(workdir, ignore_errors=True)
     if os.path.lexists(workdir):
-        return EXIT_CLEANUP, "cleanup", None  # even after a successful check
+        # In every path, even after a successful check or an unexpected error:
+        # exit 5, and the image counts as not verified.
+        return EXIT_CLEANUP, "cleanup", None
+    if error is not None:
+        raise error
     return outcome
 
 

@@ -19,7 +19,13 @@ sproutwall doctor [--json] --phase running|configured|final [--tier A|B|C] [--ki
 - `--tier`: who operated the terminal. A (agent on the Pi) and C (chat only) expect SSH off. B (laptop agent over SSH) allows temporary key-only SSH on the home network until the final phase. Default: A.
 - `--kiosk`: the screen choice from the install (decision 2). Default: on.
 
-Doctor only reads. It changes nothing on the Pi or in the hub. It sends the hub `GET` requests only, and only after Docker reports the hub's container `healthy` (`docker inspect` of `.State.Health.Status` and `.State.Status`, nothing else). The container's own healthcheck has then already opened the database, so a request from doctor is never the one that creates, migrates or seeds it. While the container is starting, unhealthy or missing, `health`, `setup` and `read_guard` are `unknown` with `retry_local` and no request is sent. A blocked database also makes the container unhealthy, so it shows up here as `unknown`; `docker compose -f docker-compose.preview.yml logs` says why.
+Doctor only reads. It changes nothing on the Pi or in the hub. It sends the hub `GET` requests only, and only to the hub container itself:
+
+- One `docker inspect` of the preview project's single hub container, by its full id, reads its id, Docker's health state, its network mode and its network addresses, and nothing else.
+- The container must be `running` and `healthy`. Its own healthcheck has then already opened the database, so a request from doctor is never the one that creates, migrates or seeds it.
+- Doctor sends its requests to that container's own bridge address (`http://<container address>:3847`), never to `127.0.0.1`, so the answer comes from the container whose health it read and not from some other program on port 3847. There must be exactly one address, and it must be private (RFC 1918 or `fc00::/7`).
+- Otherwise `health`, `setup` and `read_guard` are `unknown` with `retry_local`, and no request is sent at all. That covers a container that is starting, unhealthy or missing; host networking; no address or several; and an address that does not answer. There is no second try at another address. Rootless Docker, where the host cannot reach container addresses, therefore gets `unknown`.
+- The container address is never printed. A blocked database also makes the container unhealthy, so it shows up here as `unknown`; `docker compose -f docker-compose.preview.yml logs` says why.
 
 ### Checks
 
@@ -31,7 +37,7 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 | `docker` | Docker Compose v2 or newer is installed and this user can reach the Docker daemon. |
 | `image_identity` | The hub's container runs the image Compose would start from `docker-compose.preview.yml` (see [verify-image](#verify-image-check-the-image-before-starting-it)), for this computer's architecture. A tag is never trusted. |
 | `storage` | `/data` is the named `familyhub-data` volume, `/photos` is mounted, and the app user can write `/data` and the database (`sproutwall.db`, or `family-hub.db` from before the rename). |
-| `health` | Docker reports the container healthy, and then `GET http://127.0.0.1:3847/api/health` answers HTTP 200 with JSON `ok: true`. Redirects are not followed. |
+| `health` | Docker reports the container healthy, and then `GET /api/health` at the container's own address answers HTTP 200 with JSON `ok: true`. Redirects are not followed. |
 | `app_bind` | Port 3847 is reachable only on loopback. See [Exposure](#exposure). |
 | `bridge_bind` | The Ask bridge port 8787 is not published and listens only on loopback inside the container. Both address families must be read; a missing IPv6 table counts only when IPv6 is off in the container. |
 | `ssh_policy` | SSH is off, or (tier B, before `final`) it is key-only and not listening on a public address. See below. |
@@ -46,7 +52,7 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 
 **`setup`.** The health answer carries one boolean, `setup`, from the hub's `setup_complete` setting (only when the database is readable; the blocked 503 answer is unchanged). It tells an anonymous visitor nothing new: the setup screen, and `/api/setup` answering 409 once setup is done, already show it. `setup: false` fails with `open_hub`; no answer, or an image from before the field existed, is `unknown`.
 
-**`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. If `/etc/ssh/sshd_config` or any file or folder it includes cannot be read, the result is `unknown` (`review_ssh`), because a port or password rule could hide there.
+**`ssh_policy`.** SSH counts as on if `ssh.service`, `sshd.service`, `ssh.socket` or `sshd.socket` is enabled or active, or if anything listens on port 22 or on a `Port` named in the SSH server config. Any `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes`, also inside a `Match` block, means not key-only, as do `PermitRootLogin yes`, empty passwords and password methods in `AuthenticationMethods`. `Include` paths may be quoted, as sshd allows. If `/etc/ssh/sshd_config` or any file it includes cannot be read, or a folder that an `Include` wildcard has to list cannot be listed, the result is `unknown` (`review_ssh`), because a port or password rule could hide there.
 
 **`kiosk` marker.** The kiosk setup (a later release) adds exactly one launcher line to `~/.config/labwc/autostart`, ending with the comment `# sproutwall:kiosk-launcher`. Doctor counts the lines with that marker that are not commented out: one when `--kiosk on`, none when `--kiosk off`.
 
@@ -54,7 +60,7 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 
 Doctor reads the listening sockets (`/proc/net/tcp` and `/proc/net/tcp6`), every interface address (`ip -j addr show`, IPv4 and IPv6) and the container's published ports. Loopback is local; `10/8`, `172.16/12`, `192.168/16`, link-local and `fc00::/7` are the home network; every other address, including a global IPv6 address, is public. A wildcard bind (`0.0.0.0`, `::`) counts on every interface.
 
-- Public exposure fails with `restrict_ports`, even if part of the inspection failed: what was already read is kept when a later read fails.
+- Public exposure fails with `restrict_ports`, even if part of the inspection failed: socket tables are read line by line, and what was already read is kept when a later line or file cannot be read. That only makes the result incomplete.
 - A home-network publication, such as the default `3847:3847`, is `unknown` with `confirm_trusted_lan`. Local checks cannot prove that the router forwards nothing, that no tunnel exists or that everyone on the network is trusted, so this is never reported as safe.
 - If any part of the inspection did not complete, the result is `unknown` with `retry_local`.
 
@@ -114,7 +120,7 @@ It takes the digest of the image that `docker compose -f docker-compose.preview.
 | 2 | Refused before checking: bad arguments, the compose file, or no Docker Compose to read it. |
 | 3 | `gh` is missing or older than 2.68.0. |
 | 4 | The attestation bundle could not be downloaded, or failed its digest or size checks. |
-| 5 | Its temporary files could not be removed. This wins even over a successful check: remove the `sproutwall-verify-*` folders in the system's temporary folder, then run it again. |
+| 5 | Its temporary files could not be removed. This wins in every case, even over a successful check or an unexpected error, and the image counts as not verified: remove the `sproutwall-verify-*` folders in the system's temporary folder, then run it again. |
 
 Messages are fixed text. gh's own output is never printed.
 
@@ -129,4 +135,5 @@ The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package r
 5. The attested subject is the multi-arch index digest that `docker-compose.preview.yml` pins.
 6. `verify-image` passes against the real pair, then once more with `--trusted-root` and no network.
 7. Negative tests fail with a non-zero exit: wrong signer workflow, wrong `--source-sha`, a tampered digest.
-8. On a dual-stack network, `0.0.0.0:3847:3847` creates no IPv6 listener (`ss -ltn` shows no `[::]:3847`) and doctor reports `app_bind` as `unknown` / `confirm_trusted_lan`.
+8. [미확인] (unverified) on the Pi: Docker's bridge routes from the host to the container address, so doctor's `GET` to `http://<container address>:3847/api/health` answers. Rootless Docker is expected to give `unknown` instead.
+9. On a dual-stack network, `0.0.0.0:3847:3847` creates no IPv6 listener (`ss -ltn` shows no `[::]:3847`) and doctor reports `app_bind` as `unknown` / `confirm_trusted_lan`.

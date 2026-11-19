@@ -34,13 +34,15 @@ def _decode_proc_addr(hex_addr):
 
 
 def parse_proc_net_tcp(text):
-    """[(address, port, state)] from one or more /proc/net/tcp{,6} tables.
+    """([(address, port, state)], complete) from one or more /proc/net/tcp{,6} tables.
 
-    Raises ValueError unless at least one table header is present and every
-    entry parses.
+    Parsed line by line: a malformed line makes the result incomplete but
+    never drops the entries already read, so an exposure seen is kept.
+    Without any table header the result is incomplete.
     """
     sockets = []
     headers = 0
+    complete = True
     for line in text.splitlines():
         fields = line.split()
         if not fields:
@@ -48,16 +50,17 @@ def parse_proc_net_tcp(text):
         if fields[0] == "sl" and "local_address" in fields:
             headers += 1
             continue
-        if len(fields) < 4 or not fields[0].endswith(":"):
-            raise ValueError("entry")
-        addr_hex, _, port_hex = fields[1].partition(":")
-        state = fields[3].upper()
-        if len(state) != 2:
-            raise ValueError("state")
-        sockets.append((_decode_proc_addr(addr_hex), int(port_hex, 16), state))
-    if headers == 0:
-        raise ValueError("no table")
-    return sockets
+        try:
+            if len(fields) < 4 or not fields[0].endswith(":"):
+                raise ValueError("entry")
+            addr_hex, sep, port_hex = fields[1].partition(":")
+            state = fields[3].upper()
+            if not sep or len(state) != 2:
+                raise ValueError("entry")
+            sockets.append((_decode_proc_addr(addr_hex), int(port_hex, 16), state))
+        except ValueError:
+            complete = False
+    return sockets, complete and headers > 0
 
 
 def parse_ip_addr_json(text):
@@ -80,6 +83,28 @@ def parse_ip_addr_json(text):
                 raise ValueError("local")
             addresses.append(ipaddress.ip_address(local.split("%", 1)[0]))
     return addresses
+
+
+_BRIDGE_V4 = tuple(ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+_BRIDGE_V6 = ipaddress.ip_network("fc00::/7")
+
+
+def container_address(values):
+    """The one private bridge address (RFC 1918 or ULA) among a container's
+    network addresses, or None when there is none, more than one, or it is
+    anything else (loopback, link-local, public, malformed, with a zone)."""
+    if not isinstance(values, list):
+        return None
+    found = [value for value in values if value not in (None, "")]
+    if len(found) != 1 or not isinstance(found[0], str) or "%" in found[0]:
+        return None
+    try:
+        address = ipaddress.ip_address(found[0])
+    except ValueError:
+        return None
+    if address.version == 4:
+        return address if any(address in net for net in _BRIDGE_V4) else None
+    return address if address in _BRIDGE_V6 else None
 
 
 def classify(address):

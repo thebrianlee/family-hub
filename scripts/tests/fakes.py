@@ -6,11 +6,12 @@ import ipaddress
 import json
 
 from sproutwall_lib import compose
-from sproutwall_lib.checks import HEALTH_FORMAT
+from sproutwall_lib.checks import HUB_FORMAT
 from sproutwall_lib.system import CommandResult, HttpResponse
 
 ROOT = "/repo"
 HOME = "/home/pi"
+HUB_IP = "172.18.0.2"  # the hub container's bridge address in the fakes
 DIGEST = "sha256:" + "0123456789abcdef" * 4
 IMAGE_ID = "sha256:" + "b" * 64
 CID = "c0ffee" + "0" * 58
@@ -38,8 +39,17 @@ def compose_config_json(image="ghcr.io/thebrianlee/sproutwall:preview@" + DIGEST
     return json.dumps({"name": "sproutwall", "services": services, "volumes": {"familyhub-data": {}}})
 
 
-def health_state(health="healthy", status="running"):
-    return json.dumps({"health": health, "status": status})
+def hub_state(health="healthy", status="running", addresses=(HUB_IP, ""), network_mode="sproutwall_default", cid=None):
+    """The one `docker inspect --format HUB_FORMAT` answer for the hub container."""
+    return json.dumps(
+        {
+            "id": cid or CID,
+            "health": health,
+            "status": status,
+            "network_mode": network_mode,
+            "addresses": list(addresses) + [None],
+        }
+    )
 
 
 def ok(out="", err="", rc=0):
@@ -127,6 +137,7 @@ class FakeSystem:
         self.bits = "64bit"
         self.calls = []
         self.http_calls = []
+        self.http_targets = []
 
     # commands -------------------------------------------------------------
     def set(self, argv, value):
@@ -174,8 +185,27 @@ class FakeSystem:
     def listable(self, path):
         return path not in self.unlistable
 
+    def _known_paths(self):
+        paths = set(self.files) | set(self.dirs)
+        for path in list(paths):
+            parts = path.split("/")
+            for size in range(2, len(parts)):
+                paths.add("/".join(parts[:size]))
+        return paths
+
     def glob(self, pattern):
-        return sorted(p for p in self.files if fnmatch.fnmatch(p, pattern))
+        """Like glob.glob: one path component per pattern component."""
+        wanted = pattern.split("/")
+        return sorted(
+            path
+            for path in self._known_paths()
+            if len(path.split("/")) == len(wanted)
+            and all(fnmatch.fnmatchcase(part, want) for part, want in zip(path.split("/"), wanted))
+            and not any(path.startswith(u.rstrip("/") + "/") for u in self.unlistable)
+        )
+
+    def is_dir(self, path):
+        return path in self.dirs or any(f.startswith(path.rstrip("/") + "/") for f in self.files)
 
     def which(self, name, extra_dirs=()):
         return self.which_map.get(name)
@@ -193,8 +223,9 @@ class FakeSystem:
         return self.bits
 
     # http -----------------------------------------------------------------
-    def http(self, method, path, body=None, headers=None, timeout=3.0):
+    def http(self, address, method, path, body=None, headers=None, timeout=3.0):
         self.http_calls.append((method, path, body, dict(headers or {})))
+        self.http_targets.append(address)
         value = self.http_map.get((method, path), HttpResponse(None, error="refused"))
         if isinstance(value, BaseException):
             raise value
@@ -226,7 +257,7 @@ def healthy_pi(phase_ready=True):
     s.set(compose.config_argv(COMPOSE), ok(compose_config_json()))
     s.set(["docker", "compose", "-f", COMPOSE, "ps", "--all", "--quiet"], ok(CID + "\n"))
     s.set(["docker", "inspect", "--type", "container"], ok(container_json()))
-    s.set(["docker", "inspect", "--type", "container", "--format", HEALTH_FORMAT], ok(health_state()))
+    s.set(["docker", "inspect", "--type", "container", "--format", HUB_FORMAT], ok(hub_state()))
     s.set(["docker", "image", "inspect"], ok(image_json()))
     s.set(exec_key("true"), ok())
     s.set(exec_key("test", "-w", "/data"), ok())
