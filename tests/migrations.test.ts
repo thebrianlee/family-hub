@@ -307,14 +307,40 @@ describe("a database that becomes newer while this build opens it", () => {
 });
 
 describe("health check", () => {
-  it("reports only ok, the app version and the schema", async () => {
+  it("reports only ok, the app version, the schema and setup: false before first-run setup", async () => {
     useDbFile("health");
     const { GET } = await import("@/app/api/health/route");
     const { LATEST_SCHEMA } = await import("@/lib/migrations");
     const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf8"));
     const res = GET();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, version: pkg.version, schema: LATEST_SCHEMA });
+    expect(await res.json()).toEqual({ ok: true, version: pkg.version, schema: LATEST_SCHEMA, setup: false });
+  });
+
+  it("reports setup: true once first-run setup is finished", async () => {
+    useDbFile("health-setup");
+    const { GET } = await import("@/app/api/health/route");
+    const { setSetting } = await import("@/lib/queries");
+    const { LATEST_SCHEMA } = await import("@/lib/migrations");
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../package.json"), "utf8"));
+    setSetting("setup_complete", "1");
+    const res = GET();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, version: pkg.version, schema: LATEST_SCHEMA, setup: true });
+  });
+
+  it("keeps the blocked answer unchanged, with no setup field", async () => {
+    const file = useDbFile("health-blocked");
+    fs.copyFileSync(FIXTURE, file);
+    const raw = new Database(file);
+    raw.pragma("user_version = 999");
+    raw.close();
+    const { GET } = await import("@/app/api/health/route");
+    const { LATEST_SCHEMA } = await import("@/lib/migrations");
+    const res = GET();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, code: "db_newer_than_app", db: 999, app: LATEST_SCHEMA });
+    expect(userVersion(file)).toBe(999);
   });
 });
 

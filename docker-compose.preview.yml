@@ -1,0 +1,51 @@
+# Sproutwall preview: runs the published, attested image instead of building
+# on this computer. Check it first with ./scripts/sproutwall verify-image (see
+# docs/install-cli.md), then start it with:
+#
+#   docker compose -f docker-compose.preview.yml up -d --wait
+#
+# PLACEHOLDER: no preview image is published yet. The image line below holds
+# the template token <published-index-digest-hex> instead of a digest, so
+# verify-image and doctor refuse this file and Docker rejects the reference.
+# The install guide supplies the real sha256 index digest for each preview.
+# Docker selects the image by that digest; the ":preview" tag is only there
+# to make the line readable, and is never resolved.
+#
+# The service key "family-hub" and the volume key "familyhub-data" are the
+# same as in docker-compose.yml. Keep them: a new volume key would start the
+# hub on a new, empty volume.
+services:
+  family-hub:
+    image: "ghcr.io/thebrianlee/sproutwall:preview@sha256:<published-index-digest-hex>"
+    # IPv4 only. Many home networks also give the computer a global IPv6
+    # address, which can be reachable from the internet; "3847:3847" would
+    # publish there too, and doctor fails app_bind for it. Phones on the home
+    # Wi-Fi reach the hub over IPv4.
+    ports:
+      - "0.0.0.0:3847:3847"
+    environment:
+      DATA_DIR: /data
+      PHOTO_DIR: /photos
+      PORT: "3847"
+      REQUIRE_AUTH_FOR_READS: "1"
+      BRIDGE_HOST: 127.0.0.1
+      BRIDGE_PORT: "8787"
+    volumes:
+      - familyhub-data:/data
+      - ./photos:/photos
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3847/api/health',{redirect:'error'}).then(async r=>process.exit(r.status===200&&(await r.json()).ok===true?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+volumes:
+  familyhub-data: {}
