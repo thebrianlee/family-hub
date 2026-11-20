@@ -79,21 +79,22 @@ Tip: put the browser and the Terminal side by side, so you can copy from one and
 
 One command runs the install guide's steps for you and asks a few questions on the way. Run it in the Pi's own Terminal. To copy the line below, open this page in the Pi's web browser.
 
-1. **Wait 3 to 5 minutes** after the desktop first appears. A new Pi finishes its own first-start setup in the background. The command also waits for that by itself, for up to 10 minutes.
+1. **Wait 3 to 5 minutes** after the desktop first appears. A new Pi finishes its own first-start setup in the background. The command also waits for that by itself (on Raspberry Pi OS, for up to 10 minutes).
 2. **Open the Terminal** (section 3), paste this line and press Enter. Don't put `sudo` in front of it.
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
    ```
 
-   It checks the Pi first, and changes nothing if something is wrong: for example a 32-bit system, an unsupported Pi model or a hub that is already on this Pi.
+   It checks the Pi first, and changes nothing if something is wrong: for example a 32-bit system or an unsupported Pi model. It never touches a hub that is already on this Pi, or its data. If it finds one before installing anything, nothing is changed; if it only finds one after installing the tools, it stops there and says so.
 3. **Answer its questions,** in this order:
    - **How does the screen hang?** Press Enter for portrait, the usual choice for a kitchen wall, or type a number from 1 to 5 from the list it shows (5 is no full-screen setup). Only on Raspberry Pi OS.
    - **The install plan.** It lists every command it will run as administrator (`sudo`), why, and how to undo it. Read it, then type `y` and press Enter.
+   - **Maybe your Pi password, right away.** Only if Docker was already on this Pi: `sudo` asks for it so the command can look, read-only, for a hub that is already there. On a freshly written card this doesn't happen.
    - **The home-network rule:** this is your own router, it is not a guest or public network, nothing on the router forwards a port to the Pi, and no tunnel or remote-access service exposes it. If all of that is true, type `y` and press Enter.
-   - **Your Pi password,** when `sudo` asks for it: the one you chose in Imager.
+   - **Your Pi password,** when `sudo` asks for it as the installs start: the one you chose in Imager. Type it only there, into `sudo`'s own prompt.
 
-   For the plan and the home-network rule, only `y` or `yes` goes on. Any other answer, or Enter alone, stops it with nothing changed.
+   For the plan and the home-network rule, only `y`, `yes`, `Y`, `Yes` or `YES` goes on. Anything else, or Enter alone, cancels: it ends with a message that nothing was changed. That is not an error, and there is no `Stopped:` line.
 4. **Then it works on its own** for a while: system updates and the tools (git, Docker and the GitHub CLI, as described in [section 6](#6-install-with-your-ai-assistant)), the code in a folder named `sproutwall`, the check that the hub's image really was built by the project, and starting the hub. Nothing starts unless the image check passes. Leave it running.
 5. **Set up your household.** When it says "Set up your household now", open the web browser at `http://localhost:3847` on the Pi's screen. Set up your family and choose the parent PIN alone, as [section 6, point 7](#6-install-with-your-ai-assistant) describes. The command never asks for, reads or shows the PIN. When you have tapped **Open the wall**, go back to the Terminal and press Enter. If setup is not finished yet, it says so and waits.
 6. **The screen setup** (Raspberry Pi OS, unless you chose 5). The picture turns the way you chose. When it asks, tap the four corners and the center of the screen: each tap must land under your finger. Then press Enter. If it offers to turn on automatic desktop login, so the hub comes back by itself after a power cut, type `y` and press Enter.
@@ -105,7 +106,7 @@ One command runs the install guide's steps for you and asks a few questions on t
 
    Use `--kiosk off` instead if the screen was not set up. It passes with `Result: pass`, or with `Result: unknown` when the only unknown is `app_bind` / `confirm_trusted_lan` (see [section 6](#6-install-with-your-ai-assistant)). Then see [section 8](#8-when-its-done).
 
-**If it stops,** it prints one line that starts with `Stopped:` and says why and what to do. It never deletes your files or the hub's data and never works around a problem, and the line usually says whether anything was changed and whether it is safe to run the command again. Share only that line and the status check's output, as [section 9](#9-if-you-get-stuck) says.
+**If it stops,** it prints one line that starts with `Stopped:` and says why and what to do. It never deletes your files or the hub's data and never works around a problem, and the line usually says whether anything was changed and whether it is safe to run the command again. Share only that line and the status check's output, as [section 9](#9-if-you-get-stuck) says. Declining a question is not a stop: see point 3.
 
 ## 6. Install with your AI assistant
 
