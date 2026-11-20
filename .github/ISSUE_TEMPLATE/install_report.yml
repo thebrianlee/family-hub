@@ -29,7 +29,7 @@ body:
         - "Guided step by step (INSTALL-WITH-AI.md), tier A: an AI assistant on the device itself"
         - "Guided step by step (INSTALL-WITH-AI.md), tier B: an AI assistant on another computer, over SSH"
         - "Guided step by step (INSTALL-WITH-AI.md), tier C: I typed the commands, with an AI in a chat or no AI"
-        - Manual install from the README
+        - "Manual install (docs/manual-install.md)"
         - Raspberry Pi guide (docs/raspberry-pi.md)
         - Other
     validations:
@@ -69,7 +69,7 @@ body:
     id: doctor
     attributes:
       label: Doctor output (optional)
-      description: Output of `./scripts/sproutwall doctor --json --phase final --tier <A|B|C> --kiosk <on|off>` from the sproutwall folder. Check it for addresses before pasting.
+      description: Output of `./scripts/sproutwall doctor --json --phase final --tier <A|B|C> --kiosk <on|off>` from the sproutwall folder (after the one command, use `--tier C`). Check it for addresses before pasting.
       render: json
   - type: input
     id: version
