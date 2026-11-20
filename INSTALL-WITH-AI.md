@@ -68,7 +68,7 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
 
 This guide puts Sproutwall on a Raspberry Pi, or on another 64-bit computer running Debian or Ubuntu, and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
 
-> **AI assistants, read this first.** When the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1) and open the Terminal (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only in tier B, when the person asks to go step by step, or when the one command can't be used.
+> **AI assistants, read this first.** When the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1), and open the Terminal and run the 64-bit check (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only in tier B, when the person asks to go step by step, or when the one command can't be used.
 
 The hub needs no cloud account and no subscription. The hub never signs in to anything, and the only GitHub tool used, `gh`, runs without an account. If the AI assistant runs on the device itself (tier A below), that assistant signs in to its own service, and step 8 removes it.
 
@@ -263,7 +263,7 @@ ssh -i ~/.ssh/sproutwall-install -o IdentitiesOnly=yes -o ForwardAgent=no <user>
 
 Answer `yes` only if the `ED25519 key fingerprint` it shows is exactly the one the Pi printed. The AI on your laptop uses the same `ssh` options for every command, with no agent forwarding.
 
-**Tier C.** On the Pi's desktop, open **Terminal**. Open your chat AI in the Pi's web browser, so you can copy each block into the Terminal. In tiers A and C, the next thing to run is the one command ([For the AI reading this](#for-the-ai-reading-this)); it does steps 3 to 7 itself.
+**Tier C.** On the Pi's desktop, open **Terminal**. Open your chat AI in the Pi's web browser, so you can copy each block into the Terminal. In tiers A and C, after the 64-bit check below, the next thing to run is the one command ([For the AI reading this](#for-the-ai-reading-this)). It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6).
 
 **All tiers: check that this is a 64-bit system.** On a Raspberry Pi:
 
@@ -297,7 +297,7 @@ The first line must be `aarch64` or `x86_64`, and the second `64bit`.
 
 ## Step 3: Install the tools and get the code
 
-**Skip steps 3 to 7 if the person ran the one command (tiers A and C).** It runs them itself and ends with a summary; after the restart, go on to [step 8](#step-8-remove-the-assistant-and-check-once-more). Steps 3 to 7 are for tier B, for a person who asked to go step by step, and for when the one command can't be used.
+**Skip steps 3 to 7 when the one command finished (tiers A and C).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. If the person declined a question, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for tier B, for a person who asked to go step by step, and for when the one command can't be used.
 
 ### Install the tools
 
