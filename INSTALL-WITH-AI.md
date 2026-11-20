@@ -7,6 +7,9 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
    first. Then replace both values together everywhere in this file: the full 40-character
    source commit, and the multi-arch index digest with its sha256: prefix. They appear in the
    pinned-preview table, in step 3 and in step 4. Never mix values from two builds.
+   Replace the same two values in install.sh too (PINNED_SOURCE_COMMIT and PINNED_IMAGE_DIGEST
+   at its top), in the same pull request: scripts/tests/test_install_sh.py fails if install.sh
+   and the table in this file differ.
    Leave the token published-index-digest-hex (in angle brackets, in step 4) as it is:
    it is the template token in docker-compose.preview.yml that the sed command in step 4
    replaces on the device. Never write a tag such as :preview in place of the digest.
@@ -104,20 +107,40 @@ New to Raspberry Pi, the Terminal or GitHub? Start with [the step-by-step guide 
 
 Give your assistant this prompt:
 
-> Read this repo and install it on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
+> Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and follow it to install Sproutwall on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
 
-A chat-only AI cannot open your Pi. Give it the repository address too, `https://github.com/thebrianlee/sproutwall`, or paste this guide into the chat.
+A chat-only AI cannot open your Pi, so open it in the Pi's own web browser: you then copy each command straight into the Pi's Terminal. The prompt gives it this guide's address. If it cannot open web pages, paste this guide into the chat instead.
 
 ## For the AI reading this
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
+
+**Default path in tiers A and C: the one command.** Every install command runs on the device, never on the person's laptop: the laptop only writes the card (and, in tier B, holds the SSH session). In tiers A and C the person is at the device's own Terminal. Once the [First](#first-is-sproutwall-already-on-this-device) question is answered and the system is on the card (step 1), have the person run the one command from the README's [With one command](README.md#with-one-command) in the device's own Terminal, as themselves and not with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+```
+
+The person runs it, never you, because it runs `sudo` (rule 2); in tier A, in a second Terminal window. It checks the device first (64-bit, supported, not root, no hub already there) and changes nothing if something is wrong. It never touches an existing hub or its data: if it finds one before installing anything, nothing is changed; if it only finds one after installing the tools, it stops there and says so. Then it runs steps 3 to 5 and 7 for the person, waits during step 6, and runs doctor itself. Explain its questions, in the order it asks them:
+
+1. **How the screen hangs** (decision 2), on Raspberry Pi OS only; Debian and Ubuntu skip it. Enter means portrait. Choosing no kiosk skips the screen setup (step 7).
+2. **The install plan** (decision 3). The script prints every command it runs with `sudo`, including the exact Docker and GitHub CLI commands, with why and how to undo each. That is the plan of rule 2: the person reads it and types `y` to approve it.
+3. **Possibly the device's password, right after the approval.** Only when Docker is already installed but the person's account cannot reach it, or Docker's data folder from an earlier install is left: a read-only `sudo` look for an existing hub, before anything changes.
+4. **The home-network rule.** The person types `y` only if it is true.
+5. **The device's password when the installs start**, and again later if `sudo` asks.
+
+The password always goes only into `sudo`'s own prompt. For the plan and the home-network rule, the script accepts exactly `y`, `yes`, `Y`, `Yes` and `YES`, after ignoring spaces and tabs before or after the answer (so ` yes ` also approves). Anything else, or Enter alone, cancels: the script ends successfully with a plain message that nothing was changed, and prints no `Stopped:` line. That is not an error to fix: end the session, or ask the person whether they want to continue.
+
+**Tier B does not use the one command.** The script runs its checks with `--tier C`, and that check fails while SSH is on, which tier B needs until step 8. So a tier B install would stop after the hub started. In tier B, follow steps 3 to 7 below, with `--tier B`.
+
+When it says "Set up your household now", pause as rule 3 says; the person sets up the household on the device's own screen and then presses Enter in the Terminal. At the end it prints a summary with the phone check, and tells the person to restart and run the final check (step 8). If it stops, it prints one line that starts with `Stopped:` and says why and what to do. Ask for that line and `doctor --json` output only (rule 6), look both up in [If something goes wrong](#if-something-goes-wrong), and continue by hand from the step the line names. Steps 3 to 7 below stay the fallback when the person prefers to go step by step, in tier B, or when the one command can't be used. The rules below apply on both paths.
 
 1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is a stated exception to the five-decision limit: ask it even if the five are used up. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
 2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
 5. **The image.** Start only the image that `verify-image` verified, and only after it exits 0. Never skip verification. Never pull or run the `:preview` tag. Never sign in to `gh` and never set a GitHub token. In this install, always run `docker compose` with `-f docker-compose.preview.yml`. The only change to the checkout is the one image line in step 4.
-6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
+6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`, or the one command's single `Stopped:` line. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
 7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
 8. **Data.** Never run `docker compose down -v` or `docker volume rm`, and never delete the `sproutwall` folder. The household lives in the Docker volume.
 9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: the temporary key is removed at both ends, and SSH is closed and turned off. Tier C: nothing to remove. Show the person how, and say when it is done.
@@ -155,7 +178,7 @@ These are the only questions the install asks.
    - **A:** an AI tool runs in the device's own Terminal. SSH stays off.
    - **B:** an AI tool on your laptop connects to the device over SSH, with a temporary key, on your home network. The commands still run on the device. This guide sets tier B up for Raspberry Pi OS only (step 1 enables key-only SSH in Raspberry Pi Imager); on a Debian or Ubuntu mini PC or laptop, use tier A or C.
    - **C:** a chat-only AI. You paste one block at a time into the device's Terminal and tell it only the short result. Nothing is installed for the AI, and no AI runs as your account on the device.
-2. **How does the screen hang?** Portrait is the default and the usual choice for a kitchen wall. You can also pick portrait turned the other way (`portrait-flipped`), `landscape`, `landscape-flipped`, or no kiosk (the hub then serves phones and tablets only). You don't need the screen's model number: the setup tool finds the one connected screen.
+2. **How does the screen hang?** Raspberry Pi OS only: on Debian or Ubuntu, skip this decision (the one command doesn't ask it, and step 7 doesn't apply; set the screen up [by hand](docs/raspberry-pi.md#kiosk-on-other-devices)). Portrait is the default and the usual choice for a kitchen wall. You can also pick portrait turned the other way (`portrait-flipped`), `landscape`, `landscape-flipped`, or no kiosk (the hub then serves phones and tablets only). You don't need the screen's model number: the setup tool finds the one connected screen.
 3. **Do you approve the install plan?** The AI shows the [whole plan](#the-install-plan-decision-3) once before anything needs your password. It also asks you to confirm the home-network rule below. Your yes covers that plan only.
 4. **Your household.** On the hub's own screen, try it with the sample family (the Calders, a made-up family) or set up your own. You accept the device's time zone and choose the parent PIN yourself, privately. If you test a calendar, use a made-up one. The AI looks away during this step.
 5. **Which features show?** One screen during setup. **Skip, use recommended** keeps everything except Ask the Hub. Ask the Hub stays off unless you turn it on, because it sends the questions kids type to the AI service you connect. You can change this later in Settings → Modules.
@@ -591,6 +614,8 @@ In `~/sproutwall`, on the Pi's desktop:
 If `--undo` refuses because a file was changed after setup (for example in Control Centre), follow [Remove the kiosk by hand](docs/raspberry-pi.md#remove-the-kiosk-by-hand). The hub and its data are not touched either way.
 
 ## Without AI
+
+The easiest way without AI is the one-command install in the README, [With one command](README.md#with-one-command): on the device, it shows the install plan, asks you, and then runs steps 3 to 5 and 7 for you.
 
 Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
 

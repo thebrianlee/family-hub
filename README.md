@@ -1,12 +1,57 @@
 # Sproutwall
 
-**Install:** [guided, with or without an AI assistant](INSTALL-WITH-AI.md) · [manual install](#install-at-home)
+Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitchen. It runs on a Raspberry Pi in your home, with no cloud account and no subscription.
 
-New to Raspberry Pi? Start with [the step-by-step guide](docs/INSTALL-BEGINNERS.md).
+## Install
+
+**Install it on the Raspberry Pi itself, not on your laptop.** You need a Raspberry Pi 4 or 5 running Raspberry Pi OS (64-bit), with its screen attached. A 64-bit computer with Debian or Ubuntu works too. Your laptop is only for writing the SD card.
+
+- **New to Raspberry Pi?** Start with [the step-by-step guide](docs/INSTALL-BEGINNERS.md). It goes from a blank SD card to the hub on your kitchen screen.
+- **Using an AI assistant?** Open it in the Pi's own web browser and give it the prompt under [With an AI assistant](#with-an-ai-assistant).
+
+### With one command
+
+On the Pi, open **Terminal** on its desktop and run this as yourself, not with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+```
+
+It runs the steps of the [install guide](INSTALL-WITH-AI.md) for you, the way the guide's "Without AI" path does, and asks a few questions on the way:
+
+- First it checks the device, and changes nothing if something is wrong: a 32-bit or unsupported system, running as root, or a hub that is already on this device. It never touches an existing hub or its data. If it finds one before installing anything, nothing is changed; if it only finds one after installing the tools, it stops there and says so.
+- On Raspberry Pi OS it asks how the screen hangs; Debian and Ubuntu skip that question. Then it shows every `sudo` command it will run, with why and how to undo it, and asks you to approve that plan and to confirm the home-network rule. Only `y` or `yes` goes on (also `Y`, `Yes` or `YES`; spaces and tabs before or after the answer are ignored); any other answer, or just Enter, changes nothing. It then ends with a plain message that nothing was changed, not with a "Stopped:" line.
+- Your password goes only into `sudo`'s own prompt. If Docker is already installed but your account cannot reach it, or Docker's data folder from an earlier install is still on the device, `sudo` may ask for it right after you approve the plan, for a read-only look for an existing hub. Otherwise it asks when the installs start, after the home-network question.
+- It installs git and the GitHub CLI (`gh`) with the guide's commands, and Docker with Docker's own commands, with `-y` added to their installs because you approved them in the plan. Then it gets the code at the pinned commit, checks the image's signature with `verify-image`, and starts only that verified image.
+- It waits while you set up your household and the parent PIN on the device's own screen. It never asks for, reads or shows the PIN.
+- On Raspberry Pi OS it sets up the screen with `setup kiosk`, unless you chose no kiosk; Debian and Ubuntu skip this. At the end it tells you to restart and how to check the hub.
+
+What it doesn't do: put the system on the card, update or restore a hub that is already there, set up remote access, sign in to anything, or send anything anywhere except the package installs, the code and image downloads and the image's signature check. If a check fails, it stops with one line that says why and what to do; [If something goes wrong](INSTALL-WITH-AI.md#if-something-goes-wrong) has the details. The one-command install is new and has not been tried on a Raspberry Pi yet.
+
+### With an AI assistant
+
+Open your AI assistant in the Pi's own web browser, so that each command can be copied straight into the Pi's Terminal. Give it this prompt:
+
+> Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and follow it to install Sproutwall on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
+
+[INSTALL-WITH-AI.md](INSTALL-WITH-AI.md) is the full guide. The assistant has you run the one command above and explains its questions, or walks you through the same steps one at a time. You can also follow the guide by hand. It also covers putting the system on the card.
+
+### For AI assistants helping someone install Sproutwall
+
+If you are an AI assistant helping someone install Sproutwall, follow these rules:
+
+- **Commands run on the Pi, never on the person's laptop.** The laptop only writes the SD card with Raspberry Pi Imager. If you are a chat assistant, have the person open you in the Pi's web browser, so they can copy each command into the Pi's own Terminal.
+- **Ask the safety question first, before the card is written:** may the card or device hold a household that must not be erased? The card may be erased only if the owner confirms in their own words that it is new or blank, or confirms that the household is backed up off the device and that the card may be erased. An unsure answer means stop: don't write the card. Your own check can only find a hub; finding nothing never counts as a yes. A device that already runs Sproutwall or Family Hub is backed up and updated in place, never reinstalled ([First](INSTALL-WITH-AI.md#first-is-sproutwall-already-on-this-device)). Then ask at most the guide's [five decisions](INSTALL-WITH-AI.md#the-five-decisions). Don't ask for anything you can find out yourself, such as the Pi model, memory or screen.
+- **Default path, when the person is at the Pi's own Terminal (a chat assistant, or an AI tool running on the Pi): the one command above.** The person runs it themselves; you never run `sudo`. Explain its questions in the order it asks them: on Raspberry Pi OS only, how the screen hangs (Enter is portrait); the install plan (the person reads it and types `y`); possibly the Pi password right after that, for a read-only look for an existing hub; the home-network rule (`y` only if it is true); then the Pi password when the installs start. The password goes only into `sudo`'s own prompt. When it says "Set up your household now", wait and look at nothing until the person is done. An assistant on a laptop that connects to the Pi over SSH (tier B in the guide) does not use the one command: it follows the guide's steps 3 to 7 with `--tier B`.
+- **Never ask for or accept** the parent PIN, any password (the Pi's or the Wi-Fi's), calendar links, tokens or API keys. The person types them only into the hub's own screen, `sudo`'s prompt or a service's own sign-in page.
+- **If the person declines** the plan or the home-network rule, the command ends with a plain message that nothing was changed. That is not an error to fix: end the session, or ask whether they want to continue. **If it stops,** it prints one line that starts with `Stopped:` and says why and what to do. Use that line with the guide's [If something goes wrong](INSTALL-WITH-AI.md#if-something-goes-wrong) and the doctor check, `cd ~/sproutwall && ./scripts/sproutwall doctor --json --phase running --tier C` once the hub has started. Ask for and share nothing else: no logs, config files or screenshots. Never work around a stop.
+- **Never suggest** Docker's convenience script, `docker compose down -v`, `docker volume rm`, deleting the `sproutwall` folder, the `:preview` tag, `gh auth login` or a GitHub token, skipping the image check, turning the screen lock off, or exposing the hub beyond the home network (port forwarding, tunnels, public servers).
+- **Don't use the build-from-source installs** ([manual install](docs/manual-install.md), and the build steps of the [Raspberry Pi guide](docs/raspberry-pi.md)) for a family. They are for developers: they build the image on the device instead of installing the verified one.
+- **Full rules:** [For the AI reading this](INSTALL-WITH-AI.md#for-the-ai-reading-this) in INSTALL-WITH-AI.md. They apply to every step.
 
 > **Early preview.** Sproutwall started as one family's kitchen screen and runs there every day, but the guided install is new. We have tested the tier C guided install several times in fresh Debian 13 arm64 VMs, most recently with household setup and the screen unlock done through the screen itself. We haven't tested the guided install on a Raspberry Pi yet. If you try it, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not. Bugs are welcome as [issues](https://github.com/thebrianlee/sproutwall/issues/new/choose), and ideas and questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions).
 
-Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitchen. It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. It runs on a computer in your home, such as a Raspberry Pi, and keeps the household's data on that computer. There is no cloud account and no subscription.
+It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. The household's data stays on the computer that runs it.
 
 Turn features on or off in Settings → Modules.
 
@@ -15,7 +60,8 @@ Turn features on or off in Settings → Modules.
 The screenshots show the Calders, a made-up sample family. They are not a real household.
 
 **Contents:**
-[Install at home](#install-at-home) ·
+[Install](#install) ·
+[Using the hub](#using-the-hub) ·
 [Keep it safe](#keep-it-safe) ·
 [Back up and update](#back-up-and-update) ·
 [Forgot the PIN](#forgot-the-pin) ·
@@ -27,37 +73,9 @@ The screenshots show the Calders, a made-up sample family. They are not a real h
 [Contributing](#contributing) ·
 [License](#license)
 
-## Install at home
+## Using the hub
 
-New to Raspberry Pi, the Terminal or GitHub? The [step-by-step guide for beginners](docs/INSTALL-BEGINNERS.md) takes you from a blank card to the hub on your kitchen screen, with a chat AI.
-
-### What you need
-
-- A computer that stays on: a Linux PC, a Mac, a Windows PC with Docker Desktop, or a Raspberry Pi 4 or 5 ([Pi guide](docs/raspberry-pi.md)).
-- [Docker](https://docs.docker.com/get-docker/) with Compose. Check with `docker compose version`.
-- [git](https://git-scm.com/downloads), to download Sproutwall and get updates.
-
-### Start it
-
-Open a terminal and run:
-
-```bash
-git clone https://github.com/thebrianlee/sproutwall.git sproutwall
-cd sproutwall
-docker compose up -d --build
-```
-
-This makes a folder named `sproutwall`, the hub's folder. The commands on this page run there. Installed before the rename? See [Installed before the rename](#installed-before-the-rename).
-
-The first start builds the app. That takes a while, and much longer on a Raspberry Pi. `-d` keeps it running in the background. It starts again by itself after a reboot, as long as Docker starts at boot.
-
-Check that it is running:
-
-```bash
-docker compose ps
-```
-
-After a short wait the status says `healthy`. If something goes wrong, `docker compose logs` shows what happened.
+However you installed it, this is how you reach the hub and set it up.
 
 ### Open it from a phone or tablet
 
@@ -143,11 +161,11 @@ Sproutwall is built for a trusted home network. The short version:
 
 - **It is a home-network appliance.** Anyone who can reach port 3847 sees the unlock screen and can try PINs. Only devices in your home should be able to reach it.
 - **Never port-forward it.** Do not open port 3847, or any port that leads to it, on your router. Do not run it on a public server.
-- **For access from outside the house,** use a private VPN such as WireGuard, or a reverse proxy with HTTPS. With HTTPS, set `PUBLIC_URL` (see [Settings outside the app](#settings-outside-the-app)) so the unlock cookies are marked Secure. The proxy must pass the original `Host` (or `X-Forwarded-Host`) header, or the hub refuses changes as cross-site. It should also pass `X-Forwarded-For`, so each screen gets its own wrong-PIN count.
 - **Plain `http://` does not encrypt anything.** On home Wi-Fi the PIN and the unlock cookies travel unencrypted. Someone who can watch your network traffic could copy them.
-- **Docker gets around your firewall.** On Linux, ports that Docker publishes bypass `ufw` and `firewalld` rules. To limit who can connect, [bind the port to one address](#limit-who-can-connect) instead of relying on firewall rules.
-- **Keep screens locked.** `REQUIRE_AUTH_FOR_READS: "0"` lets anyone who can reach the port read the household. Use it only for a single screen that nobody else on the network can reach.
+- **Keep screens locked.** Every screen stays locked until a parent unlocks it with the PIN. Never turn the lock off.
 - **Treat calendar links and backups as secrets.** A secret iCal link lets anyone read that calendar. A backup holds the household database and the hub's secret keys.
+
+A hub installed with the one command or [INSTALL-WITH-AI.md](INSTALL-WITH-AI.md) follows that guide's rules ([For the AI reading this](INSTALL-WITH-AI.md#for-the-ai-reading-this), rules 4 and 5): never expose it beyond the home network, never turn the screen lock off, and never change its compose files or its port binding. Outside access, binding the port to one address and the other settings below are for the [manual install](docs/manual-install.md#keep-it-safe-on-a-manual-install) only.
 
 Kids' data stays on your computer. The one exception is Ask the Hub, and only if you turn it on (see [Ask the Hub](#ask-the-hub)).
 
@@ -159,52 +177,15 @@ There are no per-person accounts. Google sign-in is not built. The parent PIN is
 
 ### Limit who can connect
 
-Create a file named `docker-compose.override.yml` in the hub's folder. Compose reads it automatically.
-
-```yaml
-services:
-  family-hub:
-    ports: !override
-      - "127.0.0.1:3847:3847"
-```
-
-Then run `docker compose up -d`.
-
-- `127.0.0.1` means only the computer itself can open the hub, for example a Raspberry Pi with its own touchscreen. Phones can no longer reach it.
-- To allow your home network but not other networks the computer is on, use the computer's LAN address instead, for example `"192.168.1.50:3847:3847"`.
-- `!override` needs Docker Compose 2.24.4 or newer.
-- git does not track this file, so updates leave it alone.
+For the [manual install](docs/manual-install.md#limit-who-can-connect) only. On a hub installed with the one command or INSTALL-WITH-AI.md, don't change the port binding: if doctor reports `restrict_ports`, follow [If something goes wrong](INSTALL-WITH-AI.md#if-something-goes-wrong).
 
 ### Settings outside the app
 
-A few settings are environment variables. With Docker, add them to the same `docker-compose.override.yml` under `environment:`, then run `docker compose up -d`. Keep API keys in a file named `.env` in the same folder (git ignores it) and refer to them by name:
-
-```yaml
-services:
-  family-hub:
-    environment:
-      PUBLIC_URL: https://hub.example
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-```
-
-```bash
-# .env, next to docker-compose.yml
-ANTHROPIC_API_KEY=paste-your-key-here
-```
-
-| Variable | Docker default | What it does |
-| --- | --- | --- |
-| `REQUIRE_AUTH_FOR_READS` | `1` | `1` locks every screen until it is unlocked with the parent PIN. |
-| `PUBLIC_URL` | not set | Set it to your `https://` address when the hub is served over HTTPS. The unlock cookies are then marked Secure. |
-| `ANTHROPIC_API_KEY` | not set | Turns on Ask the Hub with Claude. |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Which Claude model the bridge asks. |
-| `OLLAMA_URL` | not set | Turns on Ask the Hub with a local [Ollama](https://ollama.com/) server. |
-| `OLLAMA_MODEL` | `llama3.2` | Which Ollama model to use. |
-| `ASK_MAX_PER_MINUTE` | `6` | Most questions the hub sends per minute. |
-| `ASK_MAX_PER_DAY` | `100` | Most questions the hub sends per day. |
-| `SESSION_SECRET`, `BRIDGE_TOKEN` | generated | Leave these unset. The hub creates random ones in its data volume on first start. |
+Environment variables such as `ANTHROPIC_API_KEY` and `PUBLIC_URL`, for the [manual install](docs/manual-install.md#settings-outside-the-app) only. Don't change the compose files of a hub installed with the one command or INSTALL-WITH-AI.md.
 
 ## Back up and update
+
+These commands are for the [manual install](docs/manual-install.md), which builds the hub locally. Installed with the one command or the AI guide? Use the guide's [Existing install / update](INSTALL-WITH-AI.md#existing-install--update) instead.
 
 ### Back up
 
@@ -220,7 +201,7 @@ docker compose start
 
 ### Restore
 
-On the same computer, or on a new one after the [install steps](#start-it). Restoring replaces the household on this computer with the one in the backup, so back up first if the hub holds anything you want to keep.
+On the same computer, or on a new one after the [install steps](docs/manual-install.md#start-it). Restoring replaces the household on this computer with the one in the backup, so back up first if the hub holds anything you want to keep.
 
 ```bash
 docker compose stop
@@ -266,12 +247,12 @@ Kids type a question and get a short, kid-friendly answer. It is **off until a p
 
 ### Turn it on
 
-Pick one and add it as described in [Settings outside the app](#settings-outside-the-app):
+On a [manual install](docs/manual-install.md), pick one and add it as described in [Settings outside the app](docs/manual-install.md#settings-outside-the-app). For a hub installed with the one command or INSTALL-WITH-AI.md, a way to turn it on is not written yet: don't edit its compose files.
 
 - **Claude:** set `ANTHROPIC_API_KEY` to your own key from Anthropic. You pay for what the family asks.
 - **A local model:** set `OLLAMA_URL` to an Ollama server, for example `http://192.168.1.60:11434` for Ollama on another computer. That Ollama must accept connections from the network. On a Raspberry Pi a local model is likely to be very slow (see the [Pi guide](docs/raspberry-pi.md#ask-the-hub-is-slow-or-does-not-answer)).
 
-Then run `docker compose up -d`.
+Then, on the manual install, run `docker compose up -d`.
 
 ### What is sent, and where
 
@@ -337,9 +318,11 @@ Without a headshot, the sample family shows cartoon avatars, and everyone else s
 
 ## Raspberry Pi
 
-A Raspberry Pi 4 or 5 with a touchscreen makes a good kitchen hub. The [Raspberry Pi guide](docs/raspberry-pi.md) walks through it step by step: flashing the card, installing Docker, starting the hub, and running the screen full screen at boot.
+A Raspberry Pi 4 or 5 with a touchscreen makes a good kitchen hub. To install on a Pi, use [Install](#install) above. The [Raspberry Pi guide](docs/raspberry-pi.md) builds the hub on the Pi instead, and covers setting up the screen by hand and troubleshooting.
 
 ## For developers
+
+To build Sproutwall from source with Docker, on any computer including a Mac or a Windows PC, see [Manual install](docs/manual-install.md). It is not the install for a family's kitchen screen.
 
 Requirements: Node.js 22 (`engines` says `>=22`; CI and the Docker image use 22). If `better-sqlite3` has no prebuilt binary for your platform, you also need `python3`, `make` and a C++ compiler.
 
