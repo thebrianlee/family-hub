@@ -252,7 +252,7 @@ ssh_lan_ipv4() {
     previous=$word
   done
   case "$dev" in
-    "" | lo | docker* | br-* | veth* | virbr* | lxcbr* | lxdbr* | podman* | cni* | flannel* | cali* | tun* | tap* | wg* | tailscale* | zt*) return 1 ;;
+    "" | lo | docker* | br-* | veth* | virbr* | lxcbr* | lxdbr* | podman* | cni* | flannel* | cali* | tun* | tap* | wg* | zt*) return 1 ;;
   esac
   ipv4_on_home_network "$src" || return 1
   printf '%s\n' "$src"
