@@ -112,7 +112,7 @@ export default function TabNav() {
     }
   }, []);
   return (
-    <nav className="flex gap-4 px-8 pb-7 pt-3 shrink-0">
+    <nav className="tabnav flex gap-4 px-8 pb-7 pt-3 shrink-0">
       {(canEvent || canRoutine) && (
         <AddSheet open={addOpen} onClose={() => setAddOpen(false)} initialStep={addStep} initialType={addType} />
       )}
@@ -130,7 +130,7 @@ export default function TabNav() {
             }`}
           >
             <Icon active={active} />
-            {tab.label}
+            <span className="tabnav-label">{tab.label}</span>
           </Link>
         );
       })}
@@ -138,7 +138,7 @@ export default function TabNav() {
       <Link
         href="/settings"
         aria-label="Parent settings"
-        className={`touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 shadow-tile ${
+        className={`tabnav-icon touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 shadow-tile ${
           pathname === "/settings" ? "bg-ink text-cream" : "bg-cream-raised text-ink-faint active:bg-cream-sunken"
         }`}
       >
@@ -151,7 +151,7 @@ export default function TabNav() {
       <button
         onClick={() => window.dispatchEvent(new CustomEvent("sproutwall:sleep"))}
         aria-label="Start screensaver"
-        className="touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 bg-cream-raised text-ink-faint shadow-tile active:bg-cream-sunken"
+        className="tabnav-icon touch-target w-[110px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 bg-cream-raised text-ink-faint shadow-tile active:bg-cream-sunken"
       >
         <MoonIcon />
       </button>
@@ -166,12 +166,12 @@ export default function TabNav() {
           setAddOpen(true);
         }}
         aria-label="Add event or routine"
-        className="touch-target w-[128px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 bg-ember text-white shadow-card active:scale-95 transition-transform"
+        className="tabnav-icon touch-target w-[128px] flex flex-col items-center justify-center gap-1.5 rounded-card py-4 bg-ember text-white shadow-card active:scale-95 transition-transform"
       >
         <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round">
           <path d="M12 5v14M5 12h14" />
         </svg>
-        Add
+        <span className="tabnav-label">Add</span>
       </button>
       )}
     </nav>

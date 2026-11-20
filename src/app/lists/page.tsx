@@ -101,7 +101,7 @@ export default function ListsPage() {
 
       {/* selected list */}
       <div className="flex-1 min-h-0 flex flex-col gap-4">
-        <div className="flex-1 min-h-0 overflow-y-auto card px-6 py-5 flex flex-col gap-5">
+        <div className="flex-1 min-h-[10rem] overflow-y-auto card px-6 py-5 flex flex-col gap-5">
           {sel && sel.sections.length === 0 && (
             <div className="flex-1 flex items-center justify-center text-2xl font-bold text-ink-faint text-center">Nothing here yet — add something below.</div>
           )}

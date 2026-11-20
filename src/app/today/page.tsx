@@ -270,7 +270,7 @@ export default function TodayPage() {
         {t?.rules && t.rules.length > 0 && (
           <button
             onClick={() => setRulesOpen(true)}
-            className="tile shrink-0 self-start flex items-center gap-3 px-6 py-3 active:bg-cream-sunken"
+            className="tile touch-min shrink-0 self-start flex items-center gap-3 px-6 py-3 active:bg-cream-sunken"
           >
             <span className="text-3xl">📜</span>
             <span className="text-2xl font-extrabold">Family Rules</span>
@@ -280,9 +280,9 @@ export default function TodayPage() {
 
         {/* Family Rhythm — the weekly pulse (Hearth's four dimensions), up top */}
         {rhythm && (
-          <div className="card px-8 py-6 flex items-center gap-8 shrink-0">
+          <div className="card px-8 py-6 flex items-center gap-8 shrink-0 max-sm:flex-col max-sm:items-stretch max-sm:px-4 max-sm:gap-4">
             <RhythmGauge score={rhythm.score} label={rhythm.label} />
-            <div className="flex-1 grid grid-cols-2 gap-x-10 gap-y-4">
+            <div className="flex-1 grid grid-cols-2 gap-x-10 gap-y-4 max-sm:gap-x-4">
               {rhythm.dims.map((d) => (
                 <div key={d.key}>
                   <div className="flex items-center justify-between text-xl font-bold text-ink-soft mb-1.5">
@@ -416,7 +416,7 @@ export default function TodayPage() {
             {parents.map((p) => {
               const st = t?.statuses[p.id];
               return (
-                <button key={p.id} onClick={() => setPinFor(p.id)} className="flex items-center gap-3 text-left active:opacity-80">
+                <button key={p.id} onClick={() => setPinFor(p.id)} className="touch-min flex items-center gap-3 text-left active:opacity-80">
                   <Avatar member={p.id} size={44} />
                   <span className="text-xl font-extrabold">{p.name}</span>
                   <span className="text-xl font-bold text-ink-soft">{st ? `${STATUS_EMOJI[st]} ${st}` : "…"}</span>

@@ -190,7 +190,7 @@ export default function CalendarPage() {
 
   return (
     <div className="h-full flex flex-col gap-5 min-h-0">
-      <header className="flex items-center justify-between shrink-0">
+      <header className="flex items-center justify-between shrink-0 max-sm:flex-wrap max-sm:gap-2">
         <div>
           <div className="eyebrow mb-1">Calendar</div>
           <h1 className="text-4xl font-extrabold tracking-tight">{title}</h1>
