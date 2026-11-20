@@ -1,6 +1,6 @@
 # Sproutwall
 
-**Install:** [guided, with or without an AI assistant](INSTALL-WITH-AI.md) · [manual install](#install-at-home)
+**Install:** [with one command](#with-one-command) · [with an AI assistant](#with-an-ai-assistant) · [manual install](#install-at-home)
 
 > **Early preview.** Sproutwall started as one family's kitchen screen and runs there every day, but the guided install is new. We tested the tier C guided install once in a fresh Debian 13 arm64 VM, completing household setup through the API rather than the screen. We haven't tested the guided install on a Raspberry Pi yet. If you try it, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not. Bugs are welcome as [issues](https://github.com/thebrianlee/sproutwall/issues/new/choose), and ideas and questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions).
 
@@ -13,6 +13,7 @@ Turn features on or off in Settings → Modules.
 The screenshots show the Calders, a made-up sample family. They are not a real household.
 
 **Contents:**
+[Install](#install) ·
 [Install at home](#install-at-home) ·
 [Keep it safe](#keep-it-safe) ·
 [Back up and update](#back-up-and-update) ·
@@ -24,6 +25,34 @@ The screenshots show the Calders, a made-up sample family. They are not a real h
 [For developers](#for-developers) ·
 [Contributing](#contributing) ·
 [License](#license)
+
+## Install
+
+On a Raspberry Pi 4 or 5 with Raspberry Pi OS (64-bit), or on a 64-bit computer with Debian or Ubuntu, there are two ways to install the published preview. Both run in the device's own Terminal: on a Pi, open **Terminal** on its desktop, with its screen attached.
+
+### With one command
+
+Open Terminal on the device and run this as yourself, not with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+```
+
+It runs the steps of the [install guide](INSTALL-WITH-AI.md) for you, the way the guide's "Without AI" path does, and asks a few questions on the way:
+
+- First it checks the device, and changes nothing if something is wrong: a 32-bit or unsupported system, running as root, or a hub that is already on this device.
+- It asks how the screen hangs. Then it shows every `sudo` command it will run, with why and how to undo it, and asks you to approve that plan and to confirm the home-network rule. Answer anything but `y` and nothing is changed.
+- It installs git, Docker and the GitHub CLI (`gh`) with the guide's commands, gets the code at the pinned commit, checks the image's signature with `verify-image`, and starts only that verified image.
+- It waits while you set up your household and the parent PIN on the device's own screen. It never asks for, reads or shows the PIN.
+- On Raspberry Pi OS it sets up the screen with `setup kiosk`. At the end it tells you to restart and how to check the hub.
+
+What it doesn't do: put the system on the card, update or restore a hub that is already there, set up remote access, sign in to anything, or send anything anywhere except the package installs, the code and image downloads and the image's signature check. If a check fails, it stops with one line that says why and what to do; [If something goes wrong](INSTALL-WITH-AI.md#if-something-goes-wrong) has the details. The one-command install is new and has not been tried on a Raspberry Pi yet.
+
+### With an AI assistant
+
+[INSTALL-WITH-AI.md](INSTALL-WITH-AI.md) is a step-by-step guide that an AI assistant can walk you through, or that you can follow by hand. It covers the same steps, plus putting the system on the card.
+
+To build Sproutwall yourself on any computer with Docker, including a Mac or a Windows PC, see [Install at home](#install-at-home).
 
 ## Install at home
 

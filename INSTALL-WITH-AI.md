@@ -7,6 +7,9 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
    first. Then replace both values together everywhere in this file: the full 40-character
    source commit, and the multi-arch index digest with its sha256: prefix. They appear in the
    pinned-preview table, in step 3 and in step 4. Never mix values from two builds.
+   Replace the same two values in install.sh too (PINNED_SOURCE_COMMIT and PINNED_IMAGE_DIGEST
+   at its top), in the same pull request: scripts/tests/test_install_sh.py fails if install.sh
+   and the table in this file differ.
    Leave the token published-index-digest-hex (in angle brackets, in step 4) as it is:
    it is the template token in docker-compose.preview.yml that the sed command in step 4
    replaces on the device. Never write a tag such as :preview in place of the digest.
@@ -589,6 +592,8 @@ In `~/sproutwall`, on the Pi's desktop:
 If `--undo` refuses because a file was changed after setup (for example in Control Centre), follow [Remove the kiosk by hand](docs/raspberry-pi.md#remove-the-kiosk-by-hand). The hub and its data are not touched either way.
 
 ## Without AI
+
+The easiest way without AI is the one-command install in the README, [With one command](README.md#with-one-command): on the device, it shows the install plan, asks you, and then runs steps 3 to 5 and 7 for you.
 
 Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
 
