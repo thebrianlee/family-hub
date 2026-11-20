@@ -28,8 +28,8 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
      verify-image passes for the real pair; the attested subject is the index digest; a
      wrong source commit (exit 1) and a tampered digest (exit 4) fail; the committed
      template is refused (exit 2).
-   - A full tier C run of this guide, steps 2-6 and 8, in a Debian 13 arm64 VM (Lima, no
-     host mounts, loopback only): GitHub's apt repository installed arm64 gh 2.105.0;
+   - A VM trial of this guide (tier C, steps 2-6 and 8; household setup through the setup
+     API rather than the screen) in a Debian 13 arm64 VM (Lima, no host mounts, loopback only): GitHub's apt repository installed arm64 gh 2.105.0;
      verify-image exit 0; the hub started healthy; setup finished; doctor passed every
      applicable check in all three phases except ssh_policy (the VM needs SSH) and the
      expected app_bind unknown; the household and the PIN lock survived a reboot.
