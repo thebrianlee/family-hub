@@ -1,10 +1,10 @@
 # Install Sproutwall: a step-by-step guide for beginners
 
-This guide is for you if you have never used a Raspberry Pi, a Terminal or GitHub. If you can use a laptop, a web browser and a chat AI (an AI assistant you talk to on a web page), you can do this.
+This guide is for you if you have never used a Raspberry Pi, a Terminal or GitHub. If you can use a laptop and a web browser, you can do this. A chat AI (an AI assistant you talk to on a web page) is optional.
 
-It takes you from "I have a Pi, a screen and an SD card" to Sproutwall on your kitchen screen. In this guide, "the hub" means Sproutwall running on your Pi. You prepare the card and start the Pi yourself. Then a chat AI walks you through the install, one command at a time, using [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md). That page stays the full reference. This one gets you to the point where the AI takes over, tells you what you will see on the way, and lists what never to share.
+It takes you from "I have a Pi, a screen and an SD card" to Sproutwall on your kitchen screen. In this guide, "the hub" means Sproutwall running on your Pi. You prepare the card and start the Pi yourself. Then you install the hub in one of two ways: with [one command](#5-install-with-one-command-no-ai-needed) that asks a few questions, or with [a chat AI](#6-install-with-your-ai-assistant) that walks you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) one command at a time. That page stays the full reference. This one gets you to the point where the install takes over, tells you what you will see on the way, and lists what never to share.
 
-> **Early preview.** The guided install is new. It has been tested several times in a Debian 13 virtual machine (a computer simulated inside another computer), with an AI agent following the guide and the household set up on the screen. It has not yet been tested end to end on a real Raspberry Pi. If you try it, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not.
+> **Early preview.** The guided install is new. It has been tested several times in a Debian 13 virtual machine (a computer simulated inside another computer), with an AI agent following the guide and the household set up on the screen. It has not yet been tested end to end on a real Raspberry Pi. The one-command install is new too, and has not been tried on a Raspberry Pi yet. If you try either, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not.
 
 ## 1. What you need
 
@@ -31,7 +31,7 @@ Raspberry Pi OS is the Pi's operating system, like Windows or macOS on a laptop.
   - **Hostname:** `hub`. This is the Pi's name on your home network.
   - **Localisation:** Imager asks for a capital city and fills in the time zone and keyboard layout from it. Check both, and change the time zone if yours is different. The hub takes its time zone from the Pi later.
   - **User:** a username and a password. The username must start with a lowercase letter; use only lowercase letters and numbers. Keep the password to yourself. You type it into the Pi when a command asks for it.
-  - **Wi-Fi:** your home network's name and password.
+  - **Wi-Fi:** your home network's name and password. Imager needs the password. If someone else in your home keeps it, leave Wi-Fi out of Imager (clear the network name). They can type the password on the Pi later, with the network icon on the bar at the top of the screen. Or use a network cable.
   - **Remote Access:** leave **Enable SSH** off. SSH lets another computer control the Pi over the network. This install doesn't use it.
   - **Raspberry Pi Connect:** if Imager shows it, leave it off. It is a service for reaching your Pi from outside your home, and the hub stays on your home network.
 - **Writing:** check the summary and choose **Write**. Imager warns that it will erase the card. Confirm (**I understand, erase and write**) only if you chose the right card. Imager then writes the card and checks it. This can take a while.
@@ -39,7 +39,20 @@ Raspberry Pi OS is the Pi's operating system, like Windows or macOS on a laptop.
 
 **On a Mac:** after writing, macOS may say the disk is not readable. Choose **Ignore**. Don't choose Initialize: that would erase the card. Part of the card uses a Linux format that macOS can't read, and that is normal. **On Windows,** if it offers to format the card, choose Cancel, for the same reason.
 
+### If Imager can't read the card
+
+If Imager says "Error reading from storage. SD card may be broken", the card is often fine. Try these in order:
+
+1. Quit Imager.
+2. If the microSD card sits in a full-size SD adapter, find the small lock switch on the adapter's side and slide it to the unlocked position.
+3. **On a Mac:** open System Settings, then Privacy & Security, then Files and Folders. Find Raspberry Pi Imager and allow it to use removable volumes. The names can differ a little between macOS versions.
+4. Take the card out and put it back in. Don't open it in Finder or File Explorer; go straight to Imager.
+5. Try another card reader, or another USB port.
+6. If it still fails, use another card.
+
 ## 3. Start the Pi
+
+> **From here on, the Pi does the work.** Everything after writing the card happens on the Pi itself, in its own Terminal and its own web browser. Your laptop's job ended when the card was written: Sproutwall is never installed on the laptop and copied over.
 
 1. With the Pi unplugged, connect the screen (and its touch cable, if it has one) as the screen's instructions say.
 2. Put the microSD card in the Pi's card slot.
@@ -59,10 +72,42 @@ Tip: put the browser and the Terminal side by side, so you can copy from one and
 - **Paste** into the Terminal with **Ctrl+Shift+V**. Plain Ctrl+V doesn't paste there.
 - **Enter** runs the command you pasted. Wait until it finishes before the next one.
 - When a command asks for your **password**, typing shows nothing, not even dots. That's normal: type it and press Enter.
-- When a command asks `[Y/n]`, press **Enter** to answer yes.
+- When a command asks `[Y/n]`, press **Enter** to answer yes. When it asks `[y/N]`, Enter alone means no: type `y`, then press Enter.
 - **Never type commands by hand.** Copy them from the browser, so no letter is wrong.
 
-## 5. Install with your AI assistant
+## 5. Install with one command (no AI needed)
+
+One command runs the install guide's steps for you and asks a few questions on the way. Run it in the Pi's own Terminal. To copy the line below, open this page in the Pi's web browser.
+
+1. **Wait 3 to 5 minutes** after the desktop first appears. A new Pi finishes its own first-start setup in the background. The command also waits for that by itself, for up to 10 minutes.
+2. **Open the Terminal** (section 3), paste this line and press Enter. Don't put `sudo` in front of it.
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+   ```
+
+   It checks the Pi first, and changes nothing if something is wrong: for example a 32-bit system, an unsupported Pi model or a hub that is already on this Pi.
+3. **Answer its questions,** in this order:
+   - **How does the screen hang?** Press Enter for portrait, the usual choice for a kitchen wall, or type a number from 1 to 5 from the list it shows (5 is no full-screen setup). Only on Raspberry Pi OS.
+   - **The install plan.** It lists every command it will run as administrator (`sudo`), why, and how to undo it. Read it, then type `y` and press Enter.
+   - **The home-network rule:** this is your own router, it is not a guest or public network, nothing on the router forwards a port to the Pi, and no tunnel or remote-access service exposes it. If all of that is true, type `y` and press Enter.
+   - **Your Pi password,** when `sudo` asks for it: the one you chose in Imager.
+
+   For the plan and the home-network rule, only `y` or `yes` goes on. Any other answer, or Enter alone, stops it with nothing changed.
+4. **Then it works on its own** for a while: system updates and the tools (git, Docker and the GitHub CLI, as described in [section 6](#6-install-with-your-ai-assistant)), the code in a folder named `sproutwall`, the check that the hub's image really was built by the project, and starting the hub. Nothing starts unless the image check passes. Leave it running.
+5. **Set up your household.** When it says "Set up your household now", open the web browser at `http://localhost:3847` on the Pi's screen. Set up your family and choose the parent PIN alone, as [section 6, point 7](#6-install-with-your-ai-assistant) describes. The command never asks for, reads or shows the PIN. When you have tapped **Open the wall**, go back to the Terminal and press Enter. If setup is not finished yet, it says so and waits.
+6. **The screen setup** (Raspberry Pi OS, unless you chose 5). The picture turns the way you chose. When it asks, tap the four corners and the center of the screen: each tap must land under your finger. Then press Enter. If it offers to turn on automatic desktop login, so the hub comes back by itself after a power cut, type `y` and press Enter.
+7. **The summary.** It ends with "Sproutwall is installed", a phone check (open the address it shows on a phone on your Wi-Fi: it must ask for the PIN and must not show the family) and the final check to run after a restart. Then restart the Pi by running `sudo reboot`. After the restart, if the hub is full screen, press Alt+F4 to reach the desktop, open the Terminal and run the final check:
+
+   ```bash
+   cd ~/sproutwall && ./scripts/sproutwall doctor --phase final --tier C --kiosk on
+   ```
+
+   Use `--kiosk off` instead if the screen was not set up. It passes with `Result: pass`, or with `Result: unknown` when the only unknown is `app_bind` / `confirm_trusted_lan` (see [section 6](#6-install-with-your-ai-assistant)). Then see [section 8](#8-when-its-done).
+
+**If it stops,** it prints one line that starts with `Stopped:` and says why and what to do. It never deletes your files or the hub's data and never works around a problem, and the line usually says whether anything was changed and whether it is safe to run the command again. Share only that line and the status check's output, as [section 9](#9-if-you-get-stuck) says.
+
+## 6. Install with your AI assistant
 
 From here a chat AI guides you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md). That guide calls this **tier C**: the AI only chats, and you paste each command into the Pi's Terminal yourself. Nothing is installed for the AI on the Pi.
 
@@ -105,7 +150,7 @@ From here a chat AI guides you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.m
 
 In steps 5, 6 and 8 the AI has you run a status check called `doctor`. On a home network, one check normally comes back `unknown`: `app_bind`, with the action `confirm_trusted_lan`. The Pi can't see inside your router, so it asks you to confirm the home-network rule. That one is expected. Any `fail`, or any other `unknown`, means stop, and the AI tells you what to do.
 
-## 6. Never share
+## 7. Never share
 
 Never paste these into a chat, an issue or a screenshot, not even for the AI that is helping you:
 
@@ -126,24 +171,24 @@ Never run these, even if an AI suggests them:
 
 If an AI suggests something that is not in the guide, stop and ask in [Discussions](https://github.com/thebrianlee/sproutwall/discussions) before you run it.
 
-## 7. When it's done
+## 8. When it's done
 
-- After the screen setup, the Pi restarts into the full-screen hub by itself. It asks once for the parent PIN to unlock this screen: type it yourself. The unlock lasts 30 days on that screen. From then on, the hub comes back by itself every time the Pi starts.
-- **Tap the four corners and the center of the screen.** Each tap must land under your finger. If it doesn't, see section 8.
+- After the screen setup and the restart, the Pi opens the full-screen hub by itself. It asks once for the parent PIN to unlock this screen: type it yourself. The unlock lasts 30 days on that screen. From then on, the hub comes back by itself every time the Pi starts.
+- **Tap the four corners and the center of the screen.** Each tap must land under your finger. If it doesn't, see section 9.
 - Phones, tablets and laptops on the same Wi-Fi can open the hub too. The README's [Open it from a phone or tablet](../README.md#open-it-from-a-phone-or-tablet) shows how. Each new screen asks for the PIN once.
-- Close the chat, and sign out of your chat AI in the Pi's browser.
+- If you used a chat AI, close the chat and sign out of it in the Pi's browser.
 - Keep the `sproutwall` folder. It is the hub's folder.
 - For backups, and before any update, read [Existing install / update](../INSTALL-WITH-AI.md#existing-install--update). Don't use the README's update command on this install: it builds the hub differently.
 
-## 8. If you get stuck
+## 9. If you get stuck
 
-- **Stop the install** when a step fails or the AI says stop. Don't try fixes that are not in the guide.
+- **Stop the install** when a step fails, the install command stops, or the AI says stop. Don't try fixes that are not in the guide.
 - **Share only two things,** with the AI or anyone else:
-  1. the short result the step asked for, such as `exit 1`, or the one line a step printed to say why it stopped;
+  1. the short result the step asked for, such as `exit 1`, or the one line a step printed to say why it stopped (with the one-command install, the line that starts with `Stopped:`);
   2. the output of the status check below.
 
   Don't copy whole Terminal output, and never paste logs, config files or screenshots of the hub.
-- **The safe status check.** Once step 3 has put the `sproutwall` folder on the Pi and the hub has started, run this. It only reads and changes nothing, and its output is safe to share by design:
+- **The safe status check.** Once the `sproutwall` folder is on the Pi and the hub has started, run this. It only reads and changes nothing, and its output is safe to share by design:
 
   ```bash
   cd ~/sproutwall && ./scripts/sproutwall doctor --json --phase running --tier C
@@ -153,7 +198,7 @@ If an AI suggests something that is not in the guide, stop and ask in [Discussio
 - **Starting over** with a freshly written card (section 2) is often the fastest fix on a new setup. Do it only while the hub holds nothing you want to keep: writing the card erases everything on it.
 - **Where to ask:** send an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml) (whether it worked or not), and ask questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions). Say which step stopped and give its short result and the status check's output: no logs, names or links. Report security problems privately, as [SECURITY.md](../SECURITY.md) says.
 
-## 9. Undo
+## 10. Undo
 
 To go back to the setup the Pi had before:
 
