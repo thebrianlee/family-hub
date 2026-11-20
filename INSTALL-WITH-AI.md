@@ -297,7 +297,7 @@ The first line must be `aarch64` or `x86_64`, and the second `64bit`.
 
 ## Step 3: Install the tools and get the code
 
-**Skip steps 3 to 7 when the one command finished (tiers A and C).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. If the person declined a question, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for tier B, for a person who asked to go step by step, and for when the one command can't be used.
+**Skip steps 3 to 7 when the one command finished (tiers A and C).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. If the person declined the install plan or the home-network rule, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). A "no" to a later question (turning on desktop autologin, or trying the screen setup again) leaves the hub installed and running: the run goes on to its summary, which says what is left to do. If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for tier B, for a person who asked to go step by step, and for when the one command can't be used.
 
 ### Install the tools
 
