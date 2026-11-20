@@ -24,9 +24,11 @@ body:
     attributes:
       label: How you installed it
       options:
-        - "Guided (INSTALL-WITH-AI.md), tier A: an AI assistant on the device itself"
-        - "Guided (INSTALL-WITH-AI.md), tier B: an AI assistant on another computer, over SSH"
-        - "Guided (INSTALL-WITH-AI.md), tier C: I typed the commands, with an AI in a chat or no AI"
+        - "One command (install.sh), on my own"
+        - "One command (install.sh), with an AI assistant explaining it"
+        - "Guided step by step (INSTALL-WITH-AI.md), tier A: an AI assistant on the device itself"
+        - "Guided step by step (INSTALL-WITH-AI.md), tier B: an AI assistant on another computer, over SSH"
+        - "Guided step by step (INSTALL-WITH-AI.md), tier C: I typed the commands, with an AI in a chat or no AI"
         - Manual install from the README
         - Raspberry Pi guide (docs/raspberry-pi.md)
         - Other
@@ -60,7 +62,7 @@ body:
     id: stuck
     attributes:
       label: Where it got stuck or felt unclear
-      description: The step number, what the guide said, and what happened instead. Write "nothing" if it all went smoothly.
+      description: The step number or the question the command asked, what it said, and what happened instead. If the one command stopped, paste its "Stopped:" line. Write "nothing" if it all went smoothly.
     validations:
       required: true
   - type: textarea
@@ -74,7 +76,7 @@ body:
     attributes:
       label: Version or commit
       description: Run `git log -1 --oneline` in the sproutwall folder.
-      placeholder: "aaf3860 docs: INSTALL-WITH-AI.md ..."
+      placeholder: "beb3ec1 Fit the layout to any screen size; fix broken avatars (#21)"
   - type: checkboxes
     id: privacy
     attributes:
