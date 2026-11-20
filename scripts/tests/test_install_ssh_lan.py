@@ -131,6 +131,11 @@ class LaptopAddressOverSshTests(base.InstallShTestCase):
             FAKE_HOSTNAME="169.254.10.5 192.168.1.20",
         )
         self.assertNotIn("outside the home-network ranges", run.err)
+        # The phone on the Wi-Fi cannot reach the cable's link-local address:
+        # the phone check names the device's Wi-Fi address instead.
+        self.assertIn("on a phone on the same Wi-Fi, open http://192.168.1.20:3847", run.out)
+        self.assertIn("must still show \"Unlock this screen\" at http://192.168.1.20:3847", run.out)
+        self.assertNotIn("open http://169.254.10.5:3847. It must show", run.out)
 
     def test_public_ipv4_next_to_link_local_still_stops(self):
         run = self.run_install(

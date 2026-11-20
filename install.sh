@@ -220,6 +220,22 @@ ipv4_on_home_network() {
   done
 }
 
+# Over SSH, for the phone check: the first home-network IPv4 address that is
+# not link-local (169.254.x.x reaches only a directly cabled laptop).
+phone_ipv4() {
+  local address
+  for address in $(hostname -I 2>/dev/null || true); do
+    case "$address" in
+      169.254.*) continue ;;
+    esac
+    if ipv4_on_home_network "$address"; then
+      printf '%s\n' "$address"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Over SSH: the IPv4 address the laptop reaches this device at. When the
 # session came over IPv4, that is the address it connected to (the third word
 # of SSH_CONNECTION). Otherwise (IPv6, or only SSH_CLIENT) it is a home-network
@@ -1444,9 +1460,14 @@ finish() {
     attention) say "- Screen: the kiosk is set up but needs a check after the restart: ./scripts/sproutwall setup kiosk --check. Undo: $GUIDE#undo-the-kiosk" ;;
     *) say "- Screen: no kiosk. To show the hub full screen, set it up by hand: $PI_GUIDE#step-6-show-the-hub-full-screen-on-the-pis-own-screen-optional" ;;
   esac
-  local url="http://$address:3847"
+  local url="http://$address:3847" phone=""
   if [ "$OVER_SSH" = 1 ]; then
     url=$(hub_url_for_laptop)
+    # A direct cable (169.254.x.x) reaches the laptop only, never a phone on
+    # the Wi-Fi: for the phone check, use the device's other home address.
+    case "$LAPTOP_IPV4" in
+      169.254.*) if phone=$(phone_ipv4); then url="http://$phone:3847"; fi ;;
+    esac
   fi
   say "- Phone check: on a phone on the same Wi-Fi, open $url. It must show \"Unlock this screen\""
   say "  and ask for the PIN, never the family. If it shows the family without asking, stop the hub"
@@ -1473,13 +1494,15 @@ finish() {
     say "- SSH kept on (your choice): you may run the final check over SSH. Then ssh_policy (fail or unknown) and"
     say "  temporary_access (fail remove_agent, because of the SSH session, or unknown retry_local) are expected"
     say "  for that choice. Every other check must pass as above."
-    say "Any other unknown, and any fail, is still a stop."
+    say "Any other unknown, and any other fail, is still a stop."
   fi
   if [ "$kiosk_flag" = on ]; then
     say "With the kiosk, the hub comes back on the screen by itself, the right way up, and asks once for the parent"
     say "PIN: type it there. Tap the four corners and the centre again. The screen must stay lit."
   else
-    say "Without the kiosk, run the guide's two checks. ps must show healthy, and the health check must print \"ok\":true."
+    say "Without the kiosk, run the guide's two checks (in the device's own Terminal, or over SSH if you kept it on;"
+    say "with no keyboard and SSH off, the phone check below is the check). ps must show healthy, and the health"
+    say "check must print \"ok\":true."
     say "Right after the restart, ps can show health: starting for up to a minute: wait 30 seconds and run both again."
     say "  cd ~/sproutwall"
     say "  docker compose -f docker-compose.preview.yml ps"
@@ -1509,6 +1532,16 @@ ssh_confirmed_off() {
   [ "$rc" -ne 0 ] && [ "$states" = $'inactive\ninactive' ]
 }
 
+# You asked for SSH off, but it is not confirmed off: how to try again, and
+# what the final check shows until then (guide step 8).
+ssh_off_retry_hint() {
+  say "Try again:  $(ssh_off_command)"
+  say "then check that this prints inactive for both:  $SSH_STATE_COMMAND"
+  say "Until it does, SSH is on: the final check reports ssh_policy and temporary_access as it does with"
+  say "SSH kept on, and the rest must pass (guide step 8). If it still will not turn off, get help:"
+  say "$GUIDE#if-something-goes-wrong"
+}
+
 offer_ssh_off() {
   [ "$OVER_SSH" = 1 ] || return 0
   say ""
@@ -1518,6 +1551,8 @@ offer_ssh_off() {
   if ask_yes_no "Turn SSH off now? This keeps the hub safe; this SSH session stays open until you close it."; then
     if ! turn_ssh_off; then
       say "Turning SSH off did not work, so SSH is still on."
+      ssh_off_retry_hint
+      return 0
     elif ssh_confirmed_off; then
       say "SSH is off: $SSH_STATE_COMMAND prints inactive for both."
       say "This session stays open until you close it: restart now with sudo reboot."
@@ -1527,6 +1562,8 @@ offer_ssh_off() {
       return 0
     else
       say "The command ran, but SSH is not confirmed off ($SSH_STATE_COMMAND must print inactive for both), so treat SSH as still on."
+      ssh_off_retry_hint
+      return 0
     fi
   else
     say "SSH stays on."

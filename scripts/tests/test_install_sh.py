@@ -1431,7 +1431,9 @@ class OverSshTests(InstallShTestCase):
                 self.assertNotIn("SSH is off", tail)
                 self.assertIn("SSH is not confirmed off", tail)
                 self.assertIn("treat SSH as still on", tail)
-                self.assertIn("Keeping SSH on is your own responsibility", tail)
+                self.assertIn("Try again:  sudo raspi-config nonint do_ssh 1", tail)
+                self.assertIn("Until it does, SSH is on", tail)
+                self.assertNotIn("expected for that choice", tail)
 
     def test_finish_names_the_one_acceptable_ssh_unknown(self):
         run = self.run_install(SSH_ANSWERS, **SSH_ENV)
@@ -1440,13 +1442,14 @@ class OverSshTests(InstallShTestCase):
         self.assertIn("ssh_policy unknown (review_ssh)", finish)
         self.assertIn("only root can", finish)
         self.assertIn("inactive for both:  systemctl is-active ssh.service ssh.socket", finish)
-        self.assertIn("Any other unknown, and any fail, is still a stop.", finish)
+        self.assertIn("Any other unknown, and any other fail, is still a stop.", finish)
 
     def test_ssh_off_that_fails_says_ssh_is_still_on(self):
         run = self.run_install(SSH_ANSWERS, FAKE_SUDO_FAIL="raspi-config nonint do_ssh 1", **SSH_ENV)
         self.assertEqual(run.code, 0, run.out + run.err)
         self.assertIn("Turning SSH off did not work, so SSH is still on.", run.out)
-        self.assertIn("Keeping SSH on is your own responsibility", run.out)
+        self.assertIn("Try again:  sudo raspi-config nonint do_ssh 1", run.out)
+        self.assertNotIn("Keeping SSH on is your own responsibility", run.out)
 
     def test_unreadable_ssh_settings_are_accepted_over_ssh_only(self):
         unknown_ssh = {"ssh_policy": ("unknown", "review_ssh")}

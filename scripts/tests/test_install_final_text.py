@@ -23,7 +23,7 @@ class FinalCheckAfterSshTests(base.InstallShTestCase):
         self.assertIn("unknown (retry_local)", finish)
         self.assertIn("Only those two unknowns are acceptable", finish)
         self.assertIn("inactive for both:  systemctl is-active ssh.service ssh.socket", finish)
-        self.assertIn("Any other unknown, and any fail, is still a stop.", finish)
+        self.assertIn("Any other unknown, and any other fail, is still a stop.", finish)
 
     def test_finish_covers_no_keyboard_and_ssh_kept_on(self):
         run = self.run_install(base.SSH_ANSWERS, **base.SSH_ENV)
