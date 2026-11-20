@@ -2,7 +2,8 @@ import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyAmbient, type AmbientConfig } from "@/components/Ambient";
+import { applyAmbient, idleEntry, type AmbientConfig } from "@/components/Ambient";
+import { unlockUrl } from "@/lib/unlock-redirect";
 import { hashPin } from "@/lib/auth";
 import { getMembers } from "@/lib/household";
 import { setSetting } from "@/lib/queries";
@@ -92,19 +93,66 @@ describe("applyAmbient", () => {
     expect(setSaver).not.toHaveBeenCalled();
   });
 
-  it("drops settings loaded earlier and leaves the screensaver when the screen is locked", () => {
+  it("drops settings loaded earlier, leaves the screensaver and goes to /unlock when the screen is locked", () => {
     const setCfg = vi.fn();
     const setSaver = vi.fn();
-    applyAmbient({ cfg: null, locked: true }, setCfg, setSaver);
+    const onLocked = vi.fn();
+    applyAmbient({ cfg: null, locked: true }, setCfg, setSaver, onLocked);
     expect(setCfg).toHaveBeenCalledWith(null);
     expect(setSaver).toHaveBeenCalledWith(false);
+    expect(onLocked).toHaveBeenCalledOnce();
   });
 
   it("keeps what it had after a network error", () => {
     const setCfg = vi.fn();
     const setSaver = vi.fn();
-    applyAmbient({ cfg: null, locked: false }, setCfg, setSaver);
+    const onLocked = vi.fn();
+    applyAmbient({ cfg: null, locked: false }, setCfg, setSaver, onLocked);
     expect(setCfg).not.toHaveBeenCalled();
     expect(setSaver).not.toHaveBeenCalled();
+    expect(onLocked).not.toHaveBeenCalled();
+  });
+});
+
+// A screen that has been open for a while and then loses its unlock (the PIN
+// changed, or the 30 days ran out) must not start the screensaver with the
+// household slides it loaded earlier.
+describe("idleEntry: session loss, then the idle screensaver", () => {
+  const settings: AmbientConfig = { photos: ["/p/1.jpg"], art: [], quotes: [], idleMinutes: 10, sleepStart: "21:30", sleepEnd: "06:00" };
+
+  it("goes to /unlock instead of the slides once the hub answers 401", () => {
+    expect(idleEntry({ cfg: null, locked: true })).toBe("unlock");
+  });
+
+  it("starts the screensaver while the screen is still unlocked", () => {
+    expect(idleEntry({ cfg: settings, locked: false })).toBe("saver");
+  });
+
+  it("starts it with what it had after a network error (the hub is unreachable, not refusing)", () => {
+    expect(idleEntry({ cfg: null, locked: false })).toBe("saver");
+  });
+
+  it("the locked path ends on /unlock, coming back to the same page", () => {
+    const setCfg = vi.fn();
+    const setSaver = vi.fn();
+    const onLocked = vi.fn();
+    const load = { cfg: null, locked: true };
+    expect(idleEntry(load)).toBe("unlock");
+    applyAmbient(load, setCfg, setSaver, onLocked);
+    expect(setCfg).toHaveBeenCalledWith(null);
+    expect(setSaver).toHaveBeenCalledWith(false);
+    expect(onLocked).toHaveBeenCalledOnce();
+    expect(setSaver).not.toHaveBeenCalledWith(true);
+  });
+});
+
+describe("unlockUrl", () => {
+  it("comes back to the page the screen was on", () => {
+    expect(unlockUrl("/calendar")).toBe("/unlock?next=%2Fcalendar");
+    expect(unlockUrl("/meals", "?view=week")).toBe("/unlock?next=%2Fmeals%3Fview%3Dweek");
+  });
+
+  it("never sends /unlock back to itself", () => {
+    expect(unlockUrl("/unlock", "?next=%2Ftoday")).toBe("/unlock?next=%2Ftoday");
   });
 });

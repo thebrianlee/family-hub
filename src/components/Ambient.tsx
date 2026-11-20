@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useModules } from "./ModulesProvider";
+import { goToUnlock } from "@/lib/unlock-redirect";
 
 interface Quote {
   kind: string;
@@ -98,25 +99,37 @@ export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | n
 
 /** One /api/ambient read. `locked` is true when the answer says this screen
  *  is not unlocked (401), so settings loaded earlier must be dropped too. */
-function loadAmbient(): Promise<{ cfg: AmbientConfig | null; locked: boolean }> {
+function loadAmbient(): Promise<AmbientLoad> {
   return fetch("/api/ambient")
     .then(async (r) => ({ cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: r.status === 401 }))
     .catch(() => ({ cfg: null, locked: false }));
 }
 
-/** Use fresh settings. On a 401 also drop the old ones and leave the
- *  screensaver, so a screen that lost its unlock (cookie expired, PIN changed)
- *  shows no household content. A network error keeps what it had. */
+type AmbientLoad = { cfg: AmbientConfig | null; locked: boolean };
+
+/** Use fresh settings. On a 401 drop the old ones, leave the screensaver and
+ *  go to /unlock, so a screen that lost its unlock (cookie expired, PIN
+ *  changed) shows no household content. A network error keeps what it had. */
 export function applyAmbient(
-  { cfg, locked }: { cfg: AmbientConfig | null; locked: boolean },
+  { cfg, locked }: AmbientLoad,
   setCfg: (c: AmbientConfig | null) => void,
-  setSaver: (on: boolean) => void
+  setSaver: (on: boolean) => void,
+  onLocked: () => void = goToUnlock
 ): void {
   if (cfg) setCfg(cfg);
   else if (locked) {
     setCfg(null);
     setSaver(false);
+    onLocked();
   }
+}
+
+/** What to do when the screen has been idle long enough for the screensaver.
+ *  The slides are household content (photos, rules), so the screen first asks
+ *  the hub again: still unlocked shows them, locked goes to /unlock, and a
+ *  network error shows the slides it already had. */
+export function idleEntry(load: AmbientLoad): "saver" | "unlock" {
+  return load.locked ? "unlock" : "saver";
 }
 
 export default function Ambient({ children }: { children: React.ReactNode }) {
@@ -129,6 +142,11 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
   const lastActivity = useRef(0);
   const wakeUntil = useRef(0);
   const lastRefetch = useRef(0);
+  const entering = useRef(false);
+  const saverRef = useRef(false);
+  useEffect(() => {
+    saverRef.current = saver;
+  }, [saver]);
   const bootedAt = useRef(0);
   const [clock, setClock] = useState("");
 
@@ -174,7 +192,16 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
         Date.now() > wakeUntil.current;
       setSleeping(asleep);
       const idleMs = Date.now() - lastActivity.current;
-      if (!asleep && idleMs > cfg.idleMinutes * 60_000) setSaver(true);
+      if (!asleep && idleMs > cfg.idleMinutes * 60_000 && !saverRef.current && !entering.current) {
+        entering.current = true;
+        loadAmbient().then((load) => {
+          entering.current = false;
+          if (idleEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
+          if (load.cfg) setCfg(load.cfg);
+          // Activity during the check cancels it.
+          if (Date.now() - lastActivity.current > cfg.idleMinutes * 60_000) setSaver(true);
+        });
+      }
       // Kiosk freshness: pages fetch on mount + sproutwall:datachanged, but the
       // wall stays mounted for days. Rebroadcast so whatever tab is showing
       // refetches (moved/added Google events appear within 5 min)...
