@@ -17,6 +17,9 @@ WLAN_AND_TETHER = (
 TETHER_ROUTE = "1.1.1.1 via 10.42.0.1 dev usb0 src 10.42.0.2 uid 1000"
 
 
+CABLE_AND_WIFI = "3: eth0    inet 169.254.10.5/16 brd 169.254.255.255 scope link eth0\\       valid_lft forever preferred_lft forever\n2: wlan0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic wlan0\\       valid_lft 86000sec preferred_lft 86000sec"
+
+
 class LaptopAddressOverSshTests(base.InstallShTestCase):
     def setUp(self):
         super().setUp()
@@ -129,6 +132,7 @@ class LaptopAddressOverSshTests(base.InstallShTestCase):
             "http://169.254.10.5:3847",
             SSH_CONNECTION="169.254.10.9 52344 169.254.10.5 22",
             FAKE_HOSTNAME="169.254.10.5 192.168.1.20",
+            FAKE_IP4=CABLE_AND_WIFI,
         )
         self.assertNotIn("outside the home-network ranges", run.err)
         # The phone on the Wi-Fi cannot reach the cable's link-local address:
@@ -146,6 +150,28 @@ class LaptopAddressOverSshTests(base.InstallShTestCase):
         self.assert_stopped_before_changes(run)
         self.assertIn("outside the home-network ranges", run.err)
         self.assertIn("169.254.", run.err)
+
+
+class PhoneCheckOnACableTests(base.InstallShTestCase):
+    def setUp(self):
+        super().setUp()
+        # The same SSH settings files as the laptop-address tests.
+        self.write(os.path.join(self.sysroot, "etc/ssh/sshd_config"), base.STOCK_SSHD_CONFIG)
+        self.write(
+            os.path.join(self.sysroot, "etc/ssh/sshd_config.d/50-cloud-init.conf"), "PasswordAuthentication yes\n"
+        )
+
+    def test_phone_check_skips_docker_and_says_when_no_phone_can_reach(self):
+        # Only the cable and Docker's own network: no phone can reach either.
+        run = self.run_install(
+            base.SSH_ANSWERS,
+            SSH_CONNECTION="169.254.10.9 52344 169.254.10.5 22",
+            FAKE_HOSTNAME="169.254.10.5 172.17.0.1",
+            FAKE_IP4="3: eth0    inet 169.254.10.5/16 brd 169.254.255.255 scope link eth0\\       valid_lft forever preferred_lft forever\n4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever",
+        )
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("http://172.17.0.1:3847", run.out)
+        self.assertIn("no phone can", run.out)
 
 
 class LinkLocalWithoutSshTests(base.InstallShTestCase):

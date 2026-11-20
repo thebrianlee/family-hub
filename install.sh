@@ -221,10 +221,18 @@ ipv4_on_home_network() {
 }
 
 # Over SSH, for the phone check: the first home-network IPv4 address that is
-# not link-local (169.254.x.x reaches only a directly cabled laptop).
+# not link-local (169.254.x.x reaches only a directly cabled laptop) and not on
+# a container or bridge interface such as docker0 (no phone reaches those).
 phone_ipv4() {
-  local address
-  for address in $(hostname -I 2>/dev/null || true); do
+  local listing line dev address
+  listing=$(ip -o -4 addr show 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    read -r _ dev _ address _ <<<"$line"
+    dev=${dev%%@*}
+    case "$dev" in
+      "" | lo | docker* | br-* | veth* | virbr* | lxcbr* | lxdbr* | podman* | cni* | flannel* | cali* | tun* | tap* | wg* | zt*) continue ;;
+    esac
+    address=${address%%/*}
     case "$address" in
       169.254.*) continue ;;
     esac
@@ -232,7 +240,7 @@ phone_ipv4() {
       printf '%s\n' "$address"
       return 0
     fi
-  done
+  done <<<"$listing"
   return 1
 }
 
@@ -1466,7 +1474,14 @@ finish() {
     # A direct cable (169.254.x.x) reaches the laptop only, never a phone on
     # the Wi-Fi: for the phone check, use the device's other home address.
     case "$LAPTOP_IPV4" in
-      169.254.*) if phone=$(phone_ipv4); then url="http://$phone:3847"; fi ;;
+      169.254.*)
+        if phone=$(phone_ipv4); then
+          url="http://$phone:3847"
+        else
+          say "- This device has no home Wi-Fi or router address, only the cable to your laptop, so no phone can"
+          say "  reach it yet. Connect it to your home network for the phone check below."
+        fi
+        ;;
     esac
   fi
   say "- Phone check: on a phone on the same Wi-Fi, open $url. It must show \"Unlock this screen\""
@@ -1500,9 +1515,13 @@ finish() {
     say "With the kiosk, the hub comes back on the screen by itself, the right way up, and asks once for the parent"
     say "PIN: type it there. Tap the four corners and the centre again. The screen must stay lit."
   else
-    say "Without the kiosk, run the guide's two checks (in the device's own Terminal, or over SSH if you kept it on;"
-    say "with no keyboard and SSH off, the phone check below is the check). ps must show healthy, and the health"
-    say "check must print \"ok\":true."
+    if [ "$OVER_SSH" = 1 ]; then
+      say "Without the kiosk, run the guide's two checks (in the device's own Terminal, or over SSH if you kept it on;"
+      say "with no keyboard and SSH off, the phone check below is the check). ps must show healthy, and the health"
+      say "check must print \"ok\":true."
+    else
+      say "Without the kiosk, run the guide's two checks. ps must show healthy, and the health check must print \"ok\":true."
+    fi
     say "Right after the restart, ps can show health: starting for up to a minute: wait 30 seconds and run both again."
     say "  cd ~/sproutwall"
     say "  docker compose -f docker-compose.preview.yml ps"

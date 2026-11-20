@@ -175,14 +175,14 @@ case "$*" in
     # interface that holds the address the session connected to).
     printf '%b\n' "${FAKE_IP6_ALL-2: wlan0    inet6 fd12:3456::50/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec\n2: wlan0    inet6 fe80::50/64 scope link \\       valid_lft forever preferred_lft forever}"
     ;;
-  "-o -4 addr show dev "*)
-    # The IPv4 addresses of one interface.
+  "-o -4 addr show" | "-o -4 addr show dev "*)
+    # The IPv4 addresses of one interface, or of every interface.
     [ -z "${FAKE_IP4_FAIL:-}" ] || { echo "Device does not exist." >&2; exit 1; }
     want=${!#}
     listing="${FAKE_IP4-2: wlan0    inet 192.168.1.50/24 brd 192.168.1.255 scope global dynamic wlan0\\       valid_lft 86000sec preferred_lft 86000sec\n3: eth0    inet 192.168.1.51/24 brd 192.168.1.255 scope global eth0\\       valid_lft forever preferred_lft forever\n4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever}"
     printf '%b\n' "$listing" | while IFS= read -r line; do
       read -r _ dev _ <<<"$line"
-      [ "$dev" = "$want" ] && printf '%s\n' "$line"
+      { [ "$want" = show ] || [ "$dev" = "$want" ]; } && printf '%s\n' "$line"
     done
     exit 0
     ;;
