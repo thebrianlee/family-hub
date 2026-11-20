@@ -107,20 +107,35 @@ New to Raspberry Pi, the Terminal or GitHub? Start with [the step-by-step guide 
 
 Give your assistant this prompt:
 
-> Read this repo and install it on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
+> Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and follow it to install Sproutwall on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
 
-A chat-only AI cannot open your Pi. Give it the repository address too, `https://github.com/thebrianlee/sproutwall`, or paste this guide into the chat.
+A chat-only AI cannot open your Pi, so open it in the Pi's own web browser: you then copy each command straight into the Pi's Terminal. The prompt gives it this guide's address. If it cannot open web pages, paste this guide into the chat instead.
 
 ## For the AI reading this
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
+
+**Default path: the one command.** Every install command runs on the device, never on the person's laptop: the laptop only writes the card (and, in tier B, holds the SSH session). Once the [First](#first-is-sproutwall-already-on-this-device) question is answered and the system is on the card (step 1), have the person run the one command from the README's [With one command](README.md#with-one-command) in the device's own Terminal, as themselves and not with `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+```
+
+The person runs it, never you, because it runs `sudo` (rule 2); in tier A, in a second Terminal window. It checks the device first (64-bit, supported, no hub already there) and changes nothing if something is wrong. Then it runs steps 3 to 5 and 7 for the person, waits during step 6, and runs doctor itself. Explain each question it asks:
+
+- **How the screen hangs** (decision 2), on Raspberry Pi OS only. Enter means portrait.
+- **The install plan** (decision 3). The script prints every command it runs with `sudo`, including the exact Docker and GitHub CLI commands, with why and how to undo each. That is the plan of rule 2: the person reads it and types `y` to approve it.
+- **The home-network rule.** The person types `y` only if it is true. For both questions, any other answer, or Enter alone, ends the script with nothing changed.
+- **The device's password**, which the person types only into `sudo`'s own prompt.
+
+When it says "Set up your household now", pause as rule 3 says; the person sets up the household on the device's own screen and then presses Enter in the Terminal. At the end it prints a summary with the phone check, and tells the person to restart and run the final check (step 8). If it stops, it prints one line that starts with `Stopped:` and says why and what to do. Ask for that line and `doctor --json` output only (rule 6), look both up in [If something goes wrong](#if-something-goes-wrong), and continue by hand from the step the line names. Steps 3 to 7 below stay the fallback when the person prefers to go step by step, or when the one command can't be used. The rules below apply on both paths.
 
 1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is a stated exception to the five-decision limit: ask it even if the five are used up. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
 2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
 5. **The image.** Start only the image that `verify-image` verified, and only after it exits 0. Never skip verification. Never pull or run the `:preview` tag. Never sign in to `gh` and never set a GitHub token. In this install, always run `docker compose` with `-f docker-compose.preview.yml`. The only change to the checkout is the one image line in step 4.
-6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
+6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`, or the one command's single `Stopped:` line. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
 7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
 8. **Data.** Never run `docker compose down -v` or `docker volume rm`, and never delete the `sproutwall` folder. The household lives in the Docker volume.
 9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: the temporary key is removed at both ends, and SSH is closed and turned off. Tier C: nothing to remove. Show the person how, and say when it is done.
