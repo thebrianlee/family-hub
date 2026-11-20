@@ -170,10 +170,26 @@ case "$*" in
     # This device's global IPv6 addresses with prefix lengths.
     [ -z "${FAKE_IP6:-}" ] || printf '%b\n' "$FAKE_IP6"
     ;;
-  "-4 route get 1.1.1.1")
-    # This device's IPv4 route out: the interface and its source address.
-    if [ -n "${FAKE_ROUTE4_FAIL:-}" ]; then echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; fi
-    printf '%b\n' "${FAKE_ROUTE4:-1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.50 uid 1000 \n    cache }"
+  "-o -6 addr show")
+    # Every IPv6 address of this device, with its interface (over SSH, the
+    # interface that holds the address the session connected to).
+    printf '%b\n' "${FAKE_IP6_ALL-2: wlan0    inet6 fd12:3456::50/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec\n2: wlan0    inet6 fe80::50/64 scope link \\       valid_lft forever preferred_lft forever}"
+    ;;
+  "-o -4 addr show dev "*)
+    # The IPv4 addresses of one interface.
+    [ -z "${FAKE_IP4_FAIL:-}" ] || { echo "Device does not exist." >&2; exit 1; }
+    want=${!#}
+    listing="${FAKE_IP4-2: wlan0    inet 192.168.1.50/24 brd 192.168.1.255 scope global dynamic wlan0\\       valid_lft 86000sec preferred_lft 86000sec\n3: eth0    inet 192.168.1.51/24 brd 192.168.1.255 scope global eth0\\       valid_lft forever preferred_lft forever\n4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever}"
+    printf '%b\n' "$listing" | while IFS= read -r line; do
+      read -r _ dev _ <<<"$line"
+      [ "$dev" = "$want" ] && printf '%s\n' "$line"
+    done
+    exit 0
+    ;;
+  "route get "*)
+    # This device's route to the laptop's address: its interface.
+    if [ -n "${FAKE_ROUTE_FAIL:-}" ]; then echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; fi
+    printf '%b\n' "${FAKE_ROUTE:-${!#} via 192.168.1.1 dev wlan0 src 192.168.1.50 uid 1000 \n    cache }"
     ;;
   *) exit 99 ;;
 esac
@@ -1647,9 +1663,9 @@ class OverSshTests(InstallShTestCase):
         self.assertEqual(run.err.count("Stopped:"), 1)
 
     def test_ipv6_only_lan_stops_in_preflight_over_ssh(self):
-        # The session came over IPv6 and the device has no IPv4 route out.
+        # The session came over IPv6 and its interface has no IPv4 address.
         run = self.run_install(
-            SSH_ANSWERS, FAKE_HOSTNAME="fd12:3456::50", FAKE_ROUTE4_FAIL="1",
+            SSH_ANSWERS, FAKE_HOSTNAME="fd12:3456::50", FAKE_IP4="",
             SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
         )
         self.assert_stopped_before_changes(run)
@@ -1691,19 +1707,17 @@ class OverSshTests(InstallShTestCase):
 
     def test_no_reachable_ipv4_stops_in_preflight(self):
         cases = {
-            "IPv4 route out through docker0": dict(
+            "session on docker0": dict(
                 SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
-                FAKE_ROUTE4="1.1.1.1 dev docker0 src 172.17.0.1 uid 1000",
+                FAKE_IP6_ALL="4: docker0    inet6 fd12:3456::50/64 scope global \\       valid_lft forever preferred_lft forever",
             ),
-            "IPv4 route out through a bridge": dict(
-                SSH_CONNECTION="fe80::1c2b%wlan0 52344 fe80::50%wlan0 22",
-                FAKE_ROUTE4="1.1.1.1 via 172.18.0.1 dev br-3f2a src 172.18.0.5 uid 1000",
-            ),
-            "IPv4 route out with a public source": dict(
+            "session on a bridge": dict(SSH_CONNECTION="fe80::1c2b%br-3f2a 52344 fe80::50%br-3f2a 22"),
+            "session interface with only a public IPv4": dict(
                 SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
-                FAKE_ROUTE4="1.1.1.1 via 203.0.113.1 dev eth0 src 203.0.113.50 uid 1000",
+                FAKE_IP6_ALL="3: eth0    inet6 fd12:3456::50/64 scope global \\       valid_lft forever preferred_lft forever",
+                FAKE_IP4="3: eth0    inet 203.0.113.50/24 brd 203.0.113.255 scope global eth0",
             ),
-            "no IPv4 route out": dict(SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22", FAKE_ROUTE4_FAIL="1"),
+            "no IPv4 on the session's interface": dict(SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22", FAKE_IP4=""),
             "session to this device itself": dict(SSH_CONNECTION="127.0.0.1 52344 127.0.0.1 22"),
         }
         for label, env in cases.items():

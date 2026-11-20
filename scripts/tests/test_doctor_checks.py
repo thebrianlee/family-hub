@@ -922,6 +922,35 @@ class TemporaryAccessTests(unittest.TestCase):
         s.files[HOME + "/.config/autostart/x.desktop"] = PermissionError(13, "denied")
         self.assertEqual(run("temporary_access", s, phase="final"), ("unknown", "retry_local"))
 
+    def test_root_only_imager_file_with_ssh_off_passes(self):
+        # GATE-sw74: the final check after the person turned SSH off and
+        # restarted, with Raspberry Pi Imager's root-only file in sshd_config.d.
+        unreadable = (
+            lambda s: s.files.__setitem__("/etc/ssh/sshd_config.d/50-cloud-init.conf", PermissionError(13, "denied")),
+            lambda s: s.unlistable.add("/etc/ssh/sshd_config.d"),
+        )
+        for number, setup in enumerate(unreadable):
+            for tier in ("A", "B", "C"):
+                s = healthy_pi()
+                setup(s)
+                self.assertEqual(run("temporary_access", s, phase="final", tier=tier), PASS, (number, tier))
+                self.assertEqual(run("ssh_policy", s, phase="final", tier=tier), PASS, (number, tier))
+            # SSH still on: the unreadable config stays unknown.
+            s = healthy_pi()
+            setup(s)
+            ssh_on(s)
+            self.assertEqual(run("temporary_access", s, phase="final"), ("unknown", "retry_local"), number)
+            # SSH state unknown: still unknown.
+            s = healthy_pi()
+            setup(s)
+            s.set(["systemctl", "is-enabled", "ssh.service"], CommandResult(None, missing=True))
+            self.assertEqual(run("temporary_access", s, phase="final"), ("unknown", "retry_local"), number)
+            # An open session on port 22 still fails, SSH off or not.
+            s = healthy_pi()
+            setup(s)
+            s.files["/proc/net/tcp"] = proc_table([("192.168.1.50", 22, "01")])
+            self.assertEqual(run("temporary_access", s, phase="final"), ("fail", "remove_agent"), number)
+
 
 class ParserTests(unittest.TestCase):
     def test_proc_net_tcp_round_trip(self):

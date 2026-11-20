@@ -161,8 +161,9 @@ os_release_value() {
   return 0
 }
 
-# Guide step 5: every address with dots must start with 192.168., 10., or
-# 172.16. to 172.31.
+# Guide step 5: every address with dots must start with 192.168., 10.,
+# 172.16. to 172.31., or 169.254. (link-local: a direct cable to a laptop,
+# never routed beyond that cable).
 home_network_ok() {
   local addresses address
   addresses=$(hostname -I) || return 1
@@ -170,7 +171,7 @@ home_network_ok() {
     case "$address" in
       *.*)
         case "$address" in
-          192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].*) ;;
+          192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 169.254.*) ;;
           *) return 1 ;;
         esac
         ;;
@@ -221,14 +222,15 @@ ipv4_on_home_network() {
 
 # Over SSH: the IPv4 address the laptop reaches this device at. When the
 # session came over IPv4, that is the address it connected to (the third word
-# of SSH_CONNECTION). Otherwise (IPv6, or only SSH_CLIENT) it is the source
-# address of this device's IPv4 route out (`ip -4 route get 1.1.1.1`, its
-# "src"), never one on a container or bridge interface such as docker0. Never
-# the first address of hostname -I: that can be docker0's 172.17.0.1, which
-# the laptop cannot reach. Prints nothing and fails when there is none.
+# of SSH_CONNECTION). Otherwise (IPv6, or only SSH_CLIENT) it is a home-network
+# IPv4 address on the interface the session itself uses (ssh_session_interface),
+# never the default route's: with a second uplink (a USB tether, say) that
+# route can leave on an interface the laptop is not on. Never an address on a
+# container or bridge interface such as docker0, and never the first address of
+# hostname -I (that can be docker0's 172.17.0.1). Prints nothing and fails when
+# there is none.
 ssh_lan_ipv4() {
-  local server route word previous="" dev="" src=""
-  local -a words=()
+  local server dev listing line address
   read -r _ _ server _ <<<"${SSH_CONNECTION:-}"
   server=${server%%\%*}
   server=${server#::ffff:}
@@ -241,21 +243,65 @@ ssh_lan_ipv4() {
       return 0
       ;;
   esac
-  route=$(ip -4 route get 1.1.1.1 2>/dev/null) || return 1
-  read -r -a words <<<"$route"
-  [ "${#words[@]}" -gt 0 ] || return 1
-  for word in "${words[@]}"; do
-    case "$previous" in
-      dev) dev=$word ;;
-      src) src=$word ;;
-    esac
-    previous=$word
-  done
+  dev=$(ssh_session_interface) || return 1
   case "$dev" in
     "" | lo | docker* | br-* | veth* | virbr* | lxcbr* | lxdbr* | podman* | cni* | flannel* | cali* | tun* | tap* | wg* | zt*) return 1 ;;
   esac
-  ipv4_on_home_network "$src" || return 1
-  printf '%s\n' "$src"
+  listing=$(ip -o -4 addr show dev "$dev" 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    read -r _ _ _ address _ <<<"$line"
+    address=${address%%/*}
+    if ipv4_on_home_network "$address"; then
+      printf '%s\n' "$address"
+      return 0
+    fi
+  done <<<"$listing"
+  return 1
+}
+
+# Over SSH (not over IPv4): the interface the session uses. A link-local
+# address carries it after "%" (fe80::50%wlan0). Otherwise it is the interface
+# that holds the address the session connected to (SSH_CONNECTION's third word,
+# looked up in `ip -o -6 addr show`), or, with only SSH_CLIENT, the interface of
+# this device's route to the laptop's address (`ip route get`, its "dev").
+ssh_session_interface() {
+  local server client zone listing line dev address word previous=""
+  local -a words=()
+  read -r _ _ server _ <<<"${SSH_CONNECTION:-}"
+  client=$(ssh_client_address)
+  for address in "$server" "$client"; do
+    case "$address" in
+      *%?*)
+        zone=${address#*%}
+        printf '%s\n' "${zone%%@*}"
+        return 0
+        ;;
+    esac
+  done
+  case "$server" in
+    *:*)
+      listing=$(ip -o -6 addr show 2>/dev/null) || return 1
+      while IFS= read -r line; do
+        read -r _ dev _ address _ <<<"$line"
+        address=${address%%/*}
+        if [ -n "$address" ] && [ "${address,,}" = "${server,,}" ]; then
+          printf '%s\n' "${dev%%@*}"
+          return 0
+        fi
+      done <<<"$listing"
+      ;;
+  esac
+  [ -n "$client" ] || return 1
+  listing=$(ip route get "$client" 2>/dev/null) || return 1
+  read -r -a words <<<"$listing"
+  for word in "${words[@]}"; do
+    if [ "$previous" = dev ]; then
+      printf '%s\n' "$word"
+      return 0
+    fi
+    previous=$word
+  done
+  return 1
 }
 
 # Over SSH: the address the session comes from (the first word of
@@ -521,7 +567,7 @@ check_docker_with_sudo() {
 
 check_home_network_first() {
   if ! home_network_ok; then
-    stop "This device has an address outside the home-network ranges (hostname -I shows an address that does not start with 192.168., 10. or 172.16. to 172.31.), so it may be reachable from outside your home. Sproutwall is only for a trusted home network: $GUIDE#the-five-decisions. Nothing was changed."
+    stop "This device has an address outside the home-network ranges (hostname -I shows an address that does not start with 192.168., 10., 172.16. to 172.31. or 169.254.), so it may be reachable from outside your home. Sproutwall is only for a trusted home network: $GUIDE#the-five-decisions. Nothing was changed."
   fi
 }
 
@@ -823,7 +869,8 @@ parse_sshd_line() {
 #   rule for another user or address could allow either, and sshd -T shows
 #   only the context it is given (fail closed);
 # - where SSH listens: home_network_ok (preflight, and again before the hub
-#   starts) refuses any IPv4 address outside 10/8, 172.16/12 and 192.168/16,
+#   starts) refuses any IPv4 address outside 10/8, 172.16/12, 192.168/16 and
+#   link-local 169.254/16,
 #   which is stricter than doctor's "lan", so SSH cannot listen on a public
 #   IPv4 address. An internet IPv6 address is named in the SSH notice that the
 #   person accepts. Only after all of this may the install pass doctor's

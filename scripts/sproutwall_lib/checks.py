@@ -615,8 +615,16 @@ def check_temporary_access(ctx):
     ports = ctx.ssh_ports()
     if any(st == net.ESTABLISHED and port in ports for _, port, st in sockets):
         return fail("remove_agent")  # an SSH session into the Pi is still open
-    if incomplete or not sockets_complete or ctx.ssh_config()[0] == "unreadable" or not ctx.ssh_ports_complete():
+    if incomplete or not sockets_complete or not ctx.ssh_ports_complete():
         return INCOMPLETE
+    # An unreadable SSH config could name another port a session uses. That
+    # matters only while SSH is on: with every SSH unit off and no listener
+    # (sshd.service_state "off", as in check_ssh_policy), it does not make this
+    # unknown. Raspberry Pi Imager can leave a root-only file in
+    # /etc/ssh/sshd_config.d, and the person turned SSH off before this check.
+    if ctx.ssh_config()[0] == "unreadable":
+        if sshd.service_state(ctx.system, sockets, sockets_complete, ports) != "off":
+            return INCOMPLETE
     return PASS
 
 
