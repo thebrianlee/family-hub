@@ -30,7 +30,8 @@ BASH = shutil.which("bash")
 # one line more than it asked for, the flow tests would see it.
 FAKE_PIN = "2468"
 PROMPT_MARKERS = ("[y/N]", "[1-5, Enter = 1]", "(press Enter)")
-HOST_TOOLS = ("ls", "grep", "sed", "cat", "mktemp", "rm", "tr", "python3", "cmp", "diff", "mkdir", "cp")
+# sed is not linked: the bin folder has a GNU-compatible sed (see SED_SHIM).
+HOST_TOOLS = ("ls", "grep", "cat", "mktemp", "rm", "tr", "python3", "cmp", "diff", "mkdir", "cp")
 
 
 def read(path):
@@ -55,6 +56,12 @@ def pinned_pair_in_guide():
 COMMIT, DIGEST = pinned_pair_in_script()
 
 
+def host_free(err):
+    """stderr without the one host-dependent line: Docker's own command reads
+    /etc/os-release for the codename, and a test host (macOS) may have none."""
+    return "\n".join(line for line in err.splitlines() if "/etc/os-release" not in line)
+
+
 def doctor_json(phase, **overrides):
     """A real closed-schema doctor report: every check passes except overrides."""
     outcomes = {check_id: schema.PASS for check_id in schema.CHECK_IDS}
@@ -70,6 +77,28 @@ SHIMS = {
 printf 'sudo %s\n' "$*" >>"$FAKE_LOG"
 if [ "$1" = tee ]; then cat >/dev/null; fi
 if [ -n "${FAKE_SUDO_FAIL:-}" ] && [ "$*" = "$FAKE_SUDO_FAIL" ]; then exit 100; fi
+if [ "$1" = docker ]; then
+  # Root reaches the daemon (the read-only existing-hub check), unless the test says it does not answer.
+  if [ -n "${FAKE_SUDO_DOCKER_FAIL:-}" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
+  command -v docker >/dev/null || { echo "sudo: docker: command not found" >&2; exit 1; }
+  shift
+  FAKE_IN_SG=1 exec docker "$@"
+fi
+case "$*" in
+  "apt install"* | "apt-get install"*)
+    # apt with no -y stops at "Do you want to continue? [Y/n]" (opt-in, as seen in the VM run).
+    if [ -n "${FAKE_APT_STRICT:-}" ] && [[ " $* " != *" -y "* ]]; then
+      echo "Do you want to continue? [Y/n] Abort." >&2
+      exit 1
+    fi
+    ;;
+esac
+case "$*" in
+  "apt install"*docker-ce*)
+    # A test can have the docker command appear only when the plan installs it.
+    if [ -n "${FAKE_DOCKER_SHIM:-}" ]; then cp "$FAKE_DOCKER_SHIM" "$FAKE_BIN/docker"; fi
+    ;;
+esac
 exit 0
 """,
     "apt": "#!/bin/bash\nprintf 'apt %s\\n' \"$*\" >>\"$FAKE_LOG\"\nexit 0\n",
@@ -192,6 +221,56 @@ esac
 """,
 }
 
+# GNU-compatible sed for the tests. install.sh runs GNU `sed -i EXPR FILE`,
+# exactly as the guide writes it (the installer targets Debian-family
+# systems). On a host whose sed is BSD (macOS), `-i` needs a suffix argument,
+# so this wrapper passes `-i ""` there. FAKE_HOST_SED is the host's sed.
+SED_SHIM = r"""#!/bin/bash
+real="$FAKE_HOST_SED"
+if "$real" --version >/dev/null 2>&1; then exec "$real" "$@"; fi
+args=()
+for arg in "$@"; do
+  if [ "$arg" = -i ]; then args+=(-i ""); else args+=("$arg"); fi
+done
+exec "$real" "${args[@]}"
+"""
+
+# A small stand-in for BSD sed (macOS), enough for install.sh's one call: like
+# BSD sed, -i always takes the next word as the backup suffix, and --version
+# is an illegal option. It lets Linux CI prove the wrapper above works there.
+BSD_SED = r"""import re, sys
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    sys.stderr.write("sed: illegal option -- -\n")
+    sys.exit(1)
+suffix, i = None, 0
+while i < len(args) and args[i].startswith("-"):
+    if args[i] == "-i":
+        suffix, i = args[i + 1], i + 2
+    elif args[i].startswith("-i"):
+        suffix, i = args[i][2:], i + 1
+    else:
+        sys.exit(1)
+script, files = args[i], args[i + 1:]
+match = re.fullmatch(r"s(.)(.*?)\1(.*?)\1", script, re.S)
+if not match:
+    sys.stderr.write('sed: 1: "%s": invalid command code %s\n' % (script, script[:1]))
+    sys.exit(1)
+pattern, replacement = re.compile(match.group(2)), match.group(3)
+for name in files:
+    with open(name, encoding="utf-8") as handle:
+        lines = handle.read().split("\n")
+    out = "\n".join(pattern.sub(lambda _m: replacement, line, count=1) for line in lines)
+    if suffix is None:
+        sys.stdout.write(out)
+    else:
+        if suffix:
+            with open(name + suffix, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines))
+        with open(name, "w", encoding="utf-8") as handle:
+            handle.write(out)
+"""
+
 # The fake scripts/sproutwall that the fake clone puts in the checkout.
 FAKE_SPROUTWALL = r"""#!/bin/bash
 printf 'sproutwall %s\n' "$*" >>"$FAKE_LOG"
@@ -264,6 +343,8 @@ class InstallShTestCase(unittest.TestCase):
             os.makedirs(path)
         for name, body in SHIMS.items():
             self.write(os.path.join(bin_dir, name), body, 0o755)
+        self.write(os.path.join(bin_dir, "sed"), SED_SHIM, 0o755)
+        self.bin_dir = bin_dir
         for name in HOST_TOOLS:
             found = shutil.which(name)
             self.assertIsNotNone(found, name)
@@ -282,6 +363,7 @@ class InstallShTestCase(unittest.TestCase):
             "FAKE_STATE": self.state,
             "FAKE_COMPOSE_TEMPLATE": COMPOSE_TEMPLATE,
             "FAKE_SPROUTWALL": self.fake_sproutwall,
+            "FAKE_HOST_SED": shutil.which("sed"),
             "SPROUTWALL_INSTALL_TEST_ROOT": self.sysroot,
             "SPROUTWALL_INSTALL_TEST_TTY": self.tty,
         }
@@ -303,6 +385,12 @@ class InstallShTestCase(unittest.TestCase):
         )
         self.write(os.path.join(self.sysroot, "etc/rpi-issue"), "Raspberry Pi reference 2026-10-01\n")
         self.write(os.path.join(self.sysroot, "proc/device-tree/model"), model + "\0")
+
+    def docker_installed_by_the_plan(self):
+        """No docker command at first; the plan's `apt install ... docker-ce` brings it."""
+        shim = os.path.join(self.state, "docker-shim")
+        os.rename(os.path.join(self.bin_dir, "docker"), shim)
+        self.env.update(FAKE_DOCKER_SHIM=shim, FAKE_BIN=self.bin_dir)
 
     def ubuntu_pc(self):
         shutil.rmtree(self.sysroot)
@@ -455,16 +543,6 @@ class PreflightTests(InstallShTestCase):
         self.assert_stopped_before_changes(run)
         self.assertIn("#existing-install--update", run.err)
 
-    def test_volume_seen_only_once_docker_is_reachable_stops_before_the_code(self):
-        run = self.run_install(
-            HAPPY_ANSWERS[:3], FAKE_DOCKER_DENIED_OUTSIDE_SG="1", FAKE_VOLUMES="sproutwall_familyhub-data\n"
-        )
-        self.assertEqual(run.code, 1, run.err)
-        self.assertIn("#existing-install--update", run.err)
-        self.assertIn("docker volume ls -q --filter name=familyhub-data", run.log)
-        self.assertNotIn("git", run.commands())
-        self.assertFalse(os.path.exists(os.path.join(self.home, "sproutwall")))
-
     def test_root_stops(self):
         for env in ({"FAKE_UID": "0"}, {"SUDO_USER": "parent"}):
             with self.subTest(env=env):
@@ -614,7 +692,7 @@ class HappyPathTests(InstallShTestCase):
     def test_calls_happen_in_the_documented_order(self):
         run = self.run_install(HAPPY_ANSWERS)
         self.assertEqual(run.code, 0, run.out + run.err)
-        self.assertEqual(run.err, "")
+        self.assertEqual(host_free(run.err), "")
         # Every answer was asked for, and nothing more was read: the line
         # after the answers (a PIN) was never consumed.
         self.assertEqual(run.prompts, len(HAPPY_ANSWERS))
@@ -622,12 +700,12 @@ class HappyPathTests(InstallShTestCase):
             "sudo apt update",
             "sudo apt full-upgrade -y",
             "sudo apt install -y git",
-            "sudo apt install ca-certificates curl",
+            "sudo apt install -y ca-certificates curl",
             "sudo install -m 0755 -d /etc/apt/keyrings",
             "sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc",
             "sudo chmod a+r /etc/apt/keyrings/docker.asc",
             "sudo tee /etc/apt/sources.list.d/docker.sources",
-            "sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+            "sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
             "sudo usermod -aG docker parent",
             "sudo mkdir -p -m 755 /etc/apt/keyrings",
             "sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg",
@@ -638,7 +716,8 @@ class HappyPathTests(InstallShTestCase):
             "docker info",
             "gh --version",
             "gh attestation verify --help",
-            "docker volume ls -q --filter name=familyhub-data",
+            "docker volume ls -q",
+            "docker ps -a --format {{.Names}}",
             "git clone https://github.com/thebrianlee/sproutwall.git sproutwall",
             "git checkout --detach " + COMMIT,
             "git remote get-url origin",
@@ -750,6 +829,208 @@ class HappyPathTests(InstallShTestCase):
         self.assertEqual(run.code, 0, run.err)
         self.assertNotIn("sudo raspi-config nonint do_boot_behaviour B4", run.log)
         self.assertIn("sproutwall setup kiosk --check", run.log)
+
+
+DOCKER_PAGE_LINES = {
+    # Docker's "Install using the apt repository", steps 1 and 2, with -y added
+    # to the two apt installs (the person approved them in the plan).
+    "debian": [
+        "sudo apt update",
+        "sudo apt install -y ca-certificates curl",
+        "sudo install -m 0755 -d /etc/apt/keyrings",
+        "sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc",
+        "sudo chmod a+r /etc/apt/keyrings/docker.asc",
+        "sudo tee /etc/apt/sources.list.d/docker.sources <<EOF",
+        "URIs: https://download.docker.com/linux/debian",
+        'Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")',
+        "Architectures: $(dpkg --print-architecture)",
+        "Signed-By: /etc/apt/keyrings/docker.asc",
+        "sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+    ],
+    "ubuntu": [
+        "sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc",
+        "URIs: https://download.docker.com/linux/ubuntu",
+        'Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")',
+    ],
+}
+
+
+class AptNeverWaitsTests(InstallShTestCase):
+    """Point 6: apt stopped at [Y/n] in the VM; every approved install has -y."""
+
+    def test_every_apt_install_has_y(self):
+        installs = [
+            line.strip()
+            for line in read(INSTALL_SH).splitlines()
+            if re.search(r"\bapt(-get)? install\b", line)
+        ]
+        self.assertGreaterEqual(len(installs), 8)
+        for line in installs:
+            self.assertRegex(line, r"apt(-get)? install( \S+)* -y\b|apt(-get)? install -y\b", line)
+
+    def test_docker_lines_are_dockers_with_y_in_plan_and_run(self):
+        script = [line.strip().removesuffix(" || return 1") for line in read(INSTALL_SH).splitlines()]
+        for variant, lines in DOCKER_PAGE_LINES.items():
+            for line in lines:
+                # Once in the printed plan and once where it runs, per variant.
+                self.assertGreaterEqual(script.count(line), 2, (variant, line))
+
+    def test_docker_apt_installs_never_wait_for_a_yes(self):
+        run = self.run_install(HAPPY_ANSWERS, FAKE_APT_STRICT="1")
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn(
+            "sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+            run.log,
+        )
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("with -y added to its two apt installs because you approve them here", plan)
+
+
+class ExistingHubBeforeChangesTests(InstallShTestCase):
+    """Point 1: Docker installed but out of reach: a read-only sudo check right
+    after approval, before the first change. Point 2: one matcher everywhere."""
+
+    READ_ONLY = ["sudo docker ps -a --format {{.Names}}", "sudo docker volume ls -q"]
+
+    def test_unreachable_docker_with_a_hub_stops_before_any_change(self):
+        for hub in ({"FAKE_VOLUMES": "sproutwall_familyhub-data\n"}, {"FAKE_CONTAINERS": "family-hub-family-hub-1\n"}):
+            with self.subTest(hub=hub):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "y", "y"], FAKE_DOCKER_DENIED_OUTSIDE_SG="1", **hub)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn("#existing-install--update", run.err)
+                self.assertEqual([line for line in run.log if line.startswith("sudo")], self.READ_ONLY)
+                self.assertEqual(run.prompts, 2)
+                self.assertNotIn("git", run.commands())
+                self.assertIn("sudo docker ps -a --format '{{.Names}}'", run.out)
+
+    def test_docker_that_does_not_answer_even_with_sudo_stops_with_nothing_changed(self):
+        run = self.run_install(["", "y", "y"], FAKE_DOCKER_DENIED_OUTSIDE_SG="1", FAKE_SUDO_DOCKER_FAIL="1")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("cannot tell whether a hub is already on this device. Nothing was changed.", run.err)
+        self.assertEqual([line for line in run.log if line.startswith("sudo")], self.READ_ONLY[:1])
+
+    def test_unreachable_docker_without_a_hub_checks_first_then_installs(self):
+        run = self.run_install(HAPPY_ANSWERS, FAKE_DOCKER_DENIED_OUTSIDE_SG="1")
+        self.assertEqual(run.code, 0, run.out + run.err)
+        sudo = [line for line in run.log if line.startswith("sudo")]
+        self.assertEqual(sudo[:3], self.READ_ONLY + ["sudo apt update"])
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        for line in sudo:
+            self.assertIn(line, plan.replace("'", ""))
+        self.assertIn("Read-only, right after you approve and before anything changes", plan)
+
+    def test_no_docker_command_needs_no_check(self):
+        self.docker_installed_by_the_plan()
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertFalse([line for line in run.log if line.startswith("sudo docker")])
+        self.assertNotIn("Read-only, right after you approve", run.out)
+
+    def test_second_check_matches_every_hub_name(self):
+        # Docker's data can outlive an uninstalled docker command: the first
+        # check sees no docker; the check after the install must catch any name.
+        for hub in (
+            {"FAKE_VOLUMES": "family-hub_photos\n"},
+            {"FAKE_VOLUMES": "sproutwall_data\n"},
+            {"FAKE_VOLUMES": "old_familyhub-data\n"},
+            {"FAKE_CONTAINERS": "sproutwall-family-hub-1\n"},
+        ):
+            with self.subTest(hub=hub):
+                self.setUp()
+                self.docker_installed_by_the_plan()
+                run = self.run_install(HAPPY_ANSWERS, **hub)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertIn("#existing-install--update", run.err)
+                self.assertIn("sudo usermod -aG docker parent", run.log)
+                self.assertNotIn("git", run.commands())
+
+    def test_one_matcher_for_every_check(self):
+        script = read(INSTALL_SH)
+        self.assertEqual(script.count("sproutwall|family-hub|familyhub-data"), 1)
+        self.assertEqual(script.count("| names_include_a_hub"), 3)
+        code = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
+        self.assertFalse([line for line in code if "--filter" in line])
+
+
+class TruncatedDownloadTests(InstallShTestCase):
+    """Point 3: a download cut off anywhere in the last line never runs main."""
+
+    def run_text(self, text):
+        proc = subprocess.run(
+            [BASH], input=text.encode(), env=self.env, cwd=self.tmp, capture_output=True, timeout=30, check=False
+        )
+        return proc.stdout.decode() + proc.stderr.decode()
+
+    def test_main_never_runs_from_a_cut_off_last_line(self):
+        script = read(INSTALL_SH)
+        self.assertTrue(script.endswith("\n"))
+        # main is replaced by a marker that only prints and exits.
+        self.assertEqual(script.count("\nmain() {\n"), 1)
+        faked = script.replace("\nmain() {\n", "\nmain() {\n  echo MAIN_RAN\n  exit 0\n")
+        last_line = faked[:-1].rsplit("\n", 1)[1]
+        start = len(faked) - 1 - len(last_line)
+        self.assertIn("main", last_line)
+        self.assertIn("MAIN_RAN", self.run_text(faked))
+        self.assertIn("MAIN_RAN", self.run_text(faked[:-1]))
+        for cut in range(start, start + len(last_line)):
+            with self.subTest(prefix=faked[start:cut]):
+                self.assertNotIn("MAIN_RAN", self.run_text(faked[:cut]))
+        self.assertFalse(os.path.exists(self.log_path))
+
+
+class PortableSedTests(InstallShTestCase):
+    """Point 4: the flow tests run where the host sed is BSD (macOS)."""
+
+    def bsd_sed(self):
+        import sys
+
+        return self.write(os.path.join(self.state, "bsd-sed"), "#!%s\n%s" % (sys.executable, BSD_SED), 0o755)
+
+    def test_bsd_sed_stand_in_rejects_the_gnu_call(self):
+        target = self.write(os.path.join(self.tmp, "f.yml"), 'image: "x@sha256:<published-index-digest-hex>"\n')
+        expr = 's|@sha256:<published-index-digest-hex>"|@sha256:abc"|'
+        direct = subprocess.run([self.bsd_sed(), "-i", expr, target], capture_output=True, check=False)
+        self.assertNotEqual(direct.returncode, 0)
+        self.assertIn("invalid command code", direct.stderr.decode())
+        env = dict(self.env, FAKE_HOST_SED=self.bsd_sed())
+        wrapped = subprocess.run([os.path.join(self.bin_dir, "sed"), "-i", expr, target], env=env, check=False)
+        self.assertEqual(wrapped.returncode, 0)
+        self.assertEqual(read(target), 'image: "x@sha256:abc"\n')
+
+    def test_happy_path_with_a_bsd_sed(self):
+        run = self.run_install(HAPPY_ANSWERS, FAKE_HOST_SED=self.bsd_sed())
+        self.assertEqual(run.code, 0, run.out + run.err)
+        compose = read(os.path.join(self.home, "sproutwall", "docker-compose.preview.yml"))
+        self.assertEqual(compose.count('@%s"' % DIGEST), 1)
+
+
+class FinishTextTests(InstallShTestCase):
+    """Point 5: the no-kiosk finish gives the guide's exact checks; the README
+    says which answers the script accepts."""
+
+    def test_no_kiosk_finish_has_the_guides_exact_checks(self):
+        guide = read(GUIDE)
+        section = guide[guide.index("- **Without the kiosk**") :]
+        block = section[section.index("```bash") + len("```bash") : section.index("```", section.index("```bash") + 7)]
+        lines = [line.strip() for line in block.strip().splitlines()]
+        self.assertIn("curl -fsS --max-time 3 http://127.0.0.1:3847/api/health", lines)
+        run = self.run_install(["5", "y", "y", ""])
+        self.assertEqual(run.code, 0, run.out + run.err)
+        finish = run.out[run.out.index("Now restart the device") :]
+        for line in lines:
+            self.assertIn("  " + line + "\n", finish)
+        self.assertIn('must print "ok":true', finish)
+
+    def test_readme_names_exactly_the_answers_the_script_accepts(self):
+        accepted = re.search(r"(?m)^\s*(y \|[^)]*)\) return 0 ;;$", read(INSTALL_SH)).group(1)
+        words = [word.strip() for word in accepted.split("|")]
+        self.assertEqual(words, ["y", "Y", "yes", "Yes", "YES"])
+        readme = read(os.path.join(ROOT, "README.md"))
+        line = next(line for line in readme.splitlines() if "approve that plan" in line)
+        sentence = line[line.index("Only ") :]
+        self.assertEqual(sorted(set(re.findall(r"`([A-Za-z]+)`", sentence))), sorted(words))
 
 
 if __name__ == "__main__":

@@ -41,8 +41,8 @@ curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install
 It runs the steps of the [install guide](INSTALL-WITH-AI.md) for you, the way the guide's "Without AI" path does, and asks a few questions on the way:
 
 - First it checks the device, and changes nothing if something is wrong: a 32-bit or unsupported system, running as root, or a hub that is already on this device.
-- It asks how the screen hangs. Then it shows every `sudo` command it will run, with why and how to undo it, and asks you to approve that plan and to confirm the home-network rule. Answer anything but `y` and nothing is changed.
-- It installs git, Docker and the GitHub CLI (`gh`) with the guide's commands, gets the code at the pinned commit, checks the image's signature with `verify-image`, and starts only that verified image.
+- It asks how the screen hangs. Then it shows every `sudo` command it will run, with why and how to undo it, and asks you to approve that plan and to confirm the home-network rule. Only `y` or `yes` goes on (also `Y`, `Yes` or `YES`); any other answer, or just Enter, changes nothing.
+- It installs git and the GitHub CLI (`gh`) with the guide's commands, and Docker with Docker's own commands, with `-y` added to their installs because you approved them in the plan. Then it gets the code at the pinned commit, checks the image's signature with `verify-image`, and starts only that verified image.
 - It waits while you set up your household and the parent PIN on the device's own screen. It never asks for, reads or shows the PIN.
 - On Raspberry Pi OS it sets up the screen with `setup kiosk`. At the end it tells you to restart and how to check the hub.
 

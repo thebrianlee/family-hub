@@ -265,6 +265,19 @@ check_terminal() {
 }
 
 EXISTING_HUB_LINE="Sproutwall (or Family Hub) is already on this device, so this script stops here and changes nothing. Never install a second hub next to it: back up, then update in place, as the guide says: $GUIDE#existing-install--update (and $GUIDE#first-is-sproutwall-already-on-this-device)."
+# absent: no docker command, so no Docker hub can exist yet. checked: this
+# account listed every container and volume. unreachable: the docker command
+# exists but this account cannot reach the daemon yet; check_docker_with_sudo
+# then lists them with sudo, read-only, before anything is changed.
+DOCKER_STATE="absent"
+
+# The one matcher for every existing-hub check (guide "First": any line that
+# mentions sproutwall, family-hub or familyhub-data). Reads container and
+# volume names on stdin: sproutwall_* and family-hub_* volumes,
+# familyhub-data, and container names such as sproutwall-family-hub-1.
+names_include_a_hub() {
+  grep -Eq 'sproutwall|family-hub|familyhub-data'
+}
 # Guide "First: is Sproutwall already on this device?":
 #   ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker ps -a --format '{{.Names}}'; docker volume ls -q
 # Any line that mentions sproutwall, family-hub or familyhub-data is a hub.
@@ -276,13 +289,33 @@ check_no_existing_hub_first() {
   fi
   if command -v docker >/dev/null 2>&1; then
     if containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null) && volumes=$(docker volume ls -q 2>/dev/null); then
-      if printf '%s\n%s\n' "$containers" "$volumes" | grep -Eq 'sproutwall|family-hub|familyhub-data'; then
+      DOCKER_STATE="checked"
+      if printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
         stop "$EXISTING_HUB_LINE"
       fi
     else
-      say "Note: Docker is installed but this account cannot reach it yet. The install checks Docker for an existing hub again once your account can, before it gets the code."
+      DOCKER_STATE="unreachable"
+      say "Note: Docker is installed but this account cannot reach it yet. Once you approve the plan, the script looks for an existing hub with sudo (read-only) before it changes anything."
     fi
   fi
+}
+
+# Point 1 of the plan when Docker is installed but this account cannot reach
+# it: a read-only look for an existing hub, before the first change.
+check_docker_with_sudo() {
+  local containers volumes
+  if [ "$DOCKER_STATE" != unreachable ]; then
+    return 0
+  fi
+  say ""
+  say "Looking for an existing hub in Docker (read-only; sudo asks for your password)..."
+  if ! containers=$(sudo docker ps -a --format '{{.Names}}') || ! volumes=$(sudo docker volume ls -q); then
+    stop "Docker is installed but did not answer, even with sudo, so this script cannot tell whether a hub is already on this device. Nothing was changed. Check by hand as the guide's first section says: $GUIDE#first-is-sproutwall-already-on-this-device"
+  fi
+  if printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
+    stop "$EXISTING_HUB_LINE"
+  fi
+  say "No existing hub found."
 }
 
 check_home_network_first() {
@@ -330,7 +363,7 @@ print_docker_commands() {
   if [ "$OS_ID" = ubuntu ]; then
     cat <<'PLAN'
        sudo apt update
-       sudo apt install ca-certificates curl
+       sudo apt install -y ca-certificates curl
        sudo install -m 0755 -d /etc/apt/keyrings
        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
        sudo chmod a+r /etc/apt/keyrings/docker.asc
@@ -343,12 +376,12 @@ print_docker_commands() {
        Signed-By: /etc/apt/keyrings/docker.asc
        EOF
        sudo apt update
-       sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+       sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 PLAN
   else
     cat <<'PLAN'
        sudo apt update
-       sudo apt install ca-certificates curl
+       sudo apt install -y ca-certificates curl
        sudo install -m 0755 -d /etc/apt/keyrings
        sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
        sudo chmod a+r /etc/apt/keyrings/docker.asc
@@ -361,7 +394,7 @@ PLAN
        Signed-By: /etc/apt/keyrings/docker.asc
        EOF
        sudo apt update
-       sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+       sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 PLAN
   fi
 }
@@ -390,6 +423,14 @@ show_plan() {
   say "THE INSTALL PLAN"
   say "These are all the commands this script runs with sudo. sudo asks for your password in this Terminal."
   say "Your yes covers this plan only. Details: $GUIDE#the-install-plan-decision-3"
+  if [ "$DOCKER_STATE" = unreachable ]; then
+    say ""
+    say "  0. Read-only, right after you approve and before anything changes:"
+    say "       sudo docker ps -a --format '{{.Names}}'"
+    say "       sudo docker volume ls -q"
+    say "     Why: Docker is installed but your account cannot reach it yet, so this looks for an existing hub."
+    say "     If it finds one, the script stops with nothing changed. Changes nothing; nothing to undo."
+  fi
   say ""
   say "  1. sudo apt update && sudo apt full-upgrade -y"
   say "     Why: the normal system update. Undo: not reversible; updated packages are not rolled back."
@@ -397,11 +438,11 @@ show_plan() {
   say "  2. sudo apt install -y git"
   say "     Why: download the code. Undo: sudo apt remove git"
   say ""
-  say "  3. Docker Engine and the Compose plugin, with Docker's own apt commands"
-  say "     ($docker_page, \"Install using the apt repository\"):"
+  say "  3. Docker Engine and the Compose plugin: Docker's commands from $docker_page"
+  say "     (\"Install using the apt repository\"), with -y added to its two apt installs because you approve them here:"
   print_docker_commands
   say "     Why: runs the hub. Changes: adds Docker's signing key and package source, installs Docker."
-  say "     apt may ask you to confirm (Y). Undo: the Uninstall section of the same Docker page."
+  say "     Undo: the Uninstall section of the same Docker page."
   say "     Deleting Docker's data folders, as that section shows, also deletes the household."
   say ""
   say "  4. sudo usermod -aG docker $USER"
@@ -446,11 +487,13 @@ ask_home_network_rule() {
 
 # Docker's Debian page, "Install using the apt repository", steps 1 and 2:
 # https://docs.docker.com/engine/install/debian/ (also the page for 64-bit
-# Raspberry Pi OS). Keep in step with print_docker_commands.
+# Raspberry Pi OS), with -y added to its two apt installs: the person approved
+# these exact lines in the plan, and apt would otherwise stop at [Y/n].
+# Keep in step with print_docker_commands.
 install_docker_debian() {
   # Add Docker's official GPG key:
   sudo apt update || return 1
-  sudo apt install ca-certificates curl || return 1
+  sudo apt install -y ca-certificates curl || return 1
   sudo install -m 0755 -d /etc/apt/keyrings || return 1
   sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc || return 1
   sudo chmod a+r /etc/apt/keyrings/docker.asc || return 1
@@ -467,14 +510,14 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
   sudo apt update || return 1
-  sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
 }
 
-# Docker's Ubuntu page, the same steps: https://docs.docker.com/engine/install/ubuntu/
+# Docker's Ubuntu page, the same steps and the same -y: https://docs.docker.com/engine/install/ubuntu/
 install_docker_ubuntu() {
   # Add Docker's official GPG key:
   sudo apt update || return 1
-  sudo apt install ca-certificates curl || return 1
+  sudo apt install -y ca-certificates curl || return 1
   sudo install -m 0755 -d /etc/apt/keyrings || return 1
   sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
   sudo chmod a+r /etc/apt/keyrings/docker.asc || return 1
@@ -491,7 +534,7 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
   sudo apt update || return 1
-  sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+  sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
 }
 
 # GitHub CLI, exactly as INSTALL-WITH-AI.md step 3 shows it (from GitHub's
@@ -556,15 +599,17 @@ check_tools() {
 # Guide step 3, "Check again for an existing hub, now that Docker is
 # installed": this must print nothing.
 #   ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker volume ls -q --filter name=familyhub-data
-# The containers are checked again too, as the guide's "First" section does.
+# Here every volume and container name goes through the same matcher as the
+# first check (a superset of that filter): Docker's data can outlive an
+# uninstalled docker command.
 check_no_existing_hub_again() {
   local found volumes containers
   found=$(ls -d "$HOME/sproutwall" "$HOME/family-hub" 2>/dev/null || true)
-  volumes=$(as_docker_group docker volume ls -q --filter name=familyhub-data) \
+  volumes=$(as_docker_group docker volume ls -q) \
     || stop "Docker could not be asked about an existing hub, so this script stops before it gets the code. Check docker info, then follow $GUIDE#check-the-tools"
   containers=$(as_docker_group docker ps -a --format '{{.Names}}') \
     || stop "Docker could not be asked about an existing hub, so this script stops before it gets the code. Check docker info, then follow $GUIDE#check-the-tools"
-  if [ -n "$found" ] || [ -n "$volumes" ] || printf '%s\n' "$containers" | grep -Eq 'sproutwall|family-hub|familyhub-data'; then
+  if [ -n "$found" ] || printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
     stop "$EXISTING_HUB_LINE"
   fi
 }
@@ -861,7 +906,11 @@ finish() {
     say "With the kiosk, the hub comes back on the screen by itself, the right way up, and asks once for the parent"
     say "PIN: type it there. Tap the four corners and the centre again. The screen must stay lit."
   else
-    say "Without the kiosk: cd ~/sproutwall && docker compose -f $PREVIEW ps must show healthy (wait up to a minute)."
+    say "Without the kiosk, run the guide's two checks. ps must show healthy, and the health check must print \"ok\":true."
+    say "Right after the restart, ps can show health: starting for up to a minute: wait 30 seconds and run both again."
+    say "  cd ~/sproutwall"
+    say "  docker compose -f docker-compose.preview.yml ps"
+    say "  curl -fsS --max-time 3 http://127.0.0.1:3847/api/health"
   fi
   say "A phone on the home Wi-Fi must still show \"Unlock this screen\" at http://$address:3847."
   say "Something wrong? $GUIDE#if-something-goes-wrong"
@@ -875,6 +924,7 @@ run_install() {
   if ! ask_yes_no "Do you approve this plan?"; then
     leave_unchanged "You did not approve the plan, so nothing was changed. You can also follow the guide by hand: $GUIDE#without-ai"
   fi
+  check_docker_with_sudo
   ask_home_network_rule
   install_tools
   check_tools
@@ -901,4 +951,6 @@ main() {
   exit 0
 }
 
-main "$@" </dev/null
+# Braces: a download cut off anywhere in this line leaves an unclosed group,
+# which bash refuses as a syntax error, so a partial line never runs main.
+{ main "$@" </dev/null; }
