@@ -100,7 +100,10 @@ export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | n
 /** One /api/ambient read. `locked` is true when the answer says this screen
  *  is not unlocked (401), so settings loaded earlier must be dropped too. */
 function loadAmbient(): Promise<AmbientLoad> {
-  return fetch("/api/ambient")
+  // A stalled request counts as a network error after 5 s, so it can't hold
+  // the screensaver back for good.
+  const signal = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(5_000) : undefined;
+  return fetch("/api/ambient", { signal })
     .then(async (r) => ({ cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: r.status === 401 }))
     .catch(() => ({ cfg: null, locked: false }));
 }
@@ -124,11 +127,11 @@ export function applyAmbient(
   }
 }
 
-/** What to do when the screen has been idle long enough for the screensaver.
- *  The slides are household content (photos, rules), so the screen first asks
- *  the hub again: still unlocked shows them, locked goes to /unlock, and a
- *  network error shows the slides it already had. */
-export function idleEntry(load: AmbientLoad): "saver" | "unlock" {
+/** Whether the screensaver may start, idle or by the moon button. The slides
+ *  are household content (photos, rules), so the screen asks the hub first and
+ *  keeps the saver off while it waits: still unlocked shows them, locked goes
+ *  to /unlock, and a network error shows the slides it already had. */
+export function saverEntry(load: AmbientLoad): "saver" | "unlock" {
   return load.locked ? "unlock" : "saver";
 }
 
@@ -161,8 +164,11 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
   // Manual screensaver (the moon button) + fresh weather on entry.
   useEffect(() => {
     const onSleep = () => {
-      loadAmbient().then((load) => applyAmbient(load, setCfg, setSaver));
-      setSaver(true);
+      loadAmbient().then((load) => {
+        if (saverEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
+        if (load.cfg) setCfg(load.cfg);
+        setSaver(true);
+      });
     };
     window.addEventListener("sproutwall:sleep", onSleep);
     return () => window.removeEventListener("sproutwall:sleep", onSleep);
@@ -196,7 +202,7 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
         entering.current = true;
         loadAmbient().then((load) => {
           entering.current = false;
-          if (idleEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
+          if (saverEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
           if (load.cfg) setCfg(load.cfg);
           // Activity during the check cancels it.
           if (Date.now() - lastActivity.current > cfg.idleMinutes * 60_000) setSaver(true);

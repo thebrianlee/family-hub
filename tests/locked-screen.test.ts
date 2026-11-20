@@ -2,7 +2,7 @@ import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyAmbient, idleEntry, type AmbientConfig } from "@/components/Ambient";
+import { applyAmbient, saverEntry, type AmbientConfig } from "@/components/Ambient";
 import { unlockUrl } from "@/lib/unlock-redirect";
 import { hashPin } from "@/lib/auth";
 import { getMembers } from "@/lib/household";
@@ -117,19 +117,19 @@ describe("applyAmbient", () => {
 // A screen that has been open for a while and then loses its unlock (the PIN
 // changed, or the 30 days ran out) must not start the screensaver with the
 // household slides it loaded earlier.
-describe("idleEntry: session loss, then the idle screensaver", () => {
+describe("saverEntry: session loss, then the screensaver (idle or the moon button)", () => {
   const settings: AmbientConfig = { photos: ["/p/1.jpg"], art: [], quotes: [], idleMinutes: 10, sleepStart: "21:30", sleepEnd: "06:00" };
 
   it("goes to /unlock instead of the slides once the hub answers 401", () => {
-    expect(idleEntry({ cfg: null, locked: true })).toBe("unlock");
+    expect(saverEntry({ cfg: null, locked: true })).toBe("unlock");
   });
 
   it("starts the screensaver while the screen is still unlocked", () => {
-    expect(idleEntry({ cfg: settings, locked: false })).toBe("saver");
+    expect(saverEntry({ cfg: settings, locked: false })).toBe("saver");
   });
 
   it("starts it with what it had after a network error (the hub is unreachable, not refusing)", () => {
-    expect(idleEntry({ cfg: null, locked: false })).toBe("saver");
+    expect(saverEntry({ cfg: null, locked: false })).toBe("saver");
   });
 
   it("the locked path ends on /unlock, coming back to the same page", () => {
@@ -137,7 +137,7 @@ describe("idleEntry: session loss, then the idle screensaver", () => {
     const setSaver = vi.fn();
     const onLocked = vi.fn();
     const load = { cfg: null, locked: true };
-    expect(idleEntry(load)).toBe("unlock");
+    expect(saverEntry(load)).toBe("unlock");
     applyAmbient(load, setCfg, setSaver, onLocked);
     expect(setCfg).toHaveBeenCalledWith(null);
     expect(setSaver).toHaveBeenCalledWith(false);
