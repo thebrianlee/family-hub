@@ -103,6 +103,8 @@ The AI may not decide this itself. It asks the owner, and an empty result from t
 
 ## Start here: what to tell your AI
 
+New to Raspberry Pi, the Terminal or GitHub? Start with [the step-by-step guide for beginners](docs/INSTALL-BEGINNERS.md): it gets the Pi ready and then brings you back here.
+
 Give your assistant this prompt:
 
 > Read this repo and install it on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
