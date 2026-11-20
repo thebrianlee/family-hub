@@ -69,8 +69,16 @@ body {
 
 @layer components {
   /* Minimum 48px hit target on every tappable element. */
+  /* At least 48px on the screen itself: on a scaled-down kiosk (--fit < 1)
+     the minimum grows in layout pixels so the finger target does not shrink. */
   .touch-target {
-    @apply min-h-[48px] min-w-[48px];
+    min-height: calc(48px / var(--fit, 1));
+    min-width: calc(48px / var(--fit, 1));
+  }
+  /* For text-sized buttons that are already 44px tall on the design screen:
+     keeps them at least 44px tall on the screen itself when scaled down. */
+  .touch-min {
+    min-height: calc(44px / var(--fit, 1));
   }
   .card {
     @apply rounded-card bg-cream-raised shadow-card;

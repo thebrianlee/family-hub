@@ -5,10 +5,13 @@
 // On a smaller kiosk screen, such as the Raspberry Pi Touch Display 2
 // (720x1280) or the old 7" panel (800x480), the same layout is shown scaled
 // down to fit, so nothing overlaps or runs off the edge. Phones (narrower than
-// 600 px) are not scaled: they get their own CSS, keyed on data-phone.
+// 640 px, Tailwind's max-sm) are not scaled: they get their own CSS, keyed on
+// data-phone.
 //
 // It runs before the first paint (an inline script in <head>), and again on
-// every resize or rotation. --fit is used by html { zoom } and .screen-fit.
+// every resize or rotation. --fit is used by html { zoom }, .screen-fit and
+// .touch-target. Because it sets attributes on <html> before React hydrates,
+// every <html> in app/layout.tsx carries suppressHydrationWarning.
 export const FIT_SCRIPT = `(function(){
   function fit(){
     var w = window.innerWidth, h = window.innerHeight, phone = w < 640;

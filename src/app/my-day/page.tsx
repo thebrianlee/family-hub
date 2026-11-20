@@ -515,7 +515,7 @@ export default function MyDayPage() {
             <button
               key={k.id}
               onClick={() => setEditKid(k.id)}
-              className="py-2 text-lg font-bold text-ink-faint active:bg-cream-sunken rounded-card"
+              className="touch-min py-2 text-lg font-bold text-ink-faint active:bg-cream-sunken rounded-card"
             >
               ⚙️ Edit {k.name}&apos;s routines &amp; jobs
             </button>

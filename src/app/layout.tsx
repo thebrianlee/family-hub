@@ -40,7 +40,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   } catch (e) {
     if (!isDbBlocked(e)) throw e;
     return (
-      <html lang="en" className={jakarta.variable}>
+      <html lang="en" className={jakarta.variable} suppressHydrationWarning>
           <head>
             <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
           </head>
@@ -58,7 +58,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       // the screensaver and the tab bar (which would prefetch locked pages)
       // must not reach a browser that hasn't entered the PIN.
       return (
-        <html lang="en" className={jakarta.variable}>
+        <html lang="en" className={jakarta.variable} suppressHydrationWarning>
           <head>
             <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
           </head>
@@ -73,7 +73,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const modules = ready ? enabledModules() : [];
   const rev = ready ? modulesRev() : 0;
   return (
-    <html lang="en" className={jakarta.variable}>
+    <html lang="en" className={jakarta.variable} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
       </head>

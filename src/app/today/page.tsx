@@ -270,7 +270,7 @@ export default function TodayPage() {
         {t?.rules && t.rules.length > 0 && (
           <button
             onClick={() => setRulesOpen(true)}
-            className="tile shrink-0 self-start flex items-center gap-3 px-6 py-3 active:bg-cream-sunken"
+            className="tile touch-min shrink-0 self-start flex items-center gap-3 px-6 py-3 active:bg-cream-sunken"
           >
             <span className="text-3xl">📜</span>
             <span className="text-2xl font-extrabold">Family Rules</span>
@@ -416,7 +416,7 @@ export default function TodayPage() {
             {parents.map((p) => {
               const st = t?.statuses[p.id];
               return (
-                <button key={p.id} onClick={() => setPinFor(p.id)} className="flex items-center gap-3 text-left active:opacity-80">
+                <button key={p.id} onClick={() => setPinFor(p.id)} className="touch-min flex items-center gap-3 text-left active:opacity-80">
                   <Avatar member={p.id} size={44} />
                   <span className="text-xl font-extrabold">{p.name}</span>
                   <span className="text-xl font-bold text-ink-soft">{st ? `${STATUS_EMOJI[st]} ${st}` : "…"}</span>
