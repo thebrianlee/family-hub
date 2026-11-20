@@ -1,0 +1,84 @@
+name: Install report
+description: Tell us how installing Sproutwall went, whether it worked or not. This is how the install guide gets better.
+title: "[Install] "
+labels: ["install-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying Sproutwall. Every report helps, including "it just worked".
+        Please leave out real names, addresses (including IP addresses), calendar links, tokens, PINs and family photos.
+        **Security problem?** Do not file it here. Use the "Report a security problem" link on the new-issue page instead.
+  - type: dropdown
+    id: result
+    attributes:
+      label: How did it go?
+      options:
+        - It worked the first time
+        - It worked after a fix or a retry
+        - It did not work
+    validations:
+      required: true
+  - type: dropdown
+    id: method
+    attributes:
+      label: How you installed it
+      options:
+        - "Guided (INSTALL-WITH-AI.md), tier A: an AI assistant on the device itself"
+        - "Guided (INSTALL-WITH-AI.md), tier B: an AI assistant on another computer, over SSH"
+        - "Guided (INSTALL-WITH-AI.md), tier C: I typed the commands, with an AI in a chat or no AI"
+        - Manual install from the README
+        - Raspberry Pi guide (docs/raspberry-pi.md)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Raspberry Pi 5
+        - Raspberry Pi 4
+        - Other arm64 board
+        - amd64 mini PC or laptop
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Raspberry Pi OS (Trixie) 64-bit, Debian 13, Ubuntu 24.04 ..."
+    validations:
+      required: true
+  - type: input
+    id: assistant
+    attributes:
+      label: AI assistant (if any)
+      placeholder: "Claude, ChatGPT, Gemini, none ..."
+  - type: textarea
+    id: stuck
+    attributes:
+      label: Where it got stuck or felt unclear
+      description: The step number, what the guide said, and what happened instead. Write "nothing" if it all went smoothly.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output (optional)
+      description: Output of `./scripts/sproutwall doctor --json --phase final --tier <A|B|C> --kiosk <on|off>` from the sproutwall folder. Check it for addresses before pasting.
+      render: json
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Run `git log -1 --oneline` in the sproutwall folder.
+      placeholder: "aaf3860 docs: INSTALL-WITH-AI.md ..."
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed real names, addresses, calendar links, tokens, PINs and photos from this report.
+          required: true

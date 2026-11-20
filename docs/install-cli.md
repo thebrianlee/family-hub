@@ -130,7 +130,7 @@ Messages are fixed text. gh's own output is never printed.
 
 ### Checks against the first preview image
 
-The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`. Items marked "Done" passed on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS with gh 2.86.0 and Docker Compose 5.8.0; they still need one run on the Pi.
+The sandbox that wrote this could not reach GHCR, Sigstore or GitHub's package repository. A maintainer runs these on a clean 64-bit Raspberry Pi OS with no `~/.config/gh` and no `GH_TOKEN`. Items marked "Done" passed on 2026-11-19 against the pinned pair (run 44596530739, attempt 2), on macOS with gh 2.86.0 and Docker Compose 5.8.0, except item 4, which was checked in a Debian 13 arm64 VM on the same day. They still need one run on the Pi.
 
 1. Done: anonymous GHCR access: the pull token, the referrers list (or the `sha256-<hex>` tag fallback) and the bundle blob are served without an account.
 2. [미확인] (unverified): the bundle download worked, but whether GHCR answered with a redirect was not recorded. To check: GHCR answers the blob request with a single redirect to `pkg-containers.githubusercontent.com` (`BLOB_REDIRECT_HOST` in `scripts/sproutwall_lib/attestation.py`), and the signed link there needs no further redirect.
