@@ -197,6 +197,18 @@ def read_directives(system, path=SSHD_CONFIG, depth=0):
     return directives
 
 
+def _value(args):
+    """A directive's argument as sshd compares it: lowercase, surrounding quotes removed.
+
+    The parser keeps quotes, but sshd accepts quoted arguments, so
+    PermitRootLogin "yes" means yes.
+    """
+    value = args.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value.lower()
+
+
 def effective(directives, keyword, default):
     """The first unconditional value of keyword (sshd's first-match rule)."""
     if keyword == "kbdinteractiveauthentication":
@@ -205,7 +217,7 @@ def effective(directives, keyword, default):
         names = (keyword,)
     for name, args, in_match in directives:
         if name in names and not in_match:
-            return args.lower()
+            return _value(args)
     return default
 
 
@@ -228,7 +240,7 @@ def allows_root_or_empty_password(directives):
     until the final check, but never these two.
     """
     for name, args, _in_match in directives:
-        value = args.lower()
+        value = _value(args)
         if name == "permitemptypasswords" and value != "no":
             return True
         if name == "permitrootlogin" and value == "yes":
@@ -243,7 +255,7 @@ def allows_password(directives):
     if effective(directives, "kbdinteractiveauthentication", "yes") != "no":
         return True
     for name, args, in_match in directives:
-        value = args.lower()
+        value = _value(args)
         if name in _PASSWORD_KEYWORDS and (value == "yes" or (in_match and value != "no")):
             return True
         if name == "permitemptypasswords" and value != "no":

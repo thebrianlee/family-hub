@@ -93,6 +93,12 @@ if [ "$1" = cat ]; then
   shift
   exec cat "$@"
 fi
+if [ "$1" = sh ]; then
+  # The read-only read of the whole SSH config as root (over SSH only), under the test's fake root.
+  [ -z "${FAKE_SUDO_SH_FAIL:-}" ] || exit 1
+  shift
+  exec /bin/sh "$@"
+fi
 if [ "$1" = ls ]; then
   # The read-only look into Docker's data folder; the path is under the test's fake root.
   shift
@@ -155,6 +161,11 @@ if [ "$count" -gt 1 ] && [ -n "${FAKE_HOSTNAME_LATER:-}" ]; then
 else
   echo "${FAKE_HOSTNAME:-192.168.1.50 172.17.0.1 fd12:3456::50}"
 fi
+""",
+    "ip": r"""#!/bin/bash
+# ip -6 -o addr show scope global: this device's global IPv6 addresses with prefix lengths.
+[ "$*" = "-6 -o addr show scope global" ] || exit 99
+[ -z "${FAKE_IP6:-}" ] || printf '%b\n' "$FAKE_IP6"
 """,
     "sg": r"""#!/bin/bash
 printf 'sg %s\n' "$*" >>"$FAKE_LOG"
@@ -1307,9 +1318,10 @@ class OverSshTests(InstallShTestCase):
         self.assertIn("7. sudo raspi-config nonint do_ssh 1", plan)
         self.assertIn("Undo: sudo raspi-config nonint do_ssh 0", plan)
         # Every sudo command that ran was in the plan; turning SSH off is the very last one.
+        unquoted = plan.replace("'", "")
         for line in run.log:
             if line.startswith("sudo"):
-                self.assertIn(line, plan)
+                self.assertIn(line, unquoted)
         self.assertEqual([line for line in run.log if line.startswith("sudo")][-1], "sudo raspi-config nonint do_ssh 1")
         self.assertIn("http://192.168.1.50:3847", run.out[run.out.index("Set up your household now") :])
         self.assertIn("this computer", run.out)
@@ -1422,7 +1434,10 @@ class OverSshTests(InstallShTestCase):
         cases = {
             "match in main": (STOCK_SSHD_CONFIG + "Match Address 10.0.0.0/8\n  PermitRootLogin yes\n", None),
             "match in drop-in": (STOCK_SSHD_CONFIG, {"60-x.conf": "  match user guest\n PermitEmptyPasswords yes\n"}),
+            "match=value": (STOCK_SSHD_CONFIG, {"60-x.conf": "Match=User guest\n PermitEmptyPasswords yes\n"}),
+            "match = value": (STOCK_SSHD_CONFIG + "\tMATCH = Address 10.0.0.0/8\n PermitRootLogin yes\n", None),
             "other include": ("Include /etc/ssh/extra/*.conf\n" + STOCK_SSHD_CONFIG, None),
+            "include=value": ("Include=/etc/ssh/extra/*.conf\n" + STOCK_SSHD_CONFIG, None),
         }
         for label, (main, dropins) in cases.items():
             with self.subTest(label=label):
@@ -1435,12 +1450,54 @@ class OverSshTests(InstallShTestCase):
                 self.assertEqual(run.err.count("Stopped:"), 1)
                 self.assertIn("Nothing was changed", run.err)
                 self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
-                self.assertTrue(self.sudo_lines(run)[-1].startswith("sudo cat "))
+                self.assertTrue(self.sudo_lines(run)[-1].startswith("sudo sh -c "))
 
     def test_commented_match_in_the_stock_config_is_fine(self):
         run = self.run_install(SSH_ANSWERS, **SSH_ENV)
         self.assertEqual(run.code, 0, run.out + run.err)
         self.assertIn("no Match rules. OK.", run.out)
+
+    def test_stock_include_written_with_equals_or_quotes_is_fine(self):
+        for line in ('Include="/etc/ssh/sshd_config.d/*.conf"\n', "include = /etc/ssh/sshd_config.d/*.conf\n"):
+            with self.subTest(line=line):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                shutil.rmtree(self.home)
+                os.mkdir(self.home)
+                for name in os.listdir(self.state):
+                    if name.endswith(".count"):
+                        os.remove(os.path.join(self.state, name))
+                shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+                self.ssh_config(line + "UsePAM yes\n")
+                run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertIn("no Match rules. OK.", run.out)
+
+    def test_config_read_as_root_fails_closed(self):
+        run = self.run_install(SSH_ANSWERS, FAKE_SUDO_SH_FAIL="1", **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("could not be read", run.err)
+        self.assertIn("Nothing was changed", run.err)
+        self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
+        self.assertTrue(self.sudo_lines(run)[-1].startswith("sudo sh -c "))
+
+    def test_docker_checks_over_ssh_wait_for_the_ssh_notice(self):
+        root = os.path.join(self.sysroot, "var", "lib", "docker")
+        os.makedirs(os.path.join(root, "volumes", "4f2a9c"))
+        self.docker_installed_by_the_plan()
+        run = self.run_install(["", "y", "y", "n"], **SSH_ENV)  # decline the SSH notice
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("nothing was changed", run.out)
+        self.assertFalse(self.sudo_lines(run))
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("0. Read-only, after the SSH question below", plan)
+        os.remove(self.log_path)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        sudo = self.sudo_lines(run)
+        self.assertEqual(sudo[0], "sudo ls -1 %s/var/lib/docker/volumes" % self.sysroot)
+        self.assertLess(run.out.index("Do you understand and accept this?"), run.out.index("Looking for an existing hub"))
 
     def test_old_doctor_ssh_fail_still_stops_without_ssh(self):
         self.doctor("running", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
@@ -1448,27 +1505,36 @@ class OverSshTests(InstallShTestCase):
         self.assertEqual(run.code, 1, run.out + run.err)
         self.assertNotIn("sshd -T", "\n".join(run.log))
 
-    def test_internet_ipv6_is_in_the_notice_the_person_accepts(self):
-        run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME="192.168.1.50 2001:db8::50 fe90::50", **SSH_ENV)
-        self.assertEqual(run.code, 0, run.out + run.err)
-        notice = run.out[run.out.index("SSH: YOUR RESPONSIBILITY") : run.out.index("Do you understand and accept this?")]
-        self.assertIn("internet IPv6 address", notice)
-        os.remove(self.log_path)
-        shutil.rmtree(self.home)
-        os.mkdir(self.home)
-        for name in os.listdir(self.state):
-            if name.endswith(".count"):
-                os.remove(os.path.join(self.state, name))
-        run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME="192.168.1.50 fd12:3456::50 fe90::50", **SSH_ENV)
-        self.assertNotIn("internet IPv6 address", run.out)
+    def test_internet_ipv6_is_always_in_the_notice_the_person_accepts(self):
+        # Always stated, so the consent covers an internet IPv6 address that appears only later.
+        for hostnames in ("192.168.1.50 2001:db8::50 fe90::50", "192.168.1.50 fd12:3456::50 fe90::50"):
+            with self.subTest(hostnames=hostnames):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "y", "y", "n"], FAKE_HOSTNAME=hostnames, **SSH_ENV)
+                notice = run.out[run.out.index("SSH: YOUR RESPONSIBILITY") : run.out.index("Do you understand and accept this?")]
+                self.assertIn("internet (IPv6) address", notice)
+                self.assertIn("SSH could be reachable from the internet", notice)
 
-    def test_ipv6_only_lan_gets_a_usable_url(self):
+    def test_ipv4_address_rechecked_before_the_doctor_ssh_result_is_accepted(self):
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
+        # A public IPv4 address appears after the first preflight check.
+        run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME_LATER="203.0.113.50 192.168.1.50", **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+
+    def test_ipv6_only_lan_stops_in_preflight_over_ssh(self):
         run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME="fd12:3456::50", **SSH_ENV)
+        self.assert_stopped_before_changes(run)
+        self.assertIn("no IPv4 home-network address", run.err)
+        self.assertNotIn("<lan-ip>", run.out + run.err)
+
+    def test_household_url_is_the_ipv4_address_only(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
         self.assertEqual(run.code, 0, run.out + run.err)
         household = run.out[run.out.index("Set up your household now") : run.out.index("You see")]
-        self.assertNotIn("<lan-ip>", household)
-        self.assertIn(".local:3847", household)
-        self.assertNotIn("<lan-ip>", run.out[run.out.index("== Sproutwall is installed ==") :])
+        self.assertIn("http://192.168.1.50:3847", household)
+        self.assertNotIn(".local:3847", household)
 
     def test_session_from_outside_the_home_network_stops_in_preflight(self):
         for address in ("203.0.113.9", "100.101.102.103", "2001:db8::9", "fe9::1", "fec0::1"):
@@ -1476,6 +1542,20 @@ class OverSshTests(InstallShTestCase):
                 if os.path.exists(self.log_path):
                     os.remove(self.log_path)
                 run = self.run_install(SSH_ANSWERS, SSH_CONNECTION="%s 52344 192.168.1.50 22" % address)
+                self.assert_stopped_before_changes(run)
+                self.assertIn("does not come from your home network", run.err)
+
+    def test_global_ipv6_client_in_this_devices_prefix_is_accepted(self):
+        ip6 = "2: wlan0    inet6 2001:db8:1:2::50/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec"
+        run = self.run_install(["", "n"], SSH_CONNECTION="2001:db8:1:2:aa::7 52344 2001:db8:1:2::50 22", FAKE_IP6=ip6)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("does not come from your home network", run.err)
+        self.assertIn("You did not approve the plan", run.out)
+        for address in ("2001:db8:9::7", "2001:db8:1:3::7"):
+            with self.subTest(address=address):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "n"], SSH_CONNECTION="%s 52344 2001:db8:1:2::50 22" % address, FAKE_IP6=ip6)
                 self.assert_stopped_before_changes(run)
                 self.assertIn("does not come from your home network", run.err)
 

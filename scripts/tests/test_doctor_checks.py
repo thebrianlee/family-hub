@@ -410,7 +410,15 @@ class SshPolicyTests(unittest.TestCase):
             self.assertEqual(run("ssh_policy", s, tier=tier), ("fail", "review_ssh"), tier)
 
     def test_b_fails_on_root_login_or_empty_passwords(self):
-        for extra in ("PermitRootLogin yes\n", "PermitEmptyPasswords yes\n", "Match User guest\n  PermitEmptyPasswords yes\n"):
+        for extra in (
+            "PermitRootLogin yes\n",
+            "PermitEmptyPasswords yes\n",
+            "Match User guest\n  PermitEmptyPasswords yes\n",
+            'PermitRootLogin "yes"\n',
+            "PermitRootLogin 'YES'\n",
+            'PermitRootLogin="yes"\n',
+            'PermitEmptyPasswords "yes"\n',
+        ):
             s = healthy_pi()
             ssh_on(s)
             s.files["/etc/ssh/sshd_config"] = extra + fakes.SSHD_CONFIG

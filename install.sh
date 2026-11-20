@@ -193,16 +193,11 @@ first_lan_address() {
   printf '<lan-ip>\n'
 }
 
-# Over SSH: the hub's address for a browser on another computer. The IPv4
-# LAN address when there is one, otherwise the device's .local name.
+# Over SSH: the hub's address for a browser on another computer: the IPv4 LAN
+# address. The hub publishes port 3847 on IPv4 only (docker-compose.preview.yml),
+# so preflight (check_ipv4_lan_for_ssh) stops over SSH when there is none.
 hub_url_for_laptop() {
-  local address
-  address=$(first_lan_address)
-  if [ "$address" = "<lan-ip>" ]; then
-    printf 'http://%s.local:3847\n' "${HOSTNAME:-raspberrypi}"
-  else
-    printf 'http://%s:3847\n' "$address"
-  fi
+  printf 'http://%s:3847\n' "$(first_lan_address)"
 }
 
 # Over SSH: the address the session comes from (the first word of
@@ -227,7 +222,38 @@ ssh_client_on_home_network() {
     192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 169.254.* | 127.*) return 0 ;;
     ::1) return 0 ;;
   esac
-  ipv6_is_lan "$address"
+  ipv6_is_lan "$address" && return 0
+  # A laptop on the same home Wi-Fi often connects from a global IPv6 address
+  # in the same on-link prefix as this device (a dual-stack home router).
+  case "$address" in
+    *:*) ipv6_on_link "$address" ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when the IPv6 address lies inside an on-link prefix of one of this
+# device's interfaces (ip -6 -o addr show scope global: address/prefix length).
+# The values go to Python as arguments; any error means "not on-link".
+ipv6_on_link() {
+  local client=$1 listing line prefix
+  local -a prefixes=()
+  listing=$(ip -6 -o addr show scope global 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    read -r _ _ _ prefix _ <<<"$line"
+    case "$prefix" in
+      *:*/*) prefixes+=("$prefix") ;;
+    esac
+  done <<<"$listing"
+  [ "${#prefixes[@]}" -gt 0 ] || return 1
+  python3 -c '
+import ipaddress, sys
+try:
+    client = ipaddress.ip_address(sys.argv[1])
+    networks = [ipaddress.ip_interface(p).network for p in sys.argv[2:]]
+except ValueError:
+    sys.exit(1)
+sys.exit(0 if client.version == 6 and any(client in n and n.prefixlen >= 48 for n in networks) else 1)
+' "$client" "${prefixes[@]}" 2>/dev/null
 }
 
 # True for an IPv6 address in fc00::/7 (unique local: fc00 to fdff) or
@@ -338,6 +364,16 @@ check_ssh_client_first() {
   [ "$OVER_SSH" = 1 ] || return 0
   if ! ssh_client_on_home_network; then
     stop "This SSH session does not come from your home network. Run the command from a computer on the same home network as this device, or in the device's own Terminal: $GUIDE#the-five-decisions. Nothing was changed."
+  fi
+  check_ipv4_lan_for_ssh
+}
+
+# Over SSH, the household is set up from the laptop's browser, and the hub
+# publishes port 3847 on IPv4 only: without a home-network IPv4 address the
+# laptop could not reach it.
+check_ipv4_lan_for_ssh() {
+  if [ "$(first_lan_address)" = "<lan-ip>" ]; then
+    stop "This device has no IPv4 home-network address, and the hub is reached over IPv4 only, so a browser on your laptop could not open it. Nothing was changed. Run the command in the device's own Terminal instead and set the household up on its screen: $GUIDE#start-here-what-to-tell-your-ai"
   fi
 }
 
@@ -530,32 +566,32 @@ show_plan() {
   say "THE INSTALL PLAN"
   say "These are all the commands this script runs with sudo. sudo asks for your password in this Terminal."
   say "Your yes covers this plan only. Details: $GUIDE#the-install-plan-decision-3"
+  local when="right after you approve"
+  if [ "$OVER_SSH" = 1 ]; then
+    when="after the SSH question below"
+  fi
   if [ "$DOCKER_STATE" = unreachable ]; then
     say ""
-    say "  0. Read-only, right after you approve and before anything changes:"
+    say "  0. Read-only, $when and before anything changes:"
     say "       sudo docker ps -a --format '{{.Names}}'"
     say "       sudo docker volume ls -q"
     say "     Why: Docker is installed but your account cannot reach it yet, so this looks for an existing hub."
     say "     If it finds one, the script stops with nothing changed. Changes nothing; nothing to undo."
   elif [ "$DOCKER_STATE" = data_only ]; then
     say ""
-    say "  0. Read-only, right after you approve and before anything changes:"
+    say "  0. Read-only, $when and before anything changes:"
     say "       sudo ls -1 /var/lib/docker/volumes"
     say "     Why: Docker's data folder from an earlier install is on this device, so this looks there for a"
     say "     hub's household. If it finds one, the script stops with nothing changed. Nothing to undo."
   fi
   if [ "$OVER_SSH" = 1 ]; then
-    local user_name file
-    local -a files=()
+    local user_name
     say ""
     say "  0. Read-only, after the SSH question below and before anything changes:"
     for user_name in root "$(id -un)"; do
       say "       sudo sshd -T -C $(ssh_context "$user_name")"
     done
-    while IFS= read -r file; do
-      files+=("$file")
-    done < <(sshd_config_files)
-    say "       sudo cat ${files[*]}"
+    say "       sudo sh -c '$SSHD_READ_SCRIPT' $SSHD_DIR"
     say "     Why: you are connected over SSH, so this checks that SSH allows neither root login with a password"
     say "     nor empty passwords, and has no Match rules. If it does, the script stops with nothing changed."
     say "     Nothing to undo."
@@ -650,29 +686,12 @@ ask_ssh_responsibility() {
   say "You are running this over SSH. While SSH is on, and especially if it accepts passwords, anyone on your"
   say "home network who knows or guesses this device's password can log in to it. The Sproutwall maintainers"
   say "can't control that: keeping this device, its password and your network safe is your responsibility."
-  if has_internet_ipv6; then
-    say "This device also has an internet IPv6 address: if your router allows incoming connections, SSH could be"
-    say "reachable from the internet too."
-  fi
+  say "If your network gives this device an internet (IPv6) address and your router allows incoming connections,"
+  say "SSH could be reachable from the internet."
   say "This install offers to turn SSH off at the end."
   if ! ask_yes_no "Do you understand and accept this?"; then
     leave_unchanged "You did not accept the SSH risk, so nothing was changed. You can run the same command in the device's own Terminal instead: $GUIDE#start-here-what-to-tell-your-ai"
   fi
-}
-
-# True when hostname -I lists an IPv6 address that is neither link-local nor
-# unique local nor loopback, that is, one the internet can address (doctor's
-# net.py calls it public).
-has_internet_ipv6() {
-  local address
-  for address in $(hostname -I 2>/dev/null || true); do
-    address=${address%%\%*}
-    case "$address" in
-      *.* | ::1) continue ;;
-      *:*) ipv6_is_lan "$address" || return 0 ;;
-    esac
-  done
-  return 1
 }
 
 # The connection spec for sshd -T -C: this SSH session's client address (as
@@ -693,17 +712,41 @@ ssh_context() {
   fi
 }
 
-# The SSH server's own config files, as Debian and Raspberry Pi OS lay them
-# out: sshd_config and sshd_config.d/*.conf (listed as this account; the
-# folder is world-readable there). Read with sudo below, because first-start
-# setup can leave root-only files in the folder.
-sshd_config_files() {
-  local file
-  printf '%s\n' "$TEST_ROOT/etc/ssh/sshd_config"
-  for file in "$TEST_ROOT/etc/ssh/sshd_config.d/"*.conf; do
-    [ -e "$file" ] && printf '%s\n' "$file"
-  done
-  return 0
+# The SSH server's own config: sshd_config, then every sshd_config.d/*.conf,
+# listed and read as root in one read-only command (sshd reads them as root;
+# this account may not be able to list or open them). Any error fails closed.
+SSHD_DIR="$TEST_ROOT/etc/ssh"
+SSHD_READ_SCRIPT='cat "$0/sshd_config" || exit 1; for f in "$0"/sshd_config.d/*.conf; do [ -e "$f" ] || continue; cat "$f" || exit 1; done'
+read_sshd_config() {
+  sudo sh -c "$SSHD_READ_SCRIPT" "$SSHD_DIR"
+}
+
+# One config line as sshd parses it: "Keyword value" or "Keyword=value", any
+# case, with optional spaces around "=". Sets LINE_KEYWORD (lowercase) and
+# LINE_VALUE (surrounding quotes removed); empty keyword for blanks and comments.
+parse_sshd_line() {
+  local line=$1 keyword value
+  line=${line#"${line%%[![:space:]]*}"}
+  LINE_KEYWORD=""
+  LINE_VALUE=""
+  case "$line" in
+    "" | "#"*) return 0 ;;
+  esac
+  keyword=${line%%[[:space:]=]*}
+  value=${line:${#keyword}}
+  value=${value#"${value%%[![:space:]]*}"}
+  case "$value" in
+    =*)
+      value=${value#=}
+      value=${value#"${value%%[![:space:]]*}"}
+      ;;
+  esac
+  value=${value%"${value##*[![:space:]]}"}
+  case "$value" in
+    \"*\" | \'*\') value=${value:1:${#value}-2} ;;
+  esac
+  LINE_KEYWORD=${keyword,,}
+  LINE_VALUE=$value
 }
 
 # Over SSH, read-only, before any change. The checkout's own doctor may
@@ -721,8 +764,7 @@ sshd_config_files() {
 #   person accepts. Only after all of this may the install pass doctor's
 #   ssh_policy fail (see SSH_ON_FOR_INSTALL).
 check_ssh_settings() {
-  local settings user_name file config line rest
-  local -a files=()
+  local settings user_name config line
   [ "$OVER_SSH" = 1 ] || return 0
   say ""
   say "Checking the SSH settings (read-only; sudo asks for your password)..."
@@ -738,23 +780,17 @@ check_ssh_settings() {
         ;;
     esac
   done
-  if [ ! -r "$TEST_ROOT/etc/ssh/sshd_config.d" ] && [ -e "$TEST_ROOT/etc/ssh/sshd_config.d" ]; then
-    stop "The SSH settings folder could not be listed, so this script cannot check it. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
-  fi
-  while IFS= read -r file; do
-    files+=("$file")
-  done < <(sshd_config_files)
-  if ! config=$(sudo cat "${files[@]}" 2>/dev/null); then
-    stop "The SSH settings files could not be read (sudo cat), so this script cannot check them. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
+  if ! config=$(read_sshd_config 2>/dev/null); then
+    stop "The SSH settings files could not be read (sudo sh -c 'cat ...'), so this script cannot check them. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
   fi
   while IFS= read -r line; do
-    read -r line rest <<<"$line"
-    case "$line" in
-      [Mm][Aa][Tt][Cc][Hh])
+    parse_sshd_line "$line"
+    case "$LINE_KEYWORD" in
+      match)
         stop "The SSH settings have a Match rule, which can allow root login or empty passwords for some users or addresses, and this script cannot check every case. Nothing was changed. Remove the Match rule, or run the command in the device's own Terminal: $GUIDE#if-something-goes-wrong"
         ;;
-      [Ii][Nn][Cc][Ll][Uu][Dd][Ee])
-        case "$rest" in
+      include)
+        case "$LINE_VALUE" in
           /etc/ssh/sshd_config.d/\*.conf) ;;
           *) stop "The SSH settings include files from somewhere this script does not check. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong" ;;
         esac
@@ -1030,8 +1066,9 @@ SSH_SETTINGS_UNREADABLE="ssh_policy unknown review_ssh"
 # Over SSH only, after check_ssh_settings passed: the checkout's doctor may be
 # older than password SSH for tier B and report it as a fail. Its other tier B
 # fail reasons are covered here: root login and empty passwords (sshd -T), and
-# a public IPv4 address (home_network_ok); an internet IPv6 address is named
-# in a note. The final check, after SSH is off, is unchanged.
+# a public IPv4 address (home_network_ok, checked again each time this is
+# accepted); an internet IPv6 address is stated in the SSH notice the person
+# accepts. The final check, after SSH is off, is unchanged.
 SSH_ON_FOR_INSTALL="ssh_policy fail review_ssh"
 
 # Runs doctor --json for a phase. True when the guide's rule allows going on:
@@ -1060,8 +1097,8 @@ only_allowed_unknowns() {
     [ -z "$id" ] && continue
     case "$id $status $action" in
       "$TRUSTED_LAN_ONLY") ;;
-      "$SSH_SETTINGS_UNREADABLE") [ "$OVER_SSH" = 1 ] || return 1 ;;
-      "$SSH_ON_FOR_INSTALL") [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] || return 1 ;;
+      "$SSH_SETTINGS_UNREADABLE") [ "$OVER_SSH" = 1 ] && home_network_ok || return 1 ;;
+      "$SSH_ON_FOR_INSTALL") [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] && home_network_ok || return 1 ;;
       *) return 1 ;;
     esac
     seen=1
@@ -1154,8 +1191,8 @@ setup_household() {
   say "== Set up your household now (guide step 6) =="
   say "Until first-run setup is done, anyone on your network who opens the hub could choose the PIN. Do it now."
   if [ "$OVER_SSH" = 1 ]; then
-    say "Open the hub in a web browser now: on this computer (the one you are typing on) go to $(hub_url_for_laptop)"
-    say "(or http://${HOSTNAME:-raspberrypi}.local:3847), or on the device's own screen go to http://localhost:3847."
+    say "Open the hub in a web browser now: on this computer (the one you are typing on) go to $(hub_url_for_laptop),"
+    say "or on the device's own screen go to http://localhost:3847."
   else
     say "On this device's own screen, open the web browser at: http://localhost:3847"
   fi
@@ -1196,8 +1233,8 @@ setup_not_finished_only() {
   while read -r id status action; do
     [ -z "$id" ] && continue
     if [ "$id $status $action" = "$TRUSTED_LAN_ONLY" ]; then continue; fi
-    if [ "$OVER_SSH" = 1 ] && [ "$id $status $action" = "$SSH_SETTINGS_UNREADABLE" ]; then continue; fi
-    if [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] && [ "$id $status $action" = "$SSH_ON_FOR_INSTALL" ]; then continue; fi
+    if [ "$OVER_SSH" = 1 ] && [ "$id $status $action" = "$SSH_SETTINGS_UNREADABLE" ] && home_network_ok; then continue; fi
+    if [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] && [ "$id $status $action" = "$SSH_ON_FOR_INSTALL" ] && home_network_ok; then continue; fi
     [ "$action" = open_hub ] || return 1
     seen=1
   done <<<"$DOCTOR_FINDINGS"
@@ -1369,10 +1406,16 @@ run_install() {
   if ! ask_yes_no "Do you approve this plan?"; then
     leave_unchanged "You did not approve the plan, so nothing was changed. You can also follow the guide by hand: $GUIDE#without-ai"
   fi
-  check_docker_with_sudo
-  ask_home_network_rule
-  ask_ssh_responsibility
-  check_ssh_settings
+  if [ "$OVER_SSH" = 1 ]; then
+    # Over SSH, no sudo before the person accepted the SSH risk.
+    ask_home_network_rule
+    ask_ssh_responsibility
+    check_docker_with_sudo
+    check_ssh_settings
+  else
+    check_docker_with_sudo
+    ask_home_network_rule
+  fi
   install_tools
   check_tools
   check_no_existing_hub_again
