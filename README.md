@@ -32,9 +32,9 @@ What it doesn't do: put the system on the card, update or restore a hub that is 
 
 Open your AI assistant in the Pi's own web browser, so that each command can be copied straight into the Pi's Terminal. Give it this prompt:
 
-> Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and follow it to install Sproutwall on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
+> Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself: `curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash` The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
 
-[INSTALL-WITH-AI.md](INSTALL-WITH-AI.md) is the full guide. The assistant has you run the one command above and explains its questions, or walks you through the same steps one at a time. You can also follow the guide by hand. It also covers putting the system on the card.
+The prompt names the one command itself, because a chat assistant may not read the whole guide. The assistant explains each of the command's questions as they come. [INSTALL-WITH-AI.md](INSTALL-WITH-AI.md) is the full guide: to go step by step instead, tell the assistant. You can also follow the guide by hand. It also covers putting the system on the card.
 
 ### For AI assistants helping someone install Sproutwall
 
