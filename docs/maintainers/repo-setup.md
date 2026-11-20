@@ -310,7 +310,7 @@ It uses no repository secrets (only the built-in `GITHUB_TOKEN`) and no build ar
 
 **What to copy.** Each run's summary page (**Actions →** the run **→ Summary**) shows the image index digest and the source commit. Copy that pair into the install guide. Install files pin the image by that digest (`ghcr.io/thebrianlee/sproutwall:preview@sha256:...`), never by the moving `:preview` tag, and the verification checks the attestation against that commit. The verification names `.github/workflows/image.yml` as the signer workflow, so don't rename or move that file.
 
-**Releases come later.** There are no version tags, no `latest` and no GitHub releases yet. They wait for a RELEASING.md (see [GOVERNANCE.md](../../GOVERNANCE.md#releases)). The install guide pins one published preview by digest. The README's manual install and the Raspberry Pi guide still build locally with `docker compose up -d --build`.
+**Releases.** Previews are released as hand-made GitHub pre-releases. [RELEASING.md](../../RELEASING.md) says how they are numbered and made. The image itself still gets no version tags and no `latest`; those come with the full release process. The install guide pins one published preview by digest. The README's manual install and the Raspberry Pi guide still build locally with `docker compose up -d --build`.
 
 ### One-time owner steps
 
