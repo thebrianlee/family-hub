@@ -390,22 +390,31 @@ class SshPolicyTests(unittest.TestCase):
         self.assertEqual(run("ssh_policy", s, tier="B", phase="running"), PASS)
         self.assertEqual(run("ssh_policy", s, tier="B", phase="final"), ("fail", "review_ssh"))
 
-    def test_b_fails_on_password_or_root_login(self):
+    def test_b_allows_passwords_until_final(self):
+        # HJ, 2026-11-20: an install over SSH from a laptop may use a password; no SSH key needed.
         s = healthy_pi()
         ssh_on(s, password=True)
-        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
-        s = healthy_pi()
-        ssh_on(s)
-        s.files["/etc/ssh/sshd_config"] = "PermitRootLogin yes\n" + fakes.SSHD_CONFIG
-        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="B", phase="running"), PASS)
+        self.assertEqual(run("ssh_policy", s, tier="B", phase="final"), ("fail", "review_ssh"))
         s = healthy_pi()
         ssh_on(s)
         s.files["/etc/ssh/sshd_config"] = fakes.SSHD_CONFIG + "Match Address 192.168.1.0/24\n  PasswordAuthentication yes\n"
-        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="B"), PASS)
         s = healthy_pi()
         ssh_on(s)
         s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/sshd_config.d/*.conf\n"  # keyboard-interactive default yes
-        self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="B"), PASS)
+        for tier in ("A", "C"):
+            s = healthy_pi()
+            ssh_on(s, password=True)
+            self.assertEqual(run("ssh_policy", s, tier=tier), ("fail", "review_ssh"), tier)
+
+    def test_b_fails_on_root_login_or_empty_passwords(self):
+        for extra in ("PermitRootLogin yes\n", "PermitEmptyPasswords yes\n", "Match User guest\n  PermitEmptyPasswords yes\n"):
+            s = healthy_pi()
+            ssh_on(s)
+            s.files["/etc/ssh/sshd_config"] = extra + fakes.SSHD_CONFIG
+            self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"), extra)
 
     def test_b_fails_on_public_listener(self):
         s = healthy_pi()
@@ -440,7 +449,9 @@ class SshPolicyTests(unittest.TestCase):
         s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 2222, "0A")])
         self.assertEqual(run("ssh_policy", s), ("fail", "review_ssh"))
 
-    def test_any_password_yes_is_not_key_only(self):
+    def test_any_password_yes_is_still_not_key_only(self):
+        from sproutwall_lib import sshd
+
         for extra in (
             "Match User guest\n  PasswordAuthentication yes\n",
             "Match Address 10.0.0.0/8\n  KbdInteractiveAuthentication yes\n",
@@ -449,7 +460,8 @@ class SshPolicyTests(unittest.TestCase):
             s = healthy_pi()
             ssh_on(s)
             s.files["/etc/ssh/sshd_config"] = fakes.SSHD_CONFIG + extra
-            self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"), extra)
+            self.assertTrue(sshd.allows_password(sshd.read_directives(s)), extra)
+            self.assertEqual(run("ssh_policy", s, tier="B"), PASS, extra)  # tier B allows passwords
 
     def test_unreadable_config_is_unknown_even_when_ssh_looks_off(self):
         s = healthy_pi()
@@ -466,7 +478,7 @@ class SshPolicyTests(unittest.TestCase):
         s = healthy_pi()
         ssh_on(s)
         s.files["/etc/ssh/sshd_config"] = 'Include "/etc/ssh/my conf.d/*.conf"\n' + fakes.SSHD_CONFIG
-        s.files["/etc/ssh/my conf.d/90-pw.conf"] = "PasswordAuthentication yes\n"
+        s.files["/etc/ssh/my conf.d/90-pw.conf"] = "PermitRootLogin yes\n"
         self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
         s.files["/etc/ssh/sshd_config"] = 'Include "/etc/ssh/unbalanced\n' + fakes.SSHD_CONFIG
         self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
@@ -475,7 +487,7 @@ class SshPolicyTests(unittest.TestCase):
         s = healthy_pi()
         ssh_on(s)
         s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/*.d/*.conf\n" + fakes.SSHD_CONFIG
-        s.files["/etc/ssh/extra.d/90-pw.conf"] = "PasswordAuthentication yes\n"
+        s.files["/etc/ssh/extra.d/90-pw.conf"] = "PermitRootLogin yes\n"
         self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))
         s.unlistable.add("/etc/ssh/extra.d")
         self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
@@ -536,7 +548,7 @@ class SshPolicyTests(unittest.TestCase):
     def test_wildcards_skip_dotfiles_like_glob3(self):
         s = healthy_pi()
         ssh_on(s)
-        s.files["/etc/ssh/sshd_config.d/.90-hidden.conf"] = "PasswordAuthentication yes\n"
+        s.files["/etc/ssh/sshd_config.d/.90-hidden.conf"] = "PermitRootLogin yes\n"
         self.assertEqual(run("ssh_policy", s, tier="B"), PASS)
         s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/sshd_config.d/.*.conf\n" + fakes.SSHD_CONFIG
         self.assertEqual(run("ssh_policy", s, tier="B"), ("fail", "review_ssh"))

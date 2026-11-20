@@ -503,7 +503,10 @@ def check_ssh_policy(ctx):
         return fail("review_ssh")
     if config_state != "ok":
         return unknown("review_ssh")
-    if sshd.allows_password(directives):
+    # Tier B allows password logins until the final check (HJ, 2026-11-20: a
+    # person installing from a laptop over SSH should not need an SSH key),
+    # but never root login with a password or empty passwords.
+    if sshd.allows_root_or_empty_password(directives):
         return fail("review_ssh")
     interfaces = ctx.interfaces()
     binds = [addr for addr, port, st in sockets if st == net.LISTEN and port in ports]

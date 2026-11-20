@@ -221,6 +221,21 @@ def ports(directives):
     return sorted(found)
 
 
+def allows_root_or_empty_password(directives):
+    """True when root may log in with a password, or empty passwords are allowed.
+
+    Tier B (an install over SSH on the home network) accepts password logins
+    until the final check, but never these two.
+    """
+    for name, args, _in_match in directives:
+        value = args.lower()
+        if name == "permitemptypasswords" and value != "no":
+            return True
+        if name == "permitrootlogin" and value == "yes":
+            return True
+    return False
+
+
 def allows_password(directives):
     """True unless the config is key-only everywhere, Match blocks included."""
     if effective(directives, "passwordauthentication", "yes") != "no":
