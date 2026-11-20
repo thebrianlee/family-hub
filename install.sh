@@ -193,6 +193,18 @@ first_lan_address() {
   printf '<lan-ip>\n'
 }
 
+# Over SSH: the hub's address for a browser on another computer. The IPv4
+# LAN address when there is one, otherwise the device's .local name.
+hub_url_for_laptop() {
+  local address
+  address=$(first_lan_address)
+  if [ "$address" = "<lan-ip>" ]; then
+    printf 'http://%s.local:3847\n' "${HOSTNAME:-raspberrypi}"
+  else
+    printf 'http://%s:3847\n' "$address"
+  fi
+}
+
 # Over SSH: the address the session comes from (the first word of
 # SSH_CONNECTION, or of SSH_CLIENT).
 ssh_client_address() {
@@ -201,17 +213,30 @@ ssh_client_address() {
   printf '%s\n' "${words%% *}"
 }
 
-# The SSH session must come from the home network: the same IPv4 ranges as
-# home_network_ok, this device itself, or an IPv6 link-local or unique local
-# address. Anything else (a public address, or a remote-access range such as
-# 100.64.0.0/10) is not the home network.
+# The SSH session must come from the home network, as doctor's own net.py
+# defines it: 10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7, fe80::/10,
+# or this device itself (127/8, ::1). Anything else, such as a public address
+# or a remote-access range like 100.64.0.0/10, is not the home network.
 ssh_client_on_home_network() {
   local address
   address=$(ssh_client_address)
+  address=${address%%\%*}
   address=${address#::ffff:}
+  address=${address#::FFFF:}
   case "$address" in
-    192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 127.*) return 0 ;;
-    ::1 | [Ff][Ee]80:* | [Ff][CcDd]*:*) return 0 ;;
+    192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 169.254.* | 127.*) return 0 ;;
+    ::1) return 0 ;;
+  esac
+  ipv6_is_lan "$address"
+}
+
+# True for an IPv6 address in fc00::/7 (unique local: fc00 to fdff) or
+# fe80::/10 (link-local: fe80 to febf). The first group must have all four
+# digits: "fe9::1" is 0fe9::1, a global address.
+ipv6_is_lan() {
+  case "$1" in
+    [Ff][CcDd][0-9A-Fa-f][0-9A-Fa-f]:*) return 0 ;;
+    [Ff][Ee][89AaBb][0-9A-Fa-f]:*) return 0 ;;
   esac
   return 1
 }
@@ -520,11 +545,20 @@ show_plan() {
     say "     hub's household. If it finds one, the script stops with nothing changed. Nothing to undo."
   fi
   if [ "$OVER_SSH" = 1 ]; then
+    local user_name file
+    local -a files=()
     say ""
     say "  0. Read-only, after the SSH question below and before anything changes:"
-    say "       sudo sshd -T"
+    for user_name in root "$(id -un)"; do
+      say "       sudo sshd -T -C $(ssh_context "$user_name")"
+    done
+    while IFS= read -r file; do
+      files+=("$file")
+    done < <(sshd_config_files)
+    say "       sudo cat ${files[*]}"
     say "     Why: you are connected over SSH, so this checks that SSH allows neither root login with a password"
-    say "     nor empty passwords. If it does, the script stops with nothing changed. Nothing to undo."
+    say "     nor empty passwords, and has no Match rules. If it does, the script stops with nothing changed."
+    say "     Nothing to undo."
   fi
   say ""
   say "  1. sudo apt update && sudo apt full-upgrade -y"
@@ -616,6 +650,10 @@ ask_ssh_responsibility() {
   say "You are running this over SSH. While SSH is on, and especially if it accepts passwords, anyone on your"
   say "home network who knows or guesses this device's password can log in to it. The Sproutwall maintainers"
   say "can't control that: keeping this device, its password and your network safe is your responsibility."
+  if has_internet_ipv6; then
+    say "This device also has an internet IPv6 address: if your router allows incoming connections, SSH could be"
+    say "reachable from the internet too."
+  fi
   say "This install offers to turn SSH off at the end."
   if ! ask_yes_no "Do you understand and accept this?"; then
     leave_unchanged "You did not accept the SSH risk, so nothing was changed. You can run the same command in the device's own Terminal instead: $GUIDE#start-here-what-to-tell-your-ai"
@@ -623,42 +661,108 @@ ask_ssh_responsibility() {
 }
 
 # True when hostname -I lists an IPv6 address that is neither link-local nor
-# unique local, that is, one the internet can address.
+# unique local nor loopback, that is, one the internet can address (doctor's
+# net.py calls it public).
 has_internet_ipv6() {
   local address
   for address in $(hostname -I 2>/dev/null || true); do
+    address=${address%%\%*}
     case "$address" in
-      *.*) ;;
-      [Ff][Ee]80:* | [Ff][CcDd]*:*) ;;
-      *:*) return 0 ;;
+      *.* | ::1) continue ;;
+      *:*) ipv6_is_lan "$address" || return 0 ;;
     esac
   done
   return 1
 }
 
+# The connection spec for sshd -T -C: this SSH session's client address (as
+# host and addr, since sshd matches Host against the address when UseDNS is
+# off, its default) and, from SSH_CONNECTION, the local address and port.
+ssh_context() {
+  local user=$1 client local_address local_port words
+  client=$(ssh_client_address)
+  client=${client%%\%*}
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    read -r _ _ local_address local_port _ <<<"$SSH_CONNECTION"
+    local_address=${local_address%%\%*}
+    printf 'user=%s,host=%s,addr=%s,laddr=%s,lport=%s\n' "$user" "$client" "$client" "$local_address" "$local_port"
+  else
+    words=${SSH_CLIENT:-}
+    read -r _ _ local_port <<<"$words"
+    printf 'user=%s,host=%s,addr=%s,lport=%s\n' "$user" "$client" "$client" "$local_port"
+  fi
+}
+
+# The SSH server's own config files, as Debian and Raspberry Pi OS lay them
+# out: sshd_config and sshd_config.d/*.conf (listed as this account; the
+# folder is world-readable there). Read with sudo below, because first-start
+# setup can leave root-only files in the folder.
+sshd_config_files() {
+  local file
+  printf '%s\n' "$TEST_ROOT/etc/ssh/sshd_config"
+  for file in "$TEST_ROOT/etc/ssh/sshd_config.d/"*.conf; do
+    [ -e "$file" ] && printf '%s\n' "$file"
+  done
+  return 0
+}
+
 # Over SSH, read-only, before any change. The checkout's own doctor may
-# predate password SSH for tier B, so this script checks the two SSH rules
-# that still matter during the install itself.
+# predate password SSH for tier B (it reports that as ssh_policy fail), so
+# this script checks the SSH rules that still matter during the install:
+# - no root login with a password and no empty passwords, for this session's
+#   context as root and as this account (sshd -T -C);
+# - no Match block and no Include other than the stock one, because a Match
+#   rule for another user or address could allow either, and sshd -T shows
+#   only the context it is given (fail closed);
+# - where SSH listens: home_network_ok (preflight, and again before the hub
+#   starts) refuses any IPv4 address outside 10/8, 172.16/12 and 192.168/16,
+#   which is stricter than doctor's "lan", so SSH cannot listen on a public
+#   IPv4 address. An internet IPv6 address is named in the SSH notice that the
+#   person accepts. Only after all of this may the install pass doctor's
+#   ssh_policy fail (see SSH_ON_FOR_INSTALL).
 check_ssh_settings() {
-  local settings
+  local settings user_name file config line rest
+  local -a files=()
   [ "$OVER_SSH" = 1 ] || return 0
   say ""
   say "Checking the SSH settings (read-only; sudo asks for your password)..."
-  if ! settings=$(sudo sshd -T 2>/dev/null); then
-    stop "The SSH settings could not be read (sudo sshd -T), so this script cannot tell whether SSH is safe enough for the install. Nothing was changed. Run the command in the device's own Terminal instead, or get help: $GUIDE#if-something-goes-wrong"
+  user_name=$(id -un)
+  for user_name in root "$user_name"; do
+    if ! settings=$(sudo sshd -T -C "$(ssh_context "$user_name")" 2>/dev/null); then
+      stop "The SSH settings could not be read (sudo sshd -T -C), so this script cannot tell whether SSH is safe enough for the install. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
+    fi
+    settings=$'\n'"$settings"$'\n'
+    case "$settings" in
+      *$'\n'"permitrootlogin yes"$'\n'* | *$'\n'"permitemptypasswords yes"$'\n'*)
+        stop "SSH on this device allows root login with a password, or empty passwords. Nothing was changed. Turn that off in the SSH settings, or run the command in the device's own Terminal: $GUIDE#if-something-goes-wrong"
+        ;;
+    esac
+  done
+  if [ ! -r "$TEST_ROOT/etc/ssh/sshd_config.d" ] && [ -e "$TEST_ROOT/etc/ssh/sshd_config.d" ]; then
+    stop "The SSH settings folder could not be listed, so this script cannot check it. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
   fi
-  settings=$'\n'"$settings"$'\n'
-  case "$settings" in
-    *$'\n'"permitrootlogin yes"$'\n'* | *$'\n'"permitemptypasswords yes"$'\n'*)
-      stop "SSH on this device allows root login with a password, or empty passwords, so this script stops. Nothing was changed. Turn that off, or run the command in the device's own Terminal: $GUIDE#if-something-goes-wrong"
-      ;;
-  esac
+  while IFS= read -r file; do
+    files+=("$file")
+  done < <(sshd_config_files)
+  if ! config=$(sudo cat "${files[@]}" 2>/dev/null); then
+    stop "The SSH settings files could not be read (sudo cat), so this script cannot check them. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong"
+  fi
+  while IFS= read -r line; do
+    read -r line rest <<<"$line"
+    case "$line" in
+      [Mm][Aa][Tt][Cc][Hh])
+        stop "The SSH settings have a Match rule, which can allow root login or empty passwords for some users or addresses, and this script cannot check every case. Nothing was changed. Remove the Match rule, or run the command in the device's own Terminal: $GUIDE#if-something-goes-wrong"
+        ;;
+      [Ii][Nn][Cc][Ll][Uu][Dd][Ee])
+        case "$rest" in
+          /etc/ssh/sshd_config.d/\*.conf) ;;
+          *) stop "The SSH settings include files from somewhere this script does not check. Nothing was changed. Run the command in the device's own Terminal instead: $GUIDE#if-something-goes-wrong" ;;
+        esac
+        ;;
+    esac
+  done <<<"$config"
   SSH_CHECKED=1
-  say "SSH settings: no root password login, no empty passwords. OK."
-  if has_internet_ipv6; then
-    say "Note: this device also has an internet (IPv6) address. If your router lets incoming IPv6 connections"
-    say "through, SSH may be reachable from the internet too. Most home routers block them; turning SSH off at the end removes the risk."
-  fi
+  say "SSH settings: no root password login, no empty passwords, no Match rules. OK."
 }
 
 # --- step 3: tools ------------------------------------------------------------------------
@@ -1050,8 +1154,8 @@ setup_household() {
   say "== Set up your household now (guide step 6) =="
   say "Until first-run setup is done, anyone on your network who opens the hub could choose the PIN. Do it now."
   if [ "$OVER_SSH" = 1 ]; then
-    say "Open the hub in a web browser now: on this computer (the one you are typing on) go to http://$(first_lan_address):3847,"
-    say "or on the device's own screen go to http://localhost:3847."
+    say "Open the hub in a web browser now: on this computer (the one you are typing on) go to $(hub_url_for_laptop)"
+    say "(or http://${HOSTNAME:-raspberrypi}.local:3847), or on the device's own screen go to http://localhost:3847."
   else
     say "On this device's own screen, open the web browser at: http://localhost:3847"
   fi
@@ -1191,7 +1295,11 @@ finish() {
     attention) say "- Screen: the kiosk is set up but needs a check after the restart: ./scripts/sproutwall setup kiosk --check. Undo: $GUIDE#undo-the-kiosk" ;;
     *) say "- Screen: no kiosk. To show the hub full screen, set it up by hand: $PI_GUIDE#step-6-show-the-hub-full-screen-on-the-pis-own-screen-optional" ;;
   esac
-  say "- Phone check: on a phone on the same Wi-Fi, open http://$address:3847. It must show \"Unlock this screen\""
+  local url="http://$address:3847"
+  if [ "$OVER_SSH" = 1 ]; then
+    url=$(hub_url_for_laptop)
+  fi
+  say "- Phone check: on a phone on the same Wi-Fi, open $url. It must show \"Unlock this screen\""
   say "  and ask for the PIN, never the family. If it shows the family without asking, stop the hub"
   say "  (cd ~/sproutwall && docker compose -f $PREVIEW stop) and get help."
   say "- Undo the other changes: the Undo column of the install plan, $GUIDE#the-install-plan-decision-3"
@@ -1217,7 +1325,7 @@ finish() {
     say "  docker compose -f docker-compose.preview.yml ps"
     say "  curl -fsS --max-time 3 http://127.0.0.1:3847/api/health"
   fi
-  say "A phone on the home Wi-Fi must still show \"Unlock this screen\" at http://$address:3847."
+  say "A phone on the home Wi-Fi must still show \"Unlock this screen\" at $url."
   say "Something wrong? $GUIDE#if-something-goes-wrong"
 }
 
