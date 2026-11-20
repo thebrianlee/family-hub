@@ -2,7 +2,9 @@
 
 **Install:** [guided, with or without an AI assistant](INSTALL-WITH-AI.md) · [manual install](#install-at-home)
 
-> **Early preview.** Sproutwall started as one family's kitchen screen and runs there every day, but the guided install is new. We tested the tier C guided install once in a fresh Debian 13 arm64 VM, completing household setup through the API rather than the screen. We haven't tested the guided install on a Raspberry Pi yet. If you try it, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not. Bugs are welcome as [issues](https://github.com/thebrianlee/sproutwall/issues/new/choose), and ideas and questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions).
+New to Raspberry Pi? Start with [the step-by-step guide](docs/INSTALL-BEGINNERS.md).
+
+> **Early preview.** Sproutwall started as one family's kitchen screen and runs there every day, but the guided install is new. We have tested the tier C guided install several times in fresh Debian 13 arm64 VMs, most recently with household setup and the screen unlock done through the screen itself. We haven't tested the guided install on a Raspberry Pi yet. If you try it, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not. Bugs are welcome as [issues](https://github.com/thebrianlee/sproutwall/issues/new/choose), and ideas and questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions).
 
 Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitchen. It shows the day at a glance: weather, the family calendar, routines, meals, lists, a reading shelf, a points jar (Family Bucks), and Ask the Hub, a question wall for kids. It runs on a computer in your home, such as a Raspberry Pi, and keeps the household's data on that computer. There is no cloud account and no subscription.
 
@@ -26,6 +28,8 @@ The screenshots show the Calders, a made-up sample family. They are not a real h
 [License](#license)
 
 ## Install at home
+
+New to Raspberry Pi, the Terminal or GitHub? The [step-by-step guide for beginners](docs/INSTALL-BEGINNERS.md) takes you from a blank card to the hub on your kitchen screen, with a chat AI.
 
 ### What you need
 
