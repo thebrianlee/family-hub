@@ -1462,10 +1462,17 @@ finish() {
   say "  ./scripts/sproutwall doctor --phase final --tier C --kiosk $kiosk_flag"
   say "It passes with \"Result: pass\", or with \"Result: unknown\" when the only unknown is app_bind / confirm_trusted_lan."
   if [ "$OVER_SSH" = 1 ]; then
-    say "It needs SSH off, so once SSH is off, run it in the device's own Terminal."
-    say "In this preview it may also show ssh_policy unknown (review_ssh) when an SSH settings file that only root can"
-    say "read is on the device, even though SSH is off. Only that unknown is acceptable, and only if this prints"
-    say "inactive for both:  $SSH_STATE_COMMAND"
+    say "Over SSH, the final check depends on your answer to the SSH question below (guide step 8):"
+    say "- SSH off: run it in the device's own Terminal (it needs a keyboard), because it fails while any SSH"
+    say "  session is open. In this preview it may also show ssh_policy unknown (review_ssh) and temporary_access"
+    say "  unknown (retry_local) when an SSH settings file that only root can read is on the device, even though"
+    say "  SSH is off. Only those two unknowns are acceptable, and only if this prints"
+    say "  inactive for both:  $SSH_STATE_COMMAND"
+    say "  No keyboard for the device? Then the installer's own \"SSH is off\" line below, plus the phone check"
+    say "  after the restart (and, with the kiosk, the hub back on the screen), stand in for the final check."
+    say "- SSH kept on (your choice): you may run the final check over SSH. Then ssh_policy (fail or unknown) and"
+    say "  temporary_access (fail remove_agent, because of the SSH session, or unknown retry_local) are expected"
+    say "  for that choice. Every other check must pass as above."
     say "Any other unknown, and any fail, is still a stop."
   fi
   if [ "$kiosk_flag" = on ]; then
@@ -1514,6 +1521,8 @@ offer_ssh_off() {
     elif ssh_confirmed_off; then
       say "SSH is off: $SSH_STATE_COMMAND prints inactive for both."
       say "This session stays open until you close it: restart now with sudo reboot."
+      say "After the restart, run the final check in the device's own Terminal if it has a keyboard. Without one,"
+      say "this \"SSH is off\" line and the phone check after the restart stand in for it (guide step 8)."
       say "To use SSH again later, turn it on in the device's own Terminal: $(ssh_on_command)"
       return 0
     else
@@ -1522,7 +1531,8 @@ offer_ssh_off() {
   else
     say "SSH stays on."
   fi
-  say "Keeping SSH on is your own responsibility, and the final check reports it (ssh_policy) until it is off."
+  say "Keeping SSH on is your own responsibility. The final check then reports ssh_policy and temporary_access"
+  say "(the SSH session) as expected for that choice; every other check must pass (guide step 8)."
   say "Turn it off later with: $(ssh_off_command)"
 }
 

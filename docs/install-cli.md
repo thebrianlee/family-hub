@@ -45,7 +45,7 @@ Each check reports `pass`, `fail`, `unknown` or `not_applicable`, and one action
 | `setup` | `/api/health` reports `setup: true` (first-run setup is finished). From `configured`. |
 | `read_guard` | An anonymous `GET /api/modules` (no cookie) is refused with 401. From `configured`. |
 | `kiosk` | The kiosk launcher matches `--kiosk`. From `final`. |
-| `temporary_access` | No installation-only assistant CLI, its credentials or autostart entry is left in the home folder, and no SSH session into the Pi is open. A location that cannot be checked makes it `unknown`, but anything found still fails. From `final`. |
+| `temporary_access` | No installation-only assistant CLI, its credentials or autostart entry is left in the home folder, and no SSH session into the Pi is open. A location that cannot be checked makes it `unknown`, but anything found still fails. The SSH server config only adds SSH ports to look at: when SSH is off, a config that cannot be read does not make it `unknown`. From `final`. |
 
 `not_applicable` is used only for the phase omissions marked "From" above.
 
