@@ -71,8 +71,8 @@ The hub needs no cloud account and no subscription. The hub never signs in to an
 
 | | |
 | --- | --- |
-| Source commit | `3f0e195c52b1c47784e84d0cc1a818fe585d8f9d` |
-| Image index digest | `sha256:b5c80e07b50aeff0f9ea81c90aa9144d4068e57185e893be8ae2691c8532a5cc` |
+| Source commit | `beb3ec14dca7eb4060979f852ed5e1e87ed4317c` |
+| Image index digest | `sha256:878dacdb06d58197313c3f992d42689b189dc86edad2c3c7f58eb8c63e741be0` |
 
 Use exactly these two values. A newer `:preview` build may exist; this guide installs only the build named here.
 
@@ -333,8 +333,8 @@ If it prints anything, this device already has a hub. Stop and read [Existing in
 cd ~
 git clone https://github.com/thebrianlee/sproutwall.git sproutwall
 cd ~/sproutwall
-git checkout --detach 3f0e195c52b1c47784e84d0cc1a818fe585d8f9d
-test "$(git remote get-url origin)" = "https://github.com/thebrianlee/sproutwall.git" && test "$(git rev-parse HEAD)" = "3f0e195c52b1c47784e84d0cc1a818fe585d8f9d" && echo "Source OK"
+git checkout --detach beb3ec14dca7eb4060979f852ed5e1e87ed4317c
+test "$(git remote get-url origin)" = "https://github.com/thebrianlee/sproutwall.git" && test "$(git rev-parse HEAD)" = "beb3ec14dca7eb4060979f852ed5e1e87ed4317c" && echo "Source OK"
 ```
 
 It must print `Source OK`. Don't run anything from the checkout until it does.
@@ -345,10 +345,10 @@ The code at this commit holds a template in place of the image digest, because a
 
 ```bash
 cd ~/sproutwall
-sed -i 's|@sha256:<published-index-digest-hex>"|@sha256:b5c80e07b50aeff0f9ea81c90aa9144d4068e57185e893be8ae2691c8532a5cc"|' docker-compose.preview.yml
+sed -i 's|@sha256:<published-index-digest-hex>"|@sha256:878dacdb06d58197313c3f992d42689b189dc86edad2c3c7f58eb8c63e741be0"|' docker-compose.preview.yml
 git status --short
 git diff --numstat
-grep -c '@sha256:b5c80e07b50aeff0f9ea81c90aa9144d4068e57185e893be8ae2691c8532a5cc"' docker-compose.preview.yml
+grep -c '@sha256:878dacdb06d58197313c3f992d42689b189dc86edad2c3c7f58eb8c63e741be0"' docker-compose.preview.yml
 ```
 
 All three must match exactly. `git status --short` prints this one line only. It starts with a space, because the change is not staged:
@@ -362,7 +362,7 @@ All three must match exactly. `git status --short` prints this one line only. It
 Now check the image. Run it from this folder, the checkout's top folder:
 
 ```bash
-./scripts/sproutwall verify-image --source-sha 3f0e195c52b1c47784e84d0cc1a818fe585d8f9d --digest sha256:b5c80e07b50aeff0f9ea81c90aa9144d4068e57185e893be8ae2691c8532a5cc
+./scripts/sproutwall verify-image --source-sha beb3ec14dca7eb4060979f852ed5e1e87ed4317c --digest sha256:878dacdb06d58197313c3f992d42689b189dc86edad2c3c7f58eb8c63e741be0
 echo "exit $?"
 ```
 
