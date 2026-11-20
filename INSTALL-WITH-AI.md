@@ -109,7 +109,13 @@ New to Raspberry Pi, the Terminal or GitHub? Start with [the step-by-step guide 
 
 Give your assistant this prompt:
 
-> Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself: `curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash` The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
+```text
+Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself:
+
+curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+
+The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
+```
 
 A chat-only AI cannot open your Pi, so open it in the Pi's own web browser: you then copy each command straight into the Pi's Terminal. The prompt gives it the one command and this guide's address; it names the command itself because a chat assistant may not read the whole guide. If it cannot open web pages, paste this guide into the chat instead.
 

@@ -116,12 +116,16 @@ From here a chat AI guides you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.m
 2. **Paste this prompt** from the guide's [Start here](../INSTALL-WITH-AI.md#start-here-what-to-tell-your-ai). It gives the AI the one command and the install guide's address:
 
    ```text
-   Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself: curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
+   Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself:
+
+   curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+
+   The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
    ```
 
    A chat AI can't see your Pi, and it may not read the whole guide, so the prompt names the command itself. The AI explains the command's questions as they come, the same ones as in [section 5](#5-install-with-one-command-no-ai-needed). If you'd rather go step by step, tell it, and it gives you one block at a time, as below. If your AI can't open web pages, paste the text of [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) into the chat instead.
 
-3. **The AI may ask first** whether the card might hold another household's data, such as a hub that was set up before. It may not decide this itself. Answer truthfully, in your own words: say what you checked before you chose **Write** in section 2, and that you then wrote a fresh system to the card. If you're not sure, say so; the AI then stops.
+3. **The AI asks first** whether the card might hold another household's data, such as a hub that was set up before. It may not decide this itself. Answer truthfully, in your own words: say what you checked before you chose **Write** in section 2, and that you then wrote a fresh system to the card. If you're not sure, say so; the AI then stops.
 4. **Then it asks at most five questions**, each once ([the five decisions](../INSTALL-WITH-AI.md#the-five-decisions)):
    - **Who runs the commands?** You, pasting into the Terminal (tier C). The AI may work this out itself.
    - **How does the screen hang?** Portrait (tall) is the usual choice for a kitchen wall. Landscape (wide), either one turned upside down, or no full-screen setup at all also work.
