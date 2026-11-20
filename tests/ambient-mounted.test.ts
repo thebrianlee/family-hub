@@ -121,6 +121,48 @@ describe("Ambient on a screen that loses its unlock", () => {
     expect(goToUnlock).toHaveBeenCalledOnce();
   });
 
+  it("a 401 whose body never arrives still goes to /unlock: idle", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const stalledBody = { ok: false, status: 401, json: () => new Promise(() => {}) };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(answer(200, settings(1))) // on mount, still unlocked
+      .mockResolvedValueOnce(stalledBody); // when idle: 401, and the body stalls
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    observer.observe(host, { subtree: true, childList: true });
+    await act(async () => {
+      vi.advanceTimersByTime(65_000); // the idle minute, then well past the 5 s limit
+    });
+    await flush();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await flush();
+    expect(saverSeen).toBe(false);
+    expect(overlay()).toBeNull();
+    expect(goToUnlock).toHaveBeenCalledOnce();
+  });
+
+  it("a 401 whose body never arrives still goes to /unlock: the moon button", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const stalledBody = { ok: false, status: 401, json: () => new Promise(() => {}) };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(answer(200, settings(10))).mockResolvedValueOnce(stalledBody));
+    await mount();
+    observer.observe(host, { subtree: true, childList: true });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("sproutwall:sleep"));
+    });
+    await flush();
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await flush();
+    expect(saverSeen).toBe(false);
+    expect(overlay()).toBeNull();
+    expect(goToUnlock).toHaveBeenCalledOnce();
+  });
+
   it("a stalled request gives up after 5 s instead of holding the screensaver back", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const fetchMock = vi

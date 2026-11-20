@@ -112,7 +112,12 @@ function loadAmbient(): Promise<AmbientLoad> {
     }, 5_000);
   });
   const request = fetch("/api/ambient", { signal: controller?.signal })
-    .then(async (r) => ({ cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: r.status === 401 }))
+    .then(async (r) => {
+      // The status decides "locked", before the body is read: a 401 whose
+      // body stalls must not run into the timeout and count as unlocked.
+      if (r.status === 401) return { cfg: null, locked: true };
+      return { cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: false };
+    })
     .catch(() => ({ cfg: null, locked: false }));
   return Promise.race([request, timedOut]).finally(() => clearTimeout(timer));
 }
