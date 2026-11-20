@@ -285,11 +285,11 @@ The sleep window (21:30 to 06:00, seeded in `src/lib/db.ts`) is supposed to dark
 
 Labels: `good first issue`, `security`
 
-`/api/health` is open on a locked hub, for Docker's health check. It must only ever say `{ ok }`. No test guards that.
+`/api/health` is open on a locked hub, for Docker's health check and the install helper (`scripts/sproutwall doctor`). It must only ever say `ok`, the app `version`, the database `schema` number and `setup` (whether first-run setup is finished). No test guards that.
 
 - **Files:** `src/app/api/health/route.ts`, a new `tests/health.test.ts`.
 - **Done when:**
-  - a test calls the handler and expects status 200, a body of exactly `{ "ok": true }`, and `cache-control: no-store`;
+  - a test calls the handler and expects status 200, a body with exactly the keys `ok` (`true`), `version`, `schema` and `setup`, and `cache-control: no-store`;
   - a test makes the database query fail and expects status 503 with a body of exactly `{ "ok": false }`.
 - `tests/auth.test.ts` already checks that the proxy lets `/api/health` through, so this issue is only about the response body.
 
