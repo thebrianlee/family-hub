@@ -113,13 +113,17 @@ One command runs the install guide's steps for you and asks a few questions on t
 From here a chat AI guides you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md). That guide calls this **tier C**: the AI only chats, and you paste each command into the Pi's Terminal yourself. Nothing is installed for the AI on the Pi.
 
 1. **Open your chat AI** in the Pi's web browser and sign in.
-2. **Paste this prompt** from the guide's [Start here](../INSTALL-WITH-AI.md#start-here-what-to-tell-your-ai). It gives the AI the install guide's address:
+2. **Paste this prompt** from the guide's [Start here](../INSTALL-WITH-AI.md#start-here-what-to-tell-your-ai). It gives the AI the one command and the install guide's address:
 
    ```text
-   Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and follow it to install Sproutwall on the Raspberry Pi I bought, set up for our family. Ask me whatever you need.
+   Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself:
+
+   curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
+
+   The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
    ```
 
-   A chat AI can't see your Pi, so the address matters. Usually the AI then has you run the one command from [section 5](#5-install-with-one-command-no-ai-needed) and explains its questions; if you'd rather go step by step, it gives you one block at a time, as below. If your AI can't open web pages, paste the text of [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) into the chat instead.
+   A chat AI can't see your Pi, and it may not read the whole guide, so the prompt names the command itself. The AI explains the command's questions as they come, the same ones as in [section 5](#5-install-with-one-command-no-ai-needed). If you'd rather go step by step, tell it, and it gives you one block at a time, as below. If your AI can't open web pages, paste the text of [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) into the chat instead.
 
 3. **The AI asks first** whether the card might hold another household's data, such as a hub that was set up before. It may not decide this itself. Answer truthfully, in your own words: say what you checked before you chose **Write** in section 2, and that you then wrote a fresh system to the card. If you're not sure, say so; the AI then stops.
 4. **Then it asks at most five questions**, each once ([the five decisions](../INSTALL-WITH-AI.md#the-five-decisions)):

@@ -4,7 +4,7 @@ This guide sets up Sproutwall on a Raspberry Pi, with an optional touchscreen th
 
 Plan for an evening. Most of the time is waiting for downloads and the first build.
 
-To install the published, pre-built image instead of building on the Pi, with or without an AI assistant, see [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md).
+**Most people don't need this page.** The easiest way to install is [the one command](../README.md#with-one-command): run it in the Pi's Terminal and it installs the published, pre-built image for you, with no build. New to Raspberry Pi? Start with [the step-by-step guide](INSTALL-BEGINNERS.md). To install the pre-built image one step at a time, with or without an AI assistant, see [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md). This page builds the app on the Pi itself instead.
 
 ## What works
 
