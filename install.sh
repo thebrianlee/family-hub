@@ -46,6 +46,7 @@ KIOSK_RESULT="off" # on, attention or off (the --kiosk value for the final check
 REPLY_TEXT=""
 OVER_SSH=0        # 1 when this runs in an SSH session (SSH_CONNECTION or SSH_CLIENT is set)
 DOCTOR_TIER="C"   # B over SSH: doctor then allows SSH on the home network until the final check
+SSH_CHECKED=0     # 1 once sudo sshd -T showed no root password login and no empty passwords
 
 # --- output -------------------------------------------------------------------------------
 
@@ -518,6 +519,13 @@ show_plan() {
     say "     Why: Docker's data folder from an earlier install is on this device, so this looks there for a"
     say "     hub's household. If it finds one, the script stops with nothing changed. Nothing to undo."
   fi
+  if [ "$OVER_SSH" = 1 ]; then
+    say ""
+    say "  0. Read-only, after the SSH question below and before anything changes:"
+    say "       sudo sshd -T"
+    say "     Why: you are connected over SSH, so this checks that SSH allows neither root login with a password"
+    say "     nor empty passwords. If it does, the script stops with nothing changed. Nothing to undo."
+  fi
   say ""
   say "  1. sudo apt update && sudo apt full-upgrade -y"
   say "     Why: the normal system update. Undo: not reversible; updated packages are not rolled back."
@@ -611,6 +619,45 @@ ask_ssh_responsibility() {
   say "This install offers to turn SSH off at the end."
   if ! ask_yes_no "Do you understand and accept this?"; then
     leave_unchanged "You did not accept the SSH risk, so nothing was changed. You can run the same command in the device's own Terminal instead: $GUIDE#start-here-what-to-tell-your-ai"
+  fi
+}
+
+# True when hostname -I lists an IPv6 address that is neither link-local nor
+# unique local, that is, one the internet can address.
+has_internet_ipv6() {
+  local address
+  for address in $(hostname -I 2>/dev/null || true); do
+    case "$address" in
+      *.*) ;;
+      [Ff][Ee]80:* | [Ff][CcDd]*:*) ;;
+      *:*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Over SSH, read-only, before any change. The checkout's own doctor may
+# predate password SSH for tier B, so this script checks the two SSH rules
+# that still matter during the install itself.
+check_ssh_settings() {
+  local settings
+  [ "$OVER_SSH" = 1 ] || return 0
+  say ""
+  say "Checking the SSH settings (read-only; sudo asks for your password)..."
+  if ! settings=$(sudo sshd -T 2>/dev/null); then
+    stop "The SSH settings could not be read (sudo sshd -T), so this script cannot tell whether SSH is safe enough for the install. Nothing was changed. Run the command in the device's own Terminal instead, or get help: $GUIDE#if-something-goes-wrong"
+  fi
+  settings=$'\n'"$settings"$'\n'
+  case "$settings" in
+    *$'\n'"permitrootlogin yes"$'\n'* | *$'\n'"permitemptypasswords yes"$'\n'*)
+      stop "SSH on this device allows root login with a password, or empty passwords, so this script stops. Nothing was changed. Turn that off, or run the command in the device's own Terminal: $GUIDE#if-something-goes-wrong"
+      ;;
+  esac
+  SSH_CHECKED=1
+  say "SSH settings: no root password login, no empty passwords. OK."
+  if has_internet_ipv6; then
+    say "Note: this device also has an internet (IPv6) address. If your router lets incoming IPv6 connections"
+    say "through, SSH may be reachable from the internet too. Most home routers block them; turning SSH off at the end removes the risk."
   fi
 }
 
@@ -876,6 +923,12 @@ TRUSTED_LAN_ONLY="app_bind unknown confirm_trusted_lan"
 # SSH is on by design here, the device's addresses were checked to be
 # home-network only (home_network_ok), and the person accepted the SSH risk.
 SSH_SETTINGS_UNREADABLE="ssh_policy unknown review_ssh"
+# Over SSH only, after check_ssh_settings passed: the checkout's doctor may be
+# older than password SSH for tier B and report it as a fail. Its other tier B
+# fail reasons are covered here: root login and empty passwords (sshd -T), and
+# a public IPv4 address (home_network_ok); an internet IPv6 address is named
+# in a note. The final check, after SSH is off, is unchanged.
+SSH_ON_FOR_INSTALL="ssh_policy fail review_ssh"
 
 # Runs doctor --json for a phase. True when the guide's rule allows going on:
 # exit 0, or exit 2 whose only unknown is app_bind / confirm_trusted_lan (the
@@ -892,7 +945,8 @@ doctor_allows() {
   if [ "$code" = 0 ]; then
     return 0
   fi
-  [ "$code" = 2 ] && only_allowed_unknowns
+  # Exit 1 means a fail: only the over-SSH ssh_policy fail can pass (see SSH_ON_FOR_INSTALL).
+  { [ "$code" = 2 ] || [ "$code" = 1 ]; } && only_allowed_unknowns
 }
 
 # True when every finding is one that the guide's rule lets the install pass.
@@ -903,6 +957,7 @@ only_allowed_unknowns() {
     case "$id $status $action" in
       "$TRUSTED_LAN_ONLY") ;;
       "$SSH_SETTINGS_UNREADABLE") [ "$OVER_SSH" = 1 ] || return 1 ;;
+      "$SSH_ON_FOR_INSTALL") [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] || return 1 ;;
       *) return 1 ;;
     esac
     seen=1
@@ -972,12 +1027,12 @@ start_hub() {
 
 note_trusted_lan() {
   local ssh_note=0
-  if [ "$OVER_SSH" = 1 ] && findings_include "$SSH_SETTINGS_UNREADABLE"; then
+  if [ "$OVER_SSH" = 1 ] && { findings_include "$SSH_SETTINGS_UNREADABLE" || findings_include "$SSH_ON_FOR_INSTALL"; }; then
     ssh_note=1
   fi
   if [ "$ssh_note" = 1 ]; then
-    say "doctor: SSH is on for this install, and its settings can't be read as your account (ssh_policy unknown)."
-    say "This device has home-network addresses only, and the last question offers to turn SSH off."
+    say "doctor: SSH is on for this install (ssh_policy). This script checked it itself: no root password login,"
+    say "no empty passwords, home-network IPv4 addresses only. The last question offers to turn SSH off."
   fi
   if ! findings_include "$TRUSTED_LAN_ONLY"; then
     [ "$ssh_note" = 1 ] || say "doctor: pass."
@@ -1038,6 +1093,7 @@ setup_not_finished_only() {
     [ -z "$id" ] && continue
     if [ "$id $status $action" = "$TRUSTED_LAN_ONLY" ]; then continue; fi
     if [ "$OVER_SSH" = 1 ] && [ "$id $status $action" = "$SSH_SETTINGS_UNREADABLE" ]; then continue; fi
+    if [ "$OVER_SSH" = 1 ] && [ "$SSH_CHECKED" = 1 ] && [ "$id $status $action" = "$SSH_ON_FOR_INSTALL" ]; then continue; fi
     [ "$action" = open_hub ] || return 1
     seen=1
   done <<<"$DOCTOR_FINDINGS"
@@ -1208,6 +1264,7 @@ run_install() {
   check_docker_with_sudo
   ask_home_network_rule
   ask_ssh_responsibility
+  check_ssh_settings
   install_tools
   check_tools
   check_no_existing_hub_again
