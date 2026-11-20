@@ -20,8 +20,8 @@ set -euo pipefail
 # The pinned preview. Always the same pair as the table near the top of
 # INSTALL-WITH-AI.md: a re-pin changes both files together, and
 # scripts/tests/test_install_sh.py fails if they differ.
-PINNED_SOURCE_COMMIT="aaf3860c2f9d390550dca76611d69a9e88c46867"
-PINNED_IMAGE_DIGEST="sha256:b6c5a622ead00ba384ff50d2bc238825927e9315f8e98d843f6ba3bbfc8c5845"
+PINNED_SOURCE_COMMIT="beb3ec14dca7eb4060979f852ed5e1e87ed4317c"
+PINNED_IMAGE_DIGEST="sha256:878dacdb06d58197313c3f992d42689b189dc86edad2c3c7f58eb8c63e741be0"
 
 REPO_URL="https://github.com/thebrianlee/sproutwall.git"
 GUIDE="https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md"
