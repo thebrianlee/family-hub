@@ -29,6 +29,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { getModule } from "@/modules/registry";
+import { goToUnlock } from "@/lib/unlock-redirect";
 
 export type TabInfo = { id: string; href: string; label: string };
 
@@ -266,7 +267,14 @@ export default function ModulesProvider({
       if (holds.held()) return;
       const revAtStart = shownRef.current.rev;
       void fetch("/api/modules", { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
+        .then((r) => {
+          // This screen lost its unlock: leave what it shows (lib/unlock-redirect.ts).
+          if (r.status === 401) {
+            goToUnlock();
+            return null;
+          }
+          return r.ok ? r.json() : null;
+        })
         .catch(() => null)
         .then((server: unknown) => {
           // Read while a save was on its way: skipped, and checked again

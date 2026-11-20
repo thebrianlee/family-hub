@@ -67,6 +67,16 @@ export function readsLocked(): boolean {
   return process.env.REQUIRE_AUTH_FOR_READS === "1";
 }
 
+/** Whether this screen may read the household: it holds a valid parent or
+ *  device cookie, or reads are not locked. The proxy and the root layout both
+ *  ask this, so a locked browser gets neither household API answers nor
+ *  household data inside the page. */
+export function screenUnlocked(cookie: (name: string) => string | undefined): boolean {
+  if (verifyCookie(cookie(PARENT_COOKIE), "parent")) return true;
+  if (!readsLocked()) return true;
+  return verifyCookie(cookie(DEVICE_COOKIE), "device");
+}
+
 export function setupComplete(): boolean {
   const row = getDb().prepare("SELECT value FROM settings WHERE key='setup_complete'").get() as
     | { value: string }

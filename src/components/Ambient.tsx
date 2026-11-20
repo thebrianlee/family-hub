@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useModules } from "./ModulesProvider";
+import { goToUnlock } from "@/lib/unlock-redirect";
 
 interface Quote {
   kind: string;
@@ -14,7 +15,7 @@ interface Quote {
   attribution?: string;
 }
 
-interface AmbientConfig {
+export interface AmbientConfig {
   photos: string[];
   art: string[];
   quotes: Quote[];
@@ -83,6 +84,71 @@ function QuoteCard({ quote }: { quote: Quote }) {
   );
 }
 
+/** The screensaver settings from an /api/ambient answer, or null when there are
+ *  none to use. A screen that is not unlocked yet gets 401 (the unlock page
+ *  itself renders inside this wrapper), and an error body has none of these
+ *  fields: treating it as settings crashed the unlock page, so nobody could
+ *  enter the PIN. Without settings the screensaver simply stays off. */
+export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | null {
+  if (!ok || !body || typeof body !== "object") return null;
+  const c = body as Partial<AmbientConfig>;
+  if (!Array.isArray(c.photos) || !Array.isArray(c.art) || !Array.isArray(c.quotes)) return null;
+  if (typeof c.idleMinutes !== "number" || typeof c.sleepStart !== "string" || typeof c.sleepEnd !== "string") return null;
+  return c as AmbientConfig;
+}
+
+/** One /api/ambient read. `locked` is true when the answer says this screen
+ *  is not unlocked (401), so settings loaded earlier must be dropped too. */
+function loadAmbient(): Promise<AmbientLoad> {
+  // A stalled request counts as a network error after 5 s, so it can't hold
+  // the screensaver back for good. A timer, not AbortSignal.timeout, which
+  // older browsers lack.
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<AmbientLoad>((resolve) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      resolve({ cfg: null, locked: false });
+    }, 5_000);
+  });
+  const request = fetch("/api/ambient", { signal: controller?.signal })
+    .then(async (r) => {
+      // The status decides "locked", before the body is read: a 401 whose
+      // body stalls must not run into the timeout and count as unlocked.
+      if (r.status === 401) return { cfg: null, locked: true };
+      return { cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: false };
+    })
+    .catch(() => ({ cfg: null, locked: false }));
+  return Promise.race([request, timedOut]).finally(() => clearTimeout(timer));
+}
+
+type AmbientLoad = { cfg: AmbientConfig | null; locked: boolean };
+
+/** Use fresh settings. On a 401 drop the old ones, leave the screensaver and
+ *  go to /unlock, so a screen that lost its unlock (cookie expired, PIN
+ *  changed) shows no household content. A network error keeps what it had. */
+export function applyAmbient(
+  { cfg, locked }: AmbientLoad,
+  setCfg: (c: AmbientConfig | null) => void,
+  setSaver: (on: boolean) => void,
+  onLocked: () => void = goToUnlock
+): void {
+  if (cfg) setCfg(cfg);
+  else if (locked) {
+    setCfg(null);
+    setSaver(false);
+    onLocked();
+  }
+}
+
+/** Whether the screensaver may start, idle or by the moon button. The slides
+ *  are household content (photos, rules), so the screen asks the hub first and
+ *  keeps the saver off while it waits: still unlocked shows them, locked goes
+ *  to /unlock, and a network error shows the slides it already had. */
+export function saverEntry(load: AmbientLoad): "saver" | "unlock" {
+  return load.locked ? "unlock" : "saver";
+}
+
 export default function Ambient({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const askOn = useModules().isOn("ask");
@@ -93,6 +159,11 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
   const lastActivity = useRef(0);
   const wakeUntil = useRef(0);
   const lastRefetch = useRef(0);
+  const entering = useRef(false);
+  const saverRef = useRef(false);
+  useEffect(() => {
+    saverRef.current = saver;
+  }, [saver]);
   const bootedAt = useRef(0);
   const [clock, setClock] = useState("");
 
@@ -101,14 +172,17 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
     lastActivity.current = now;
     lastRefetch.current = now;
     bootedAt.current = now;
-    fetch("/api/ambient").then((r) => r.json()).then(setCfg).catch(() => {});
+    loadAmbient().then((load) => applyAmbient(load, setCfg, setSaver));
   }, []);
 
   // Manual screensaver (the moon button) + fresh weather on entry.
   useEffect(() => {
     const onSleep = () => {
-      fetch("/api/ambient").then((r) => r.json()).then(setCfg).catch(() => {});
-      setSaver(true);
+      loadAmbient().then((load) => {
+        if (saverEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
+        if (load.cfg) setCfg(load.cfg);
+        setSaver(true);
+      });
     };
     window.addEventListener("sproutwall:sleep", onSleep);
     return () => window.removeEventListener("sproutwall:sleep", onSleep);
@@ -138,7 +212,16 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
         Date.now() > wakeUntil.current;
       setSleeping(asleep);
       const idleMs = Date.now() - lastActivity.current;
-      if (!asleep && idleMs > cfg.idleMinutes * 60_000) setSaver(true);
+      if (!asleep && idleMs > cfg.idleMinutes * 60_000 && !saverRef.current && !entering.current) {
+        entering.current = true;
+        loadAmbient().then((load) => {
+          entering.current = false;
+          if (saverEntry(load) === "unlock") return applyAmbient(load, setCfg, setSaver);
+          if (load.cfg) setCfg(load.cfg);
+          // Activity during the check cancels it.
+          if (Date.now() - lastActivity.current > cfg.idleMinutes * 60_000) setSaver(true);
+        });
+      }
       // Kiosk freshness: pages fetch on mount + sproutwall:datachanged, but the
       // wall stays mounted for days. Rebroadcast so whatever tab is showing
       // refetches (moved/added Google events appear within 5 min)...
