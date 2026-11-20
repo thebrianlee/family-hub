@@ -45,39 +45,39 @@ export default function SoftKeyboard({ value, onChange, onDone, doneLabel = "Don
         </div>
       )}
       {ROWS.map((row, i) => (
-        <div key={i} className="flex gap-1.5 justify-center">
+        <div key={i} className="flex gap-1.5 max-sm:gap-1 justify-center">
           {row.map((k) => (
             <button
               key={k}
               onClick={() => press(k)}
-              className="touch-target flex-1 max-w-[110px] h-[64px] rounded-tile bg-cream-raised shadow-tile text-3xl font-bold active:bg-cream-sunken active:scale-95 transition-transform"
+              className="touch-target flex-1 max-w-[110px] h-[64px] rounded-tile bg-cream-raised shadow-tile text-3xl font-bold active:bg-cream-sunken active:scale-95 transition-transform max-sm:min-w-0 max-sm:h-[46px] max-sm:text-xl"
             >
               {k}
             </button>
           ))}
         </div>
       ))}
-      <div className="flex gap-1.5 justify-center">
+      <div className="flex gap-1.5 max-sm:gap-1 justify-center">
         <button
           onClick={() => onChange(value.slice(0, -1))}
-          className="touch-target w-[160px] h-[64px] rounded-tile bg-cream-sunken text-3xl font-bold active:bg-cream-line"
+          className="touch-target w-[160px] h-[64px] rounded-tile bg-cream-sunken text-3xl font-bold active:bg-cream-line max-sm:w-auto max-sm:flex-1 max-sm:h-[46px] max-sm:text-xl"
         >
           ⌫
         </button>
         <button
           onClick={() => press(" ")}
-          className="touch-target flex-1 max-w-[560px] h-[64px] rounded-tile bg-cream-raised shadow-tile text-2xl font-bold text-ink-faint active:bg-cream-sunken"
+          className="touch-target flex-1 max-w-[560px] h-[64px] rounded-tile bg-cream-raised shadow-tile text-2xl font-bold text-ink-faint active:bg-cream-sunken max-sm:flex-[2] max-sm:h-[46px] max-sm:text-lg"
         >
           space
         </button>
         <button
           onClick={() => onChange("")}
-          className="touch-target w-[130px] h-[64px] rounded-tile bg-cream-sunken text-2xl font-bold text-ink-soft active:bg-cream-line"
+          className="touch-target w-[130px] h-[64px] rounded-tile bg-cream-sunken text-2xl font-bold text-ink-soft active:bg-cream-line max-sm:w-auto max-sm:flex-1 max-sm:h-[46px] max-sm:text-lg"
         >
           Clear
         </button>
         {onDone && (
-          <button onClick={onDone} className="touch-target w-[200px] h-[64px] rounded-card bg-ink text-cream text-2xl font-extrabold active:scale-95 transition-transform">
+          <button onClick={onDone} className="touch-target w-[200px] h-[64px] rounded-card bg-ink text-cream text-2xl font-extrabold active:scale-95 transition-transform max-sm:w-auto max-sm:flex-[2] max-sm:h-[46px] max-sm:text-lg">
             {doneLabel}
           </button>
         )}

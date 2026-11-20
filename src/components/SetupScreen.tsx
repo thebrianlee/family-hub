@@ -140,7 +140,7 @@ export default function SetupScreen() {
   }
 
   return (
-    <main className="h-screen overflow-y-auto bg-cream text-ink px-8 py-10">
+    <main className="screen-fit overflow-y-auto bg-cream text-ink px-8 py-10">
       <div className="mx-auto max-w-3xl">
         <div className="eyebrow mb-2">Sproutwall</div>
         <h1 className="text-6xl font-extrabold tracking-tight">Set up the house</h1>

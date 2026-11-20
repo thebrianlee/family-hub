@@ -132,11 +132,11 @@ export default function BalancePage() {
           return (
             <div
               key={k.id}
-              className={`card flex-1 min-h-0 flex flex-col justify-center px-9 py-6 overflow-hidden border-l-8 ${k.theme.border}`}
+              className={`card flex-1 min-h-0 flex flex-col justify-center px-9 py-6 overflow-hidden border-l-8 ${k.theme.border} max-sm:flex-none max-sm:px-4 max-sm:py-4`}
             >
               {/* top row: name + balance + actions */}
-              <div className="flex items-center gap-8 shrink-0">
-                <div className="w-[300px] shrink-0">
+              <div className="flex items-center gap-8 shrink-0 max-sm:flex-wrap max-sm:gap-4">
+                <div className="w-[300px] shrink-0 max-sm:w-full">
                   <div className={`text-4xl font-extrabold ${k.theme.textDeep}`}>{k.name}</div>
                   <div className={`text-7xl font-extrabold tabular-nums ${k.theme.text} mt-1`}>
                     {s?.balance ?? 0}
@@ -148,7 +148,7 @@ export default function BalancePage() {
                 </div>
 
                 {/* goal progress */}
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0 max-sm:basis-full">
                   {s?.goal ? (
                     <div>
                       <div className="flex items-baseline justify-between mb-2">
@@ -178,14 +178,14 @@ export default function BalancePage() {
                   )}
                 </div>
 
-                <div className="shrink-0 flex flex-col gap-3">
+                <div className="shrink-0 flex flex-col gap-3 max-sm:flex-row max-sm:w-full">
                   <button
                     onClick={() => setMenuFor(k.id)}
-                    className={`touch-target rounded-card ${k.theme.bg} text-white px-8 py-4 text-2xl font-extrabold active:scale-95 transition-transform`}
+                    className={`touch-target rounded-card ${k.theme.bg} text-white px-8 py-4 text-2xl font-extrabold active:scale-95 transition-transform max-sm:flex-1`}
                   >
                     🎁 Menu
                   </button>
-                  <button onClick={() => setLedgerFor(k.id)} className="btn-soft px-8 py-4 text-2xl">
+                  <button onClick={() => setLedgerFor(k.id)} className="btn-soft px-8 py-4 text-2xl max-sm:flex-1">
                     📜 Ledger
                   </button>
                 </div>
@@ -272,7 +272,7 @@ export default function BalancePage() {
             </button>
           </div>
         ) : menuKid ? (
-          <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1 max-h-[62vh]">
+          <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1 max-h-[calc(62vh/var(--fit,1))]">
             <div className="flex items-center justify-between mb-1">
               <div className="text-2xl font-bold text-ink-soft">
                 {memberOf(menuKid.kid).name} has{" "}
@@ -403,7 +403,7 @@ export default function BalancePage() {
         title={ledgerFor ? `${memberOf(ledgerFor).name}'s Ledger` : ""}
         wide
       >
-        <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1 max-h-[62vh]">
+        <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1 max-h-[calc(62vh/var(--fit,1))]">
           {(ledgerKid?.ledger ?? []).map((e) => (
             <div key={e.id} className="tile px-6 py-4 flex items-center gap-5">
               <span className="text-4xl shrink-0">{SOURCE_EMOJI[e.source] ?? "⭐"}</span>

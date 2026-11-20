@@ -147,7 +147,7 @@ export default function MealsModal({ open, onClose, onChanged }: MealsModalProps
               ))}
             </div>
 
-            <div className="min-h-0 overflow-y-auto flex flex-col gap-3 pr-1 max-h-[56vh]">
+            <div className="min-h-0 overflow-y-auto flex flex-col gap-3 pr-1 max-h-[calc(56vh/var(--fit,1))]">
               {tab === "week" &&
                 (data?.week ?? []).map((w) => (
                   <div key={w.date} className="tile px-6 py-4 flex items-center gap-5">

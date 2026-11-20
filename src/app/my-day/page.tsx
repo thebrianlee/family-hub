@@ -333,7 +333,7 @@ export default function MyDayPage() {
       )}
 
       {/* Header */}
-      <header className="flex items-center justify-between shrink-0">
+      <header className="flex items-center justify-between shrink-0 max-sm:flex-wrap max-sm:gap-2">
         <div>
           <div className="eyebrow mb-1">Routines</div>
           <h1 className="text-4xl font-extrabold tracking-tight">{myView === "week" ? "This Week" : "Today"}</h1>
@@ -515,7 +515,7 @@ export default function MyDayPage() {
             <button
               key={k.id}
               onClick={() => setEditKid(k.id)}
-              className="py-2 text-lg font-bold text-ink-faint active:bg-cream-sunken rounded-card"
+              className="touch-min py-2 text-lg font-bold text-ink-faint active:bg-cream-sunken rounded-card"
             >
               ⚙️ Edit {k.name}&apos;s routines &amp; jobs
             </button>

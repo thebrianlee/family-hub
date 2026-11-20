@@ -211,12 +211,12 @@ export default function ReadingPage() {
       <KidPicker selected={kid} onSelect={setKid} />
 
       {/* Now Reading stack + stats */}
-      <div className="card px-8 py-6 shrink-0">
-        <div className="flex items-center justify-between mb-4">
+      <div className="card px-8 py-6 shrink-0 max-sm:px-4">
+        <div className="flex items-center justify-between mb-4 max-sm:flex-wrap max-sm:gap-3">
           <div className="eyebrow">
             📖 Now Reading {summary && summary.reading.length > 0 ? `— ${summary.reading.length} on the go` : ""}
           </div>
-          <div className="flex gap-4 items-center">
+          <div className="flex gap-4 items-center max-sm:flex-wrap max-sm:gap-2">
             <span className="well px-5 py-2 text-2xl font-extrabold">
               <span className={theme?.text ?? ""}>{summary?.finishedThisYear ?? 0}</span>
               <span className="text-lg font-bold text-ink-soft"> this year</span>
@@ -227,7 +227,7 @@ export default function ReadingPage() {
             </span>
             <button
               onClick={() => setNewOpen(true)}
-              className={`touch-target rounded-card ${theme?.bg ?? "bg-ink"} text-white px-6 py-3 text-2xl font-extrabold active:scale-95 transition-transform`}
+              className={`touch-target rounded-card ${theme?.bg ?? "bg-ink"} text-white px-6 py-3 text-2xl font-extrabold whitespace-nowrap active:scale-95 transition-transform`}
             >
               + Start a Book
             </button>
@@ -359,7 +359,7 @@ export default function ReadingPage() {
               {results === null && (
                 <SoftKeyboard value={query} onChange={setQuery} onDone={runSearch} doneLabel="Search" />
               )}
-              <div className="min-h-0 overflow-y-auto flex flex-col gap-3 pr-1 max-h-[48vh]">
+              <div className="min-h-0 overflow-y-auto flex flex-col gap-3 pr-1 max-h-[calc(48vh/var(--fit,1))]">
                 {results?.map((r, i) => (
                   <button
                     key={i}
