@@ -31,7 +31,7 @@ BASH = shutil.which("bash")
 FAKE_PIN = "2468"
 PROMPT_MARKERS = ("[y/N]", "[1-5, Enter = 1]", "(press Enter)")
 # sed is not linked: the bin folder has a GNU-compatible sed (see SED_SHIM).
-HOST_TOOLS = ("ls", "grep", "cat", "mktemp", "rm", "tr", "python3", "cmp", "diff", "mkdir", "cp")
+HOST_TOOLS = ("ls", "grep", "cat", "mktemp", "rm", "tr", "python3", "cmp", "diff", "mkdir", "cp", "tee")
 
 
 def read(path):
@@ -77,6 +77,16 @@ SHIMS = {
 printf 'sudo %s\n' "$*" >>"$FAKE_LOG"
 if [ "$1" = tee ]; then cat >/dev/null; fi
 if [ -n "${FAKE_SUDO_FAIL:-}" ] && [ "$*" = "$FAKE_SUDO_FAIL" ]; then exit 100; fi
+if [ -n "${FAKE_APT_LOCKED:-}" ] && [ "$*" = "$FAKE_APT_LOCKED" ]; then
+  echo "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 812 (apt-get)" >&2
+  echo "E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?" >&2
+  exit 100
+fi
+if [ "$1" = ls ]; then
+  # The read-only look into Docker's data folder; the path is under the test's fake root.
+  shift
+  exec ls "$@"
+fi
 if [ "$1" = docker ]; then
   # Root reaches the daemon (the read-only existing-hub check), unless the test says it does not answer.
   if [ -n "${FAKE_SUDO_DOCKER_FAIL:-}" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
@@ -148,8 +158,8 @@ if [ -n "${FAKE_DOCKER_DENIED_OUTSIDE_SG:-}" ] && [ -z "${FAKE_IN_SG:-}" ]; then
   exit 1
 fi
 case "$*" in
-  "ps -a --format {{.Names}}") printf '%s' "${FAKE_CONTAINERS:-}" ;;
-  "volume ls -q") printf '%s' "${FAKE_VOLUMES:-}" ;;
+  "ps -a --format {{.Names}}") printf '%s' "${FAKE_CONTAINERS:-}"; [ -z "${FAKE_CONTAINERS_FILE:-}" ] || cat "$FAKE_CONTAINERS_FILE" ;;
+  "volume ls -q") printf '%s' "${FAKE_VOLUMES:-}"; [ -z "${FAKE_VOLUMES_FILE:-}" ] || cat "$FAKE_VOLUMES_FILE" ;;
   "volume ls -q --filter name=familyhub-data") printf '%s' "${FAKE_VOLUMES:-}" | grep familyhub-data || true ;;
   "compose version") echo "Docker Compose version v2.39.1" ;;
   "info") echo "Server Version: 29.0.0" ;;
@@ -157,6 +167,7 @@ case "$*" in
   "compose -f docker-compose.preview.yml ps")
     echo "NAME                      IMAGE      SERVICE      STATUS"
     echo "sproutwall-family-hub-1   ghcr.io    family-hub   Up 12 seconds (${FAKE_PS_HEALTH:-healthy})"
+    [ -z "${FAKE_PS_EXTRA_FILE:-}" ] || cat "$FAKE_PS_EXTRA_FILE"
     ;;
   *) echo "fake docker: unexpected call" >&2; exit 99 ;;
 esac
@@ -512,7 +523,7 @@ class MirrorsTheGuideTests(unittest.TestCase):
             lines = [line.strip() for line in script.splitlines() if word in line]
             self.assertEqual(lines, ['say "  The household lives in its Docker volume. Never run docker compose down -v or docker volume rm."'])
         removals = re.findall(r"\brm -rf? [^\n]*", script)
-        self.assertEqual(removals, ['rm -rf "$tmp_dir"'])
+        self.assertEqual(removals, ['rm -rf "$WORK_DIR"'])
         self.assertNotRegex(script, r"(?m)^\s*(sudo )?gh auth")
         self.assertNotRegex(script, r"(?m)^\s*docker[^\n]*:preview")
 
@@ -948,8 +959,9 @@ class ExistingHubBeforeChangesTests(InstallShTestCase):
 
     def test_one_matcher_for_every_check(self):
         script = read(INSTALL_SH)
-        self.assertEqual(script.count("sproutwall|family-hub|familyhub-data"), 1)
-        self.assertEqual(script.count("| names_include_a_hub"), 3)
+        self.assertEqual(script.count("*sproutwall* | *family-hub* | *familyhub-data*"), 1)
+        self.assertEqual(script.count('names_include_a_hub "$'), 4)
+        self.assertNotRegex(script, r"(?<!\|)\|\s*names_include_a_hub")  # a pipe, not ||
         code = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
         self.assertFalse([line for line in code if "--filter" in line])
 
@@ -1031,6 +1043,163 @@ class FinishTextTests(InstallShTestCase):
         line = next(line for line in readme.splitlines() if "approve that plan" in line)
         sentence = line[line.index("Only ") :]
         self.assertEqual(sorted(set(re.findall(r"`([A-Za-z]+)`", sentence))), sorted(words))
+
+
+def long_listing(path, first, lines=10000):
+    """A matching name first, then thousands of others: far more than a pipe
+    holds, so a reader that stops early would leave the writer failing."""
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(first + "\n")
+        for number in range(lines):
+            # Letters only, so no filler line can contain the fictional PIN.
+            tag = "".join(chr(ord("a") + int(digit)) for digit in "%05d" % number)
+            handle.write("unrelated-volume-%s-abcdefabcdef\n" % tag)
+    return path
+
+
+class PipeTimingTests(InstallShTestCase):
+    """Round 2, point 1: a hub named first in a long listing is still found by
+    every existing-hub check (under pipefail, grep -q on a pipe could flip it)."""
+
+    def test_long_listing_first_check_stops(self):
+        listing = long_listing(os.path.join(self.state, "volumes"), "sproutwall_familyhub-data")
+        run = self.run_install(HAPPY_ANSWERS, FAKE_VOLUMES_FILE=listing)
+        self.assert_stopped_before_changes(run)
+        self.assertIn("#existing-install--update", run.err)
+
+    def test_long_listing_sudo_step_0_check_stops(self):
+        listing = long_listing(os.path.join(self.state, "volumes"), "family-hub_familyhub-data")
+        run = self.run_install(["", "y", "y"], FAKE_DOCKER_DENIED_OUTSIDE_SG="1", FAKE_VOLUMES_FILE=listing)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("#existing-install--update", run.err)
+        self.assertNotIn("No existing hub found", run.out)
+        self.assertEqual(
+            [line for line in run.log if line.startswith("sudo")],
+            ExistingHubBeforeChangesTests.READ_ONLY,
+        )
+
+    def test_long_listing_post_tools_check_stops(self):
+        self.docker_installed_by_the_plan()
+        listing = long_listing(os.path.join(self.state, "containers"), "sproutwall-family-hub-1")
+        run = self.run_install(HAPPY_ANSWERS, FAKE_CONTAINERS_FILE=listing)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("#existing-install--update", run.err)
+        self.assertNotIn("git", run.commands())
+
+    def test_long_ps_output_still_reads_healthy(self):
+        extra = long_listing(os.path.join(self.state, "ps-extra"), "   (more status lines)")
+        run = self.run_install(HAPPY_ANSWERS, FAKE_PS_EXTRA_FILE=extra)
+        self.assertEqual(run.code, 0, run.err[-500:])
+
+    def test_no_grep_reads_from_a_pipe(self):
+        code = [line for line in read(INSTALL_SH).splitlines() if not line.lstrip().startswith("#")]
+        self.assertFalse([line for line in code if re.search(r"(?<!\|)\|\s*grep\b", line)])
+
+
+class DockerDataFolderTests(InstallShTestCase):
+    """Round 2, point 2: no docker command, but Docker's data folder is left from
+    an earlier install: a read-only `sudo ls` in step 0, before any change."""
+
+    def docker_data(self, volumes):
+        root = os.path.join(self.sysroot, "var", "lib", "docker")
+        os.makedirs(root)
+        if volumes is not None:
+            for name in volumes:
+                os.makedirs(os.path.join(root, "volumes", name))
+        self.docker_installed_by_the_plan()
+        return "sudo ls -1 %s/var/lib/docker/volumes" % self.sysroot
+
+    def test_data_folder_with_a_hub_volume_stops_before_any_change(self):
+        read_only = self.docker_data(["sproutwall_familyhub-data", "4f2a9c"])
+        run = self.run_install(["", "y", "y"], FAKE_VOLUMES="sproutwall_familyhub-data\n")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("changes nothing", run.err)
+        self.assertIn("#existing-install--update", run.err)
+        self.assertEqual([line for line in run.log if line.startswith("sudo")], [read_only])
+        self.assertEqual(run.prompts, 2)
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("sudo ls -1 /var/lib/docker/volumes", plan)
+
+    def test_data_folder_without_a_hub_continues(self):
+        read_only = self.docker_data(["4f2a9c", "backingFsBlockDev"])
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        sudo = [line for line in run.log if line.startswith("sudo")]
+        self.assertEqual(sudo[:2], [read_only, "sudo apt update"])
+        self.assertIn("No existing hub found.", run.out)
+
+    def test_unreadable_volume_list_stops_with_nothing_changed(self):
+        read_only = self.docker_data(None)
+        run = self.run_install(["", "y", "y"])
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("could not be read", run.err)
+        self.assertIn("Nothing was changed.", run.err)
+        self.assertIn("#first-is-sproutwall-already-on-this-device", run.err)
+        self.assertEqual([line for line in run.log if line.startswith("sudo")], [read_only])
+
+    def test_no_data_folder_needs_no_check(self):
+        self.docker_installed_by_the_plan()
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertFalse([line for line in run.log if line.startswith("sudo ls")])
+        self.assertNotIn("Read-only, right after you approve", run.out)
+
+    def test_hub_found_after_the_tools_does_not_claim_nothing_changed(self):
+        self.docker_installed_by_the_plan()
+        run = self.run_install(HAPPY_ANSWERS, FAKE_VOLUMES="sproutwall_familyhub-data\n")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("The tools in the plan were installed", run.err)
+        self.assertNotIn("changes nothing", run.err)
+        self.assertNotIn("Nothing was changed", run.err)
+
+
+class FirstStartTests(InstallShTestCase):
+    """Round 2, point 3: wait for cloud-init's first-start setup before apt, and
+    tell an apt lock apart, worded for what was really changed."""
+
+    def cloud_init(self):
+        self.write(
+            os.path.join(self.bin_dir, "cloud-init"),
+            "#!/bin/bash\nprintf 'cloud-init %s\\n' \"$*\" >>\"$FAKE_LOG\"\n"
+            "[ \"$*\" = \"status --wait\" ] || exit 99\necho 'status: done'\n",
+            0o755,
+        )
+
+    def test_cloud_init_present_waits_before_apt(self):
+        self.cloud_init()
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("Waiting for the Pi's first-start setup to finish", run.out)
+        self.assertLess(run.index("cloud-init status --wait"), run.index("sudo apt update"))
+        self.assertNotIn("sudo cloud-init status --wait", run.log)
+
+    def test_cloud_init_absent_no_wait(self):
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("cloud-init", run.commands())
+        self.assertNotIn("first-start setup", run.out)
+
+    def test_apt_lock_at_the_system_update_stops_plainly(self):
+        run = self.run_install(HAPPY_ANSWERS, FAKE_APT_LOCKED="apt update")
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn(
+            "Stopped: Another update is running. Wait a few minutes and run the same command again. "
+            "Nothing that matters was changed.",
+            run.err,
+        )
+        self.assertIn("Could not get lock", run.err)
+        self.assertEqual([line for line in run.log if line.startswith("sudo")], ["sudo apt update"])
+
+    def test_apt_lock_later_is_worded_for_what_already_ran(self):
+        run = self.run_install(
+            HAPPY_ANSWERS,
+            FAKE_APT_LOCKED="apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+        )
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("Another update is running.", run.err)
+        self.assertIn("The system update already ran", run.err)
+        self.assertNotIn("Nothing that matters was changed", run.err)
+        self.assertNotIn("git", run.commands())
 
 
 if __name__ == "__main__":

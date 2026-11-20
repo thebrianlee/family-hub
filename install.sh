@@ -35,6 +35,7 @@ TEST_ROOT="${SPROUTWALL_INSTALL_TEST_ROOT:-}"
 TTY_PATH="${SPROUTWALL_INSTALL_TEST_TTY:-/dev/tty}"
 
 STOP_SHOWN=0
+WORK_DIR=""
 OS_ID=""
 IS_RPI_OS=0
 SCREEN="none"     # portrait, portrait-flipped, landscape, landscape-flipped or none
@@ -61,6 +62,9 @@ leave_unchanged() {
 
 on_exit() {
   local code=$?
+  if [ -n "$WORK_DIR" ]; then
+    rm -rf "$WORK_DIR"
+  fi
   if [ "$code" -ne 0 ] && [ "$STOP_SHOWN" = 0 ]; then
     printf '\nStopped: a step failed (exit %s). Read the lines above, then continue by hand with the guide from that step: %s\n' \
       "$code" "$GUIDE" >&2
@@ -265,18 +269,32 @@ check_terminal() {
 }
 
 EXISTING_HUB_LINE="Sproutwall (or Family Hub) is already on this device, so this script stops here and changes nothing. Never install a second hub next to it: back up, then update in place, as the guide says: $GUIDE#existing-install--update (and $GUIDE#first-is-sproutwall-already-on-this-device)."
-# absent: no docker command, so no Docker hub can exist yet. checked: this
-# account listed every container and volume. unreachable: the docker command
-# exists but this account cannot reach the daemon yet; check_docker_with_sudo
-# then lists them with sudo, read-only, before anything is changed.
+# absent: no docker command and no Docker data folder, so no Docker hub can
+# exist. checked: this account listed every container and volume.
+# unreachable: the docker command exists but this account cannot reach the
+# daemon yet. data_only: no docker command, but Docker's data folder from an
+# earlier install is still here. For the last two, check_docker_with_sudo
+# looks with sudo, read-only, right after approval and before any change.
 DOCKER_STATE="absent"
 
 # The one matcher for every existing-hub check (guide "First": any line that
-# mentions sproutwall, family-hub or familyhub-data). Reads container and
-# volume names on stdin: sproutwall_* and family-hub_* volumes,
-# familyhub-data, and container names such as sproutwall-family-hub-1.
+# mentions sproutwall, family-hub or familyhub-data): sproutwall_* and
+# family-hub_* volumes, familyhub-data, and container names such as
+# sproutwall-family-hub-1. The listings come as arguments, never through a
+# pipe, so the answer cannot depend on pipe timing (a reader that exits early
+# would make the writer fail under pipefail and turn "found" into "not found").
 names_include_a_hub() {
-  grep -Eq 'sproutwall|family-hub|familyhub-data'
+  case "$*" in
+    *sproutwall* | *family-hub* | *familyhub-data*) return 0 ;;
+  esac
+  return 1
+}
+
+stop_existing_hub() {
+  if [ "${1:-}" = after_tools ]; then
+    stop "Sproutwall (or Family Hub) is already on this device, so this script stops before it gets the code. The tools in the plan were installed, but the existing hub and its data were not touched. Never install a second hub next to it: back up, then update in place, as the guide says: $GUIDE#existing-install--update"
+  fi
+  stop "$EXISTING_HUB_LINE"
 }
 # Guide "First: is Sproutwall already on this device?":
 #   ls -d ~/sproutwall ~/family-hub 2>/dev/null; docker ps -a --format '{{.Names}}'; docker volume ls -q
@@ -290,31 +308,47 @@ check_no_existing_hub_first() {
   if command -v docker >/dev/null 2>&1; then
     if containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null) && volumes=$(docker volume ls -q 2>/dev/null); then
       DOCKER_STATE="checked"
-      if printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
-        stop "$EXISTING_HUB_LINE"
+      if names_include_a_hub "$containers" "$volumes"; then
+        stop_existing_hub
       fi
     else
       DOCKER_STATE="unreachable"
       say "Note: Docker is installed but this account cannot reach it yet. Once you approve the plan, the script looks for an existing hub with sudo (read-only) before it changes anything."
     fi
+  elif [ -e "$TEST_ROOT/var/lib/docker" ]; then
+    DOCKER_STATE="data_only"
+    say "Note: Docker's data folder from an earlier install is on this device. Once you approve the plan, the script looks in it for an existing hub with sudo (read-only) before it changes anything."
   fi
 }
 
-# Point 1 of the plan when Docker is installed but this account cannot reach
-# it: a read-only look for an existing hub, before the first change.
+# Step 0 of the plan: a read-only look for an existing hub with sudo, right
+# after approval and before the first change, when this account could not
+# look itself (Docker out of reach, or only Docker's data folder is left).
 check_docker_with_sudo() {
   local containers volumes
-  if [ "$DOCKER_STATE" != unreachable ]; then
-    return 0
-  fi
-  say ""
-  say "Looking for an existing hub in Docker (read-only; sudo asks for your password)..."
-  if ! containers=$(sudo docker ps -a --format '{{.Names}}') || ! volumes=$(sudo docker volume ls -q); then
-    stop "Docker is installed but did not answer, even with sudo, so this script cannot tell whether a hub is already on this device. Nothing was changed. Check by hand as the guide's first section says: $GUIDE#first-is-sproutwall-already-on-this-device"
-  fi
-  if printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
-    stop "$EXISTING_HUB_LINE"
-  fi
+  case "$DOCKER_STATE" in
+    unreachable)
+      say ""
+      say "Looking for an existing hub in Docker (read-only; sudo asks for your password)..."
+      if ! containers=$(sudo docker ps -a --format '{{.Names}}') || ! volumes=$(sudo docker volume ls -q); then
+        stop "Docker is installed but did not answer, even with sudo, so this script cannot tell whether a hub is already on this device. Nothing was changed. Check by hand as the guide's first section says: $GUIDE#first-is-sproutwall-already-on-this-device"
+      fi
+      if names_include_a_hub "$containers" "$volumes"; then
+        stop_existing_hub
+      fi
+      ;;
+    data_only)
+      say ""
+      say "Looking for an existing hub in Docker's data folder (read-only; sudo asks for your password)..."
+      if ! volumes=$(sudo ls -1 "$TEST_ROOT/var/lib/docker/volumes"); then
+        stop "Docker's data folder from an earlier install is on this device, but its list of volumes could not be read, so this script cannot tell whether a household is there. Nothing was changed. Check by hand as the guide's first section says: $GUIDE#first-is-sproutwall-already-on-this-device"
+      fi
+      if names_include_a_hub "$volumes"; then
+        stop_existing_hub
+      fi
+      ;;
+    *) return 0 ;;
+  esac
   say "No existing hub found."
 }
 
@@ -430,6 +464,12 @@ show_plan() {
     say "       sudo docker volume ls -q"
     say "     Why: Docker is installed but your account cannot reach it yet, so this looks for an existing hub."
     say "     If it finds one, the script stops with nothing changed. Changes nothing; nothing to undo."
+  elif [ "$DOCKER_STATE" = data_only ]; then
+    say ""
+    say "  0. Read-only, right after you approve and before anything changes:"
+    say "       sudo ls -1 /var/lib/docker/volumes"
+    say "     Why: Docker's data folder from an earlier install is on this device, so this looks there for a"
+    say "     hub's household. If it finds one, the script stops with nothing changed. Nothing to undo."
   fi
   say ""
   say "  1. sudo apt update && sudo apt full-upgrade -y"
@@ -553,22 +593,65 @@ install_gh() {
     && sudo apt install gh -y
 }
 
+system_update() {
+  sudo apt update && sudo apt full-upgrade -y
+}
+
+# Runs one install step. Its error output still shows, and is also kept in
+# the script's own temporary folder, so a failure from apt's lock can be told
+# apart from other failures.
+with_errors_kept() {
+  : >"$WORK_DIR/errors"
+  { "$@" 2>&1 >&3 | tee "$WORK_DIR/errors" >&2; } 3>&1
+}
+
+apt_was_locked() {
+  grep -Eq 'Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock' "$WORK_DIR/errors"
+}
+
+# A new Raspberry Pi OS (Imager 2), like many Ubuntu images, runs cloud-init
+# at first start, and it holds apt's lock while it works. Read-only, no sudo.
+wait_for_first_start_setup() {
+  local device="this device's"
+  if ! command -v cloud-init >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$IS_RPI_OS" = 1 ]; then device="the Pi's"; fi
+  say "Waiting for $device first-start setup to finish..."
+  if ! cloud-init status --wait; then
+    say "The first-start setup finished with a problem of its own; the install goes on."
+  fi
+}
+
 install_tools() {
   local failed="Nothing of Sproutwall was set up yet, and it is safe to run this script again. Check the internet connection and the messages above, or follow the guide by hand: $GUIDE#install-the-tools"
   say ""
   say "== Installing the tools (guide step 3). sudo asks for your password. =="
-  if ! { sudo apt update && sudo apt full-upgrade -y; }; then
+  wait_for_first_start_setup
+  if ! with_errors_kept system_update; then
+    # Nothing was installed or upgraded yet: at most apt refreshed its package lists.
+    if apt_was_locked; then
+      stop "Another update is running. Wait a few minutes and run the same command again. Nothing that matters was changed."
+    fi
     stop "The system update failed. $failed"
   fi
-  sudo apt install -y git || stop "git could not be installed. $failed"
+  with_errors_kept sudo apt install -y git || stop_install_step "git could not be installed."
   if [ "$OS_ID" = ubuntu ]; then
-    install_docker_ubuntu || stop "Docker could not be installed. $failed"
+    with_errors_kept install_docker_ubuntu || stop_install_step "Docker could not be installed."
   else
-    install_docker_debian || stop "Docker could not be installed. $failed"
+    with_errors_kept install_docker_debian || stop_install_step "Docker could not be installed."
   fi
   sudo usermod -aG docker "$USER" || stop "Your account could not be added to the docker group. $failed"
-  install_gh || stop "The GitHub CLI (gh) could not be installed. $failed"
+  with_errors_kept install_gh || stop_install_step "The GitHub CLI (gh) could not be installed."
   say "Don't run gh auth login: the image check needs no account."
+}
+
+# A failed install step after the system update: say so accurately.
+stop_install_step() {
+  if apt_was_locked; then
+    stop "Another update is running. Wait a few minutes and run the same command again. The system update already ran and some tools may be installed; nothing of Sproutwall was set up yet, and running it again is safe."
+  fi
+  stop "$1 The system update already ran and some tools may be installed; nothing of Sproutwall was set up yet, and it is safe to run this script again. Check the internet connection and the messages above, or follow the guide by hand: $GUIDE#install-the-tools"
 }
 
 # Guide step 3, "Check the tools". No re-login: the docker group is used
@@ -609,8 +692,8 @@ check_no_existing_hub_again() {
     || stop "Docker could not be asked about an existing hub, so this script stops before it gets the code. Check docker info, then follow $GUIDE#check-the-tools"
   containers=$(as_docker_group docker ps -a --format '{{.Names}}') \
     || stop "Docker could not be asked about an existing hub, so this script stops before it gets the code. Check docker info, then follow $GUIDE#check-the-tools"
-  if [ -n "$found" ] || printf '%s\n%s\n' "$containers" "$volumes" | names_include_a_hub; then
-    stop "$EXISTING_HUB_LINE"
+  if [ -n "$found" ] || names_include_a_hub "$containers" "$volumes"; then
+    stop_existing_hub after_tools
   fi
 }
 
@@ -710,7 +793,7 @@ stop_doctor() {
 }
 
 start_hub() {
-  local up_ok=1 ps_out health tmp_dir blocked
+  local up_ok=1 ps_out health blocked
   say ""
   say "== Starting the hub (guide step 5) =="
   if ! home_network_ok; then
@@ -718,17 +801,14 @@ start_hub() {
   fi
   cd "$HOME/sproutwall" || stop "The sproutwall folder could not be opened. Get help: $GUIDE#if-something-goes-wrong"
   as_docker_group docker compose -f "$PREVIEW" up -d --wait || up_ok=0
-  # curl's error text goes to a temporary folder this script made, and only
-  # that folder is removed.
-  tmp_dir=$(mktemp -d)
-  if health=$(curl -fsS --max-time 3 "$HEALTH_URL" 2>"$tmp_dir/curl.err"); then
+  # curl's error text goes to the script's own temporary folder.
+  if health=$(curl -fsS --max-time 3 "$HEALTH_URL" 2>"$WORK_DIR/curl.err"); then
     blocked=0
   else
     health=""
     blocked=0
-    if grep -q 503 "$tmp_dir/curl.err"; then blocked=1; fi
+    if grep -q 503 "$WORK_DIR/curl.err"; then blocked=1; fi
   fi
-  rm -rf "$tmp_dir"
   if [ "$blocked" = 1 ]; then
     stop_blocked_database
   fi
@@ -737,9 +817,10 @@ start_hub() {
   fi
   ps_out=$(as_docker_group docker compose -f "$PREVIEW" ps) || ps_out=""
   printf '%s\n' "$ps_out"
-  if ! printf '%s\n' "$ps_out" | grep -q '(healthy)'; then
-    stop "The hub is not reported healthy yet. Wait a minute and check: cd ~/sproutwall && docker compose -f $PREVIEW ps. If it repeats, get help: $GUIDE#if-something-goes-wrong"
-  fi
+  case "$ps_out" in
+    *"(healthy)"*) ;;
+    *) stop "The hub is not reported healthy yet. Wait a minute and check: cd ~/sproutwall && docker compose -f $PREVIEW ps. If it repeats, get help: $GUIDE#if-something-goes-wrong" ;;
+  esac
   printf '%s\n' "$health"
   case "$health" in
     *'"ok":true'*) ;;
@@ -919,6 +1000,8 @@ finish() {
 # --- main ---------------------------------------------------------------------------------
 
 run_install() {
+  # The only folder this script ever removes (on_exit): its own temporary one.
+  WORK_DIR=$(mktemp -d)
   ask_screen
   show_plan
   if ! ask_yes_no "Do you approve this plan?"; then
