@@ -30,7 +30,7 @@ Raspberry Pi OS is the Pi's operating system, like Windows or macOS on a laptop.
 - **Customisation:** fill this in; don't skip it. These settings match [step 1 of the install guide](../INSTALL-WITH-AI.md#step-1-put-the-system-on-the-card):
   - **Hostname:** `hub`. This is the Pi's name on your home network.
   - **Localisation:** Imager asks for a capital city and fills in the time zone and keyboard layout from it. Check both, and change the time zone if yours is different. The hub takes its time zone from the Pi later.
-  - **User:** a username (lowercase letters and numbers) and a password. Keep the password to yourself. You type it into the Pi when a command asks for it.
+  - **User:** a username and a password. The username must start with a lowercase letter; use only lowercase letters and numbers. Keep the password to yourself. You type it into the Pi when a command asks for it.
   - **Wi-Fi:** your home network's name and password.
   - **Remote Access:** leave **Enable SSH** off. SSH lets another computer control the Pi over the network. This install doesn't use it.
   - **Raspberry Pi Connect:** if Imager shows it, leave it off. It is a service for reaching your Pi from outside your home, and the hub stays on your home network.
@@ -84,7 +84,7 @@ From here a chat AI guides you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.m
    - **Your household:** the sample family or your own. You set this up yourself on the hub's screen (point 7).
    - **Which features show?** One screen during setup. **Skip, use recommended** keeps everything except Ask the Hub. Ask the Hub stays off unless you turn it on, because it sends the questions kids type to an AI service. You can change this later in Settings → Modules.
 5. **The install plan comes before any password.** The AI shows every command that runs as administrator once, before the first one: what it does, why it is needed and how to undo it. These commands start with `sudo` ("run as administrator") and ask for the Pi's password in the Terminal. Read the plan, then say yes or ask questions. Your yes covers that plan only.
-6. **One block at a time.** The AI gives you one block of commands. Copy it, paste it into the Terminal, press Enter and wait until it finishes. Then tell the AI only the short result it asks for, such as `64-bit OK`, `exit 0` or `healthy`. Don't paste long output, logs or screenshots.
+6. **One block at a time.** The AI gives you one block of commands. Copy it, paste it into the Terminal, press Enter and wait until it finishes. Then tell the AI only the short result it asks for, such as `64-bit OK`, `exit 0` or `healthy`. Don't copy whole Terminal output, logs or screenshots.
 7. **Household setup: you do this alone.** When the AI reaches this step, it waits and doesn't look. On the Pi's own screen, open the web browser at `http://localhost:3847` (the hub on this Pi). You see **Set up the house**:
    1. Pick **Set up my family**, or **Try it with the sample family** (the Calders, a made-up family) for a first look.
    2. **What should your wall show?** Choose, or tap **Skip, use recommended**.
@@ -137,7 +137,12 @@ If an AI suggests something that is not in the guide, stop and ask in [Discussio
 
 ## 8. If you get stuck
 
-- **Copy the last lines the Terminal printed**, usually the error message, and remove any secrets first (see section 6). Never paste the hub's logs, config files or screenshots of the hub.
+- **Stop the install** when a step fails or the AI says stop. Don't try fixes that are not in the guide.
+- **Share only two things,** with the AI or anyone else:
+  1. the short result the step asked for, such as `exit 1`, or the one line a step printed to say why it stopped;
+  2. the output of the status check below.
+
+  Don't copy whole Terminal output, and never paste logs, config files or screenshots of the hub.
 - **The safe status check.** Once step 3 has put the `sproutwall` folder on the Pi and the hub has started, run this. It only reads and changes nothing, and its output is safe to share by design:
 
   ```bash
@@ -146,7 +151,7 @@ If an AI suggests something that is not in the guide, stop and ask in [Discussio
 
   Each check that does not pass names an action. [If something goes wrong](../INSTALL-WITH-AI.md#if-something-goes-wrong) explains each one.
 - **Starting over** with a freshly written card (section 2) is often the fastest fix on a new setup. Do it only while the hub holds nothing you want to keep: writing the card erases everything on it.
-- **Where to ask:** send an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml) (whether it worked or not), and ask questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions). Share only the status check's output: no logs, names or links. Report security problems privately, as [SECURITY.md](../SECURITY.md) says.
+- **Where to ask:** send an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml) (whether it worked or not), and ask questions in [Discussions](https://github.com/thebrianlee/sproutwall/discussions). Say which step stopped and give its short result and the status check's output: no logs, names or links. Report security problems privately, as [SECURITY.md](../SECURITY.md) says.
 
 ## 9. Undo
 
