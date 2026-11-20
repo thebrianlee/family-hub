@@ -83,6 +83,25 @@ function QuoteCard({ quote }: { quote: Quote }) {
   );
 }
 
+/** The screensaver settings from an /api/ambient answer, or null when there are
+ *  none to use. A screen that is not unlocked yet gets 401 (the unlock page
+ *  itself renders inside this wrapper), and an error body has none of these
+ *  fields: treating it as settings crashed the unlock page, so nobody could
+ *  enter the PIN. Without settings the screensaver simply stays off. */
+export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | null {
+  if (!ok || !body || typeof body !== "object") return null;
+  const c = body as Partial<AmbientConfig>;
+  if (!Array.isArray(c.photos) || !Array.isArray(c.art) || !Array.isArray(c.quotes)) return null;
+  if (typeof c.idleMinutes !== "number" || typeof c.sleepStart !== "string" || typeof c.sleepEnd !== "string") return null;
+  return c as AmbientConfig;
+}
+
+function loadAmbient(): Promise<AmbientConfig | null> {
+  return fetch("/api/ambient")
+    .then(async (r) => ambientConfigFrom(r.ok, await r.json().catch(() => null)))
+    .catch(() => null);
+}
+
 export default function Ambient({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const askOn = useModules().isOn("ask");
@@ -101,13 +120,13 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
     lastActivity.current = now;
     lastRefetch.current = now;
     bootedAt.current = now;
-    fetch("/api/ambient").then((r) => r.json()).then(setCfg).catch(() => {});
+    loadAmbient().then((c) => c && setCfg(c));
   }, []);
 
   // Manual screensaver (the moon button) + fresh weather on entry.
   useEffect(() => {
     const onSleep = () => {
-      fetch("/api/ambient").then((r) => r.json()).then(setCfg).catch(() => {});
+      loadAmbient().then((c) => c && setCfg(c));
       setSaver(true);
     };
     window.addEventListener("sproutwall:sleep", onSleep);

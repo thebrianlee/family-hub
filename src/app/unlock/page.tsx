@@ -3,7 +3,7 @@
 // Shown when REQUIRE_AUTH_FOR_READS=1 and this screen has no device cookie.
 // One correct parent PIN unlocks the screen for 30 days.
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import Keypad from "@/components/Keypad";
@@ -11,7 +11,6 @@ import { safeNext } from "@/lib/safe-next";
 import { PIN_MAX_LENGTH, PIN_MIN_LENGTH } from "@/lib/weak-pin";
 
 function UnlockForm() {
-  const router = useRouter();
   const params = useSearchParams();
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
@@ -36,8 +35,11 @@ function UnlockForm() {
       );
       return;
     }
-    router.replace(safeNext(params.get("next"), window.location.origin));
-    router.refresh();
+    // A full page load, not router.replace: while the screen was locked, the
+    // router prefetched the tab-bar pages and cached their redirect back to
+    // /unlock, so a client-side move would land here again. The new cookie
+    // only takes effect on a fresh request.
+    window.location.replace(safeNext(params.get("next"), window.location.origin));
   };
 
   return (
