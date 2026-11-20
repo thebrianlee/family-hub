@@ -285,12 +285,13 @@ The sleep window (21:30 to 06:00, seeded in `src/lib/db.ts`) is supposed to dark
 
 Labels: `good first issue`, `security`
 
-`/api/health` is open on a locked hub, for Docker's health check. It must only ever say `{ ok }`. No test guards that.
+`/api/health` is open on a locked hub, for Docker's health check and the install helper (`scripts/sproutwall doctor`). On success (200) it must only ever say `ok`, the app `version`, the database `schema` number and `setup` (whether first-run setup is finished). On failure (503) it says `ok: false`, and when the database is blocked (`DbBlockedError` in `src/lib/db.ts`) also the block's `code` and its numeric details, nothing else. No test guards that.
 
 - **Files:** `src/app/api/health/route.ts`, a new `tests/health.test.ts`.
 - **Done when:**
-  - a test calls the handler and expects status 200, a body of exactly `{ "ok": true }`, and `cache-control: no-store`;
-  - a test makes the database query fail and expects status 503 with a body of exactly `{ "ok": false }`.
+  - a test calls the handler and expects status 200, a body with exactly the keys `ok` (`true`), `version`, `schema` and `setup`, and `cache-control: no-store`;
+  - a test makes the database query fail and expects status 503 with a body of exactly `{ "ok": false }`;
+  - a test makes the database blocked and expects status 503 with only `ok` (`false`), `code` and numeric fields.
 - `tests/auth.test.ts` already checks that the proxy lets `/api/health` through, so this issue is only about the response body.
 
 ## 9. Preview image
@@ -310,7 +311,7 @@ It uses no repository secrets (only the built-in `GITHUB_TOKEN`) and no build ar
 
 **What to copy.** Each run's summary page (**Actions →** the run **→ Summary**) shows the image index digest and the source commit. Copy that pair into the install guide. Install files pin the image by that digest (`ghcr.io/thebrianlee/sproutwall:preview@sha256:...`), never by the moving `:preview` tag, and the verification checks the attestation against that commit. The verification names `.github/workflows/image.yml` as the signer workflow, so don't rename or move that file.
 
-**Releases come later.** There are no version tags, no `latest` and no GitHub releases yet. They wait for a RELEASING.md (see [GOVERNANCE.md](../../GOVERNANCE.md#releases)). The install guide pins one published preview by digest. The README's manual install and the Raspberry Pi guide still build locally with `docker compose up -d --build`.
+**Releases.** Previews are released as hand-made GitHub pre-releases. [RELEASING.md](../../RELEASING.md) says how they are numbered and made. The image itself still gets no version tags and no `latest`; those come with the full release process. The install guide pins one published preview by digest. The README's manual install and the Raspberry Pi guide still build locally with `docker compose up -d --build`.
 
 ### One-time owner steps
 

@@ -10,7 +10,7 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
    Leave the token published-index-digest-hex (in angle brackets, in step 4) as it is:
    it is the template token in docker-compose.preview.yml that the sed command in step 4
    replaces on the device. Never write a tag such as :preview in place of the digest.
-   There are no release tags in stage 1.
+   Each pinned pair also gets a GitHub pre-release at the same source commit. See RELEASING.md.
 
 2. Open decisions:
    - Docker group. Spec 4.2 step 3 says the agent gets no membership in the docker group.
