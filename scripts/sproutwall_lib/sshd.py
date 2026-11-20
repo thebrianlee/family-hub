@@ -2,7 +2,7 @@
 
 State comes from `systemctl is-enabled/is-active` for ssh.service,
 sshd.service, ssh.socket and sshd.socket, plus listening sockets on port 22
-and on every Port in the readable config. Policy comes from
+and on every Port and ListenAddress port in the readable config. Policy comes from
 /etc/ssh/sshd_config and the files it includes (sshd -T needs root, and
 doctor never uses sudo). Any include that cannot be read or listed makes the
 config unreadable, which is reported as unknown.
@@ -221,16 +221,68 @@ def effective(directives, keyword, default):
     return default
 
 
-def ports(directives):
-    """Port 22 and every Port the config names."""
+def _port_number(text):
+    """A port number from 1 to 65535, or None."""
+    if not text.isdigit():
+        return None
+    number = int(text)
+    return number if 0 < number <= 65535 else None
+
+
+def _listen_port(value):
+    """The port a ListenAddress names, None when it names none (Port applies),
+    or False when it cannot be read.
+
+    sshd accepts host, IPv4_addr, IPv6_addr, host:port, IPv4_addr:port and
+    [host|IPv6_addr]:port, optionally followed by "rdomain name".
+    """
+    words = value.split()
+    if not words:
+        return False
+    address = words[0]
+    if address.startswith("["):
+        _host, closed, rest = address[1:].partition("]")
+        if not closed:
+            return False
+        if rest == "":
+            return None
+        if not rest.startswith(":"):
+            return False
+        return _port_number(rest[1:]) or False
+    if address.count(":") == 1:
+        return _port_number(address.split(":", 1)[1]) or False
+    return None  # a host, an IPv4 address or a bare IPv6 address
+
+
+def port_list(directives):
+    """(ports, complete): port 22 and every port the config names in Port or
+    ListenAddress, sorted. complete is False when a Port or ListenAddress value
+    cannot be read: a listener on that port would not be seen, so callers
+    report unknown instead of ignoring it.
+
+    Values are read as sshd reads them (_value): Port "2222" is port 2222.
+    """
     found = {DEFAULT_PORT}
+    complete = True
     for name, args, _ in directives or []:
         if name == "port":
-            try:
-                found.add(int(args.split()[0]))
-            except (ValueError, IndexError):
-                continue
-    return sorted(found)
+            number = _port_number(_value(args))
+            if number is None:
+                complete = False
+            else:
+                found.add(number)
+        elif name == "listenaddress":
+            number = _listen_port(_value(args))
+            if number is False:
+                complete = False
+            elif number is not None:
+                found.add(number)
+    return sorted(found), complete
+
+
+def ports(directives):
+    """Port 22 and every port the config names that could be read (see port_list)."""
+    return port_list(directives)[0]
 
 
 def allows_root_or_empty_password(directives):

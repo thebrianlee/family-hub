@@ -471,16 +471,93 @@ class SshPolicyTests(unittest.TestCase):
             self.assertTrue(sshd.allows_password(sshd.read_directives(s)), extra)
             self.assertEqual(run("ssh_policy", s, tier="B"), PASS, extra)  # tier B allows passwords
 
-    def test_unreadable_config_is_unknown_even_when_ssh_looks_off(self):
+    def test_unreadable_config_is_unknown_while_ssh_is_on(self):
+        # GATE-sw73: SSH that is off passes even when the config cannot be read
+        # (Raspberry Pi Imager can leave a root-only file in sshd_config.d).
+        # While SSH is on, an unreadable config is never ignored.
+        setups = (
+            lambda s: s.unlistable.add("/etc/ssh/sshd_config.d"),
+            lambda s: s.files.__setitem__("/etc/ssh/sshd_config.d/20-x.conf", PermissionError(13, "denied")),
+            lambda s: s.files.__setitem__("/etc/ssh/sshd_config", PermissionError(13, "denied")),
+        )
+        for number, setup in enumerate(setups):
+            for tier in ("A", "C"):
+                for phase in ("running", "final"):
+                    s = healthy_pi()
+                    setup(s)
+                    self.assertEqual(run("ssh_policy", s, tier=tier, phase=phase), PASS, (number, tier, phase))
+            s = healthy_pi()
+            setup(s)
+            ssh_on(s)
+            self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"), number)
+            self.assertEqual(run("ssh_policy", s, tier="B", phase="final"), ("fail", "review_ssh"), number)
+            self.assertEqual(run("ssh_policy", s, tier="C"), ("fail", "review_ssh"), number)
+
+    def test_ssh_off_passes_with_a_root_only_imager_file(self):
+        # The final check after the person turned SSH off over SSH and restarted.
         s = healthy_pi()
-        s.unlistable.add("/etc/ssh/sshd_config.d")
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        s.files["/etc/ssh/sshd_config.d/50-cloud-init.conf"] = PermissionError(13, "denied")
+        self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), PASS)
+        # Still on: a listener on port 22 (sshd started by hand) is never hidden by it.
+        s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 22, "0A")])
+        self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), ("fail", "review_ssh"))
+        # Still on: a unit that is active.
         s = healthy_pi()
-        s.files["/etc/ssh/sshd_config.d/20-x.conf"] = PermissionError(13, "denied")
-        self.assertEqual(run("ssh_policy", s, tier="C"), ("unknown", "review_ssh"))
+        s.files["/etc/ssh/sshd_config.d/50-cloud-init.conf"] = PermissionError(13, "denied")
+        s.set(["systemctl", "is-active", "ssh.socket"], ok("active\n"))
+        self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), ("fail", "review_ssh"))
+        # Unknown state stays unknown.
         s = healthy_pi()
-        s.files["/etc/ssh/sshd_config"] = PermissionError(13, "denied")
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        s.files["/etc/ssh/sshd_config.d/50-cloud-init.conf"] = PermissionError(13, "denied")
+        s.set(["systemctl", "is-enabled", "ssh.service"], CommandResult(None, missing=True))
+        self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), ("unknown", "review_ssh"))
+
+    def test_quoted_and_listen_address_ports_are_read(self):
+        from sproutwall_lib import sshd
+
+        cases = {
+            'Port "2222"\n': ([22, 2222], True),
+            "Port '2222'\n": ([22, 2222], True),
+            "Port=2222\n": ([22, 2222], True),
+            "Port 2222 # custom\n": ([22, 2222], True),
+            "ListenAddress 0.0.0.0:2200\n": ([22, 2200], True),
+            'ListenAddress "[::]:2201"\n': ([22, 2201], True),
+            "ListenAddress 192.168.1.50:2202 rdomain 1\n": ([22, 2202], True),
+            "ListenAddress 192.168.1.50\n": ([22], True),
+            "ListenAddress ::\n": ([22], True),
+            "ListenAddress [::1]\n": ([22], True),
+            "Port ssh\n": ([22], False),
+            "Port 70000\n": ([22], False),
+            'Port "22x"\n': ([22], False),
+            "Port\n": ([22], False),
+            "ListenAddress 0.0.0.0:http\n": ([22], False),
+            "ListenAddress [::1:2203\n": ([22], False),
+            "ListenAddress [::1]x2203\n": ([22], False),
+        }
+        for text, expected in cases.items():
+            s = healthy_pi()
+            s.files["/etc/ssh/sshd_config.d/10-port.conf"] = text
+            self.assertEqual(sshd.port_list(sshd.read_directives(s)), expected, text)
+
+    def test_quoted_custom_port_listener_counts(self):
+        for text in ('Port "2222"\n', "ListenAddress 0.0.0.0:2222\n"):
+            s = healthy_pi()
+            s.files["/etc/ssh/sshd_config.d/10-port.conf"] = text
+            s.files["/proc/net/tcp"] = proc_table([("0.0.0.0", 2222, "0A")])
+            self.assertEqual(run("ssh_policy", s, tier="A"), ("fail", "review_ssh"), text)
+            self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), ("fail", "review_ssh"), text)
+
+    def test_unparseable_port_is_unknown_not_ignored(self):
+        for text in ("Port ssh\n", 'Port "22x"\n', "ListenAddress 0.0.0.0:http\n"):
+            for on in (False, True):
+                s = healthy_pi()
+                s.files["/etc/ssh/sshd_config.d/10-port.conf"] = text
+                if on:
+                    ssh_on(s)
+                    self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"), text)
+                else:
+                    self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"), text)
+                    self.assertEqual(run("ssh_policy", s, tier="C", phase="final"), ("unknown", "review_ssh"), text)
 
     def test_quoted_include_paths_are_read(self):
         s = healthy_pi()
@@ -502,7 +579,9 @@ class SshPolicyTests(unittest.TestCase):
         s = healthy_pi()
         s.files["/etc/ssh/sshd_config"] = "Include /etc/ssh/*.d/*.conf\n" + fakes.SSHD_CONFIG
         s.unlistable.add("/etc/ssh")
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="A"), PASS)  # SSH is off
+        ssh_on(s)
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
 
     def test_missing_literal_include_is_skipped(self):
         s = healthy_pi()
@@ -533,15 +612,19 @@ class SshPolicyTests(unittest.TestCase):
                     ssh_on(s)
                 s.files["/etc/ssh/sshd_config"] = "Include %s\n" % includes[label] + fakes.SSHD_CONFIG
                 setup(s)
-                self.assertEqual(run("ssh_policy", s, tier=tier), ("unknown", "review_ssh"), (label, tier))
+                # SSH off (tier A here) passes even when the config cannot be read.
+                expected = ("unknown", "review_ssh") if tier == "B" else PASS
+                self.assertEqual(run("ssh_policy", s, tier=tier), expected, (label, tier))
 
     def test_wildcard_matches_follow_the_same_rule(self):
         s = healthy_pi()
+        ssh_on(s)
         s.files["/etc/ssh/sshd_config.d/50-locked.conf"] = PermissionError(13, "denied")
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
         s = healthy_pi()
+        ssh_on(s)
         s.dirs.add("/etc/ssh/sshd_config.d/sub.conf")  # a folder matched by *.conf
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
 
     def test_listing_errors_are_never_no_matches(self):
         import errno
@@ -551,7 +634,9 @@ class SshPolicyTests(unittest.TestCase):
             if tier == "B":
                 ssh_on(s)
             s.list_errors["/etc/ssh/sshd_config.d"] = OSError(errno.EIO, "Input/output error")
-            self.assertEqual(run("ssh_policy", s, tier=tier), ("unknown", "review_ssh"), tier)
+            # SSH off (tier A here) passes even when the config cannot be read.
+            expected = ("unknown", "review_ssh") if tier == "B" else PASS
+            self.assertEqual(run("ssh_policy", s, tier=tier), expected, tier)
 
     def test_wildcards_skip_dotfiles_like_glob3(self):
         s = healthy_pi()
@@ -592,7 +677,9 @@ class SshPolicyTests(unittest.TestCase):
         self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
         s = healthy_pi()
         s.blocked.add("/etc/ssh")
-        self.assertEqual(run("ssh_policy", s, tier="A"), ("unknown", "review_ssh"))
+        self.assertEqual(run("ssh_policy", s, tier="A"), PASS)  # SSH is off
+        ssh_on(s)
+        self.assertEqual(run("ssh_policy", s, tier="B"), ("unknown", "review_ssh"))
 
     def test_real_probe_reports_why(self):
         import tempfile

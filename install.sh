@@ -193,11 +193,69 @@ first_lan_address() {
   printf '<lan-ip>\n'
 }
 
-# Over SSH: the hub's address for a browser on another computer: the IPv4 LAN
-# address. The hub publishes port 3847 on IPv4 only (docker-compose.preview.yml),
-# so preflight (check_ipv4_lan_for_ssh) stops over SSH when there is none.
+# Over SSH: the hub's address for a browser on the laptop, the IPv4 address
+# found in preflight (check_ipv4_lan_for_ssh, which stops when there is none).
+# The hub publishes port 3847 on IPv4 only (docker-compose.preview.yml).
+LAPTOP_IPV4=""
 hub_url_for_laptop() {
-  printf 'http://%s:3847\n' "$(first_lan_address)"
+  printf 'http://%s:3847\n' "$LAPTOP_IPV4"
+}
+
+# True for a dotted IPv4 address a laptop on the home network can reach this
+# device at: 10/8, 172.16/12, 192.168/16 or link-local 169.254/16.
+ipv4_on_home_network() {
+  local a b c d rest part
+  case "$1" in
+    192.168.* | 10.* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | 169.254.*) ;;
+    *) return 1 ;;
+  esac
+  IFS=. read -r a b c d rest <<<"$1"
+  [ -z "$rest" ] || return 1
+  for part in "$a" "$b" "$c" "$d"; do
+    case "$part" in
+      "" | *[!0-9]* | ????*) return 1 ;;
+    esac
+    [ "$part" -le 255 ] || return 1
+  done
+}
+
+# Over SSH: the IPv4 address the laptop reaches this device at. When the
+# session came over IPv4, that is the address it connected to (the third word
+# of SSH_CONNECTION). Otherwise (IPv6, or only SSH_CLIENT) it is the source
+# address of this device's IPv4 route out (`ip -4 route get 1.1.1.1`, its
+# "src"), never one on a container or bridge interface such as docker0. Never
+# the first address of hostname -I: that can be docker0's 172.17.0.1, which
+# the laptop cannot reach. Prints nothing and fails when there is none.
+ssh_lan_ipv4() {
+  local server route word previous="" dev="" src=""
+  local -a words=()
+  read -r _ _ server _ <<<"${SSH_CONNECTION:-}"
+  server=${server%%\%*}
+  server=${server#::ffff:}
+  server=${server#::FFFF:}
+  case "$server" in
+    "" | *:*) ;;
+    *)
+      ipv4_on_home_network "$server" || return 1
+      printf '%s\n' "$server"
+      return 0
+      ;;
+  esac
+  route=$(ip -4 route get 1.1.1.1 2>/dev/null) || return 1
+  read -r -a words <<<"$route"
+  [ "${#words[@]}" -gt 0 ] || return 1
+  for word in "${words[@]}"; do
+    case "$previous" in
+      dev) dev=$word ;;
+      src) src=$word ;;
+    esac
+    previous=$word
+  done
+  case "$dev" in
+    "" | lo | docker* | br-* | veth* | virbr* | lxcbr* | lxdbr* | podman* | cni* | flannel* | cali* | tun* | tap* | wg* | tailscale* | zt*) return 1 ;;
+  esac
+  ipv4_on_home_network "$src" || return 1
+  printf '%s\n' "$src"
 }
 
 # Over SSH: the address the session comes from (the first word of
@@ -369,11 +427,11 @@ check_ssh_client_first() {
 }
 
 # Over SSH, the household is set up from the laptop's browser, and the hub
-# publishes port 3847 on IPv4 only: without a home-network IPv4 address the
-# laptop could not reach it.
+# publishes port 3847 on IPv4 only: without a home-network IPv4 address that
+# the laptop reaches (ssh_lan_ipv4) the laptop could not open it.
 check_ipv4_lan_for_ssh() {
-  if [ "$(first_lan_address)" = "<lan-ip>" ]; then
-    stop "This device has no IPv4 home-network address, and the hub is reached over IPv4 only, so a browser on your laptop could not open it. Nothing was changed. Run the command in the device's own Terminal instead and set the household up on its screen: $GUIDE#start-here-what-to-tell-your-ai"
+  if ! LAPTOP_IPV4=$(ssh_lan_ipv4) || [ -z "$LAPTOP_IPV4" ]; then
+    stop "This device has no IPv4 home-network address that your laptop reaches, and the hub is reached over IPv4 only, so a browser on your laptop could not open it. Nothing was changed. Run the command in the device's own Terminal instead and set the household up on its screen: $GUIDE#start-here-what-to-tell-your-ai"
   fi
 }
 
@@ -714,9 +772,16 @@ ssh_context() {
 
 # The SSH server's own config: sshd_config, then every sshd_config.d/*.conf,
 # listed and read as root in one read-only command (sshd reads them as root;
-# this account may not be able to list or open them). Any error fails closed.
+# this account may not be able to list or open them). Any error fails closed:
+# - each file is followed by a line break, so a last line without one (a
+#   comment, say) never swallows the next file's first line (a Match);
+# - whether sshd_config.d exists comes from a checked listing of /etc/ssh, and
+#   if it exists it must be a readable folder whose listing (ls -1Ab, checked)
+#   succeeds, so an I/O error is never read as an empty folder;
+# - like sshd's glob, names starting with "." are skipped; a name ls has to
+#   escape (a space, a line break, a backslash) stops the read.
 SSHD_DIR="$TEST_ROOT/etc/ssh"
-SSHD_READ_SCRIPT='cat "$0/sshd_config" || exit 1; for f in "$0"/sshd_config.d/*.conf; do [ -e "$f" ] || continue; cat "$f" || exit 1; done'
+SSHD_READ_SCRIPT='d="$0/sshd_config.d"; cat "$0/sshd_config" || exit 1; echo; top=$(ls -1Ab -- "$0") || exit 1; set -f; found=; for name in $top; do [ "$name" = sshd_config.d ] && found=1; done; [ -n "$found" ] || exit 0; [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || exit 1; names=$(ls -1Ab -- "$d") || exit 1; for name in $names; do case "$name" in *\\*) exit 1 ;; .*) ;; *.conf) cat "$d/$name" || exit 1; echo ;; esac; done'
 read_sshd_config() {
   sudo sh -c "$SSHD_READ_SCRIPT" "$SSHD_DIR"
 }
@@ -1351,6 +1416,10 @@ finish() {
   say "It passes with \"Result: pass\", or with \"Result: unknown\" when the only unknown is app_bind / confirm_trusted_lan."
   if [ "$OVER_SSH" = 1 ]; then
     say "It needs SSH off, so once SSH is off, run it in the device's own Terminal."
+    say "In this preview it may also show ssh_policy unknown (review_ssh) when an SSH settings file that only root can"
+    say "read is on the device, even though SSH is off. Only that unknown is acceptable, and only if this prints"
+    say "inactive for both:  $SSH_STATE_COMMAND"
+    say "Any other unknown, and any fail, is still a stop."
   fi
   if [ "$kiosk_flag" = on ]; then
     say "With the kiosk, the hub comes back on the screen by itself, the right way up, and asks once for the parent"
@@ -1376,6 +1445,16 @@ turn_ssh_off() {
   fi
 }
 
+# True only when systemctl reports both SSH units inactive. systemctl
+# is-active prints one word per unit, in order, and exits non-zero when none
+# is active.
+SSH_STATE_COMMAND="systemctl is-active ssh.service ssh.socket"
+ssh_confirmed_off() {
+  local states rc=0
+  states=$(systemctl is-active ssh.service ssh.socket 2>/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] && [ "$states" = $'inactive\ninactive' ]
+}
+
 offer_ssh_off() {
   [ "$OVER_SSH" = 1 ] || return 0
   say ""
@@ -1383,12 +1462,16 @@ offer_ssh_off() {
   say "You used SSH for this install. With SSH off, nobody on your network can log in to this device over SSH."
   say "  $(ssh_off_command)   (in the plan you approved; undo: $(ssh_on_command))"
   if ask_yes_no "Turn SSH off now? This keeps the hub safe; this SSH session stays open until you close it."; then
-    if turn_ssh_off; then
-      say "SSH is off. This session stays open until you close it: restart now with sudo reboot."
+    if ! turn_ssh_off; then
+      say "Turning SSH off did not work, so SSH is still on."
+    elif ssh_confirmed_off; then
+      say "SSH is off: $SSH_STATE_COMMAND prints inactive for both."
+      say "This session stays open until you close it: restart now with sudo reboot."
       say "To use SSH again later, turn it on in the device's own Terminal: $(ssh_on_command)"
       return 0
+    else
+      say "The command ran, but SSH is not confirmed off ($SSH_STATE_COMMAND must print inactive for both), so treat SSH as still on."
     fi
-    say "Turning SSH off did not work, so SSH is still on."
   else
     say "SSH stays on."
   fi
