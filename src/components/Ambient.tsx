@@ -101,11 +101,20 @@ export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | n
  *  is not unlocked (401), so settings loaded earlier must be dropped too. */
 function loadAmbient(): Promise<AmbientLoad> {
   // A stalled request counts as a network error after 5 s, so it can't hold
-  // the screensaver back for good.
-  const signal = typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(5_000) : undefined;
-  return fetch("/api/ambient", { signal })
+  // the screensaver back for good. A timer, not AbortSignal.timeout, which
+  // older browsers lack.
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<AmbientLoad>((resolve) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      resolve({ cfg: null, locked: false });
+    }, 5_000);
+  });
+  const request = fetch("/api/ambient", { signal: controller?.signal })
     .then(async (r) => ({ cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: r.status === 401 }))
     .catch(() => ({ cfg: null, locked: false }));
+  return Promise.race([request, timedOut]).finally(() => clearTimeout(timer));
 }
 
 type AmbientLoad = { cfg: AmbientConfig | null; locked: boolean };
