@@ -5,7 +5,7 @@ Sproutwall is an early preview. This page says how preview releases are numbered
 ## Version numbers
 
 - A preview version looks like `0.1.0-preview.0`. The number after `preview.` goes up with each new preview release.
-- The version lives in `package.json`. The app shows it in Settings → About and returns it from `/api/health`, and the image carries it in its `org.opencontainers.image.version` label.
+- The version lives in `package.json`. The app returns it from `/api/health`, and the image carries it in its `org.opencontainers.image.version` label.
 - The Git tag is the version with a `v` in front, for example `v0.1.0-preview.0`.
 
 ## What a preview release is
