@@ -611,16 +611,29 @@ apt_was_locked() {
 
 # A new Raspberry Pi OS (Imager 2), like many Ubuntu images, runs cloud-init
 # at first start, and it holds apt's lock while it works. Read-only, no sudo.
+# It never stops the install: the only concern is apt's lock, and the
+# apt-lock messages cover what can happen next. coreutils timeout is always
+# there on Debian, Ubuntu and Raspberry Pi OS; without it, wait as before.
 wait_for_first_start_setup() {
-  local device="this device's"
+  local device="this device's" device_cap="This device's" code
   if ! command -v cloud-init >/dev/null 2>&1; then
     return 0
   fi
-  if [ "$IS_RPI_OS" = 1 ]; then device="the Pi's"; fi
-  say "Waiting for $device first-start setup to finish..."
-  if ! cloud-init status --wait; then
-    say "The first-start setup finished with a problem of its own; the install goes on."
+  if [ "$IS_RPI_OS" = 1 ]; then
+    device="the Pi's"
+    device_cap="The Pi's"
   fi
+  say "Waiting for $device first-start setup to finish..."
+  if command -v timeout >/dev/null 2>&1; then
+    if timeout 600 cloud-init status --wait; then code=0; else code=$?; fi
+  else
+    if cloud-init status --wait; then code=0; else code=$?; fi
+  fi
+  case "$code" in
+    0) ;;
+    124) say "$device_cap first-start setup is still running after 10 minutes; continuing anyway." ;;
+    *) say "$device_cap first-start setup reported a problem of its own; continuing anyway." ;;
+  esac
 }
 
 install_tools() {

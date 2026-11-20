@@ -1161,9 +1161,58 @@ class FirstStartTests(InstallShTestCase):
         self.write(
             os.path.join(self.bin_dir, "cloud-init"),
             "#!/bin/bash\nprintf 'cloud-init %s\\n' \"$*\" >>\"$FAKE_LOG\"\n"
-            "[ \"$*\" = \"status --wait\" ] || exit 99\necho 'status: done'\n",
+            "[ \"$*\" = \"status --wait\" ] || exit 99\n"
+            "if [ -n \"${FAKE_CLOUD_INIT_EXIT:-}\" ]; then echo 'status: error'; exit \"$FAKE_CLOUD_INIT_EXIT\"; fi\n"
+            "echo 'status: done'\n",
             0o755,
         )
+
+    def timeout_shim(self):
+        """coreutils timeout: logs, then runs the command (or reports 124 itself)."""
+        self.write(
+            os.path.join(self.bin_dir, "timeout"),
+            "#!/bin/bash\nprintf 'timeout %s\\n' \"$*\" >>\"$FAKE_LOG\"\n"
+            "if [ -n \"${FAKE_TIMEOUT_EXPIRES:-}\" ]; then exit 124; fi\n"
+            "shift\nexec \"$@\"\n",
+            0o755,
+        )
+
+    def test_timeout_present_limits_the_wait_to_600_seconds(self):
+        self.cloud_init()
+        self.timeout_shim()
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        wait = run.index("timeout 600 cloud-init status --wait")
+        self.assertEqual(run.log[wait + 1], "cloud-init status --wait")
+        self.assertLess(wait, run.index("sudo apt update"))
+        self.assertNotIn("continuing anyway", run.out)
+
+    def test_timeout_absent_waits_plainly(self):
+        self.cloud_init()
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("timeout", run.commands())
+        self.assertLess(run.index("cloud-init status --wait"), run.index("sudo apt update"))
+
+    def test_wait_that_times_out_notes_it_and_apt_still_runs(self):
+        self.cloud_init()
+        self.timeout_shim()
+        run = self.run_install(HAPPY_ANSWERS, FAKE_TIMEOUT_EXPIRES="1")
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("The Pi's first-start setup is still running after 10 minutes; continuing anyway.", run.out)
+        self.assertLess(run.index("timeout 600 cloud-init status --wait"), run.index("sudo apt update"))
+
+    def test_cloud_init_error_notes_it_and_apt_still_runs(self):
+        for with_timeout in (True, False):
+            with self.subTest(with_timeout=with_timeout):
+                self.setUp()
+                self.cloud_init()
+                if with_timeout:
+                    self.timeout_shim()
+                run = self.run_install(HAPPY_ANSWERS, FAKE_CLOUD_INIT_EXIT="1")
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertIn("The Pi's first-start setup reported a problem of its own; continuing anyway.", run.out)
+                self.assertLess(run.index("cloud-init status --wait"), run.index("sudo apt update"))
 
     def test_cloud_init_present_waits_before_apt(self):
         self.cloud_init()
