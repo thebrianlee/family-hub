@@ -14,7 +14,7 @@ interface Quote {
   attribution?: string;
 }
 
-interface AmbientConfig {
+export interface AmbientConfig {
   photos: string[];
   art: string[];
   quotes: Quote[];
@@ -96,10 +96,27 @@ export function ambientConfigFrom(ok: boolean, body: unknown): AmbientConfig | n
   return c as AmbientConfig;
 }
 
-function loadAmbient(): Promise<AmbientConfig | null> {
+/** One /api/ambient read. `locked` is true when the answer says this screen
+ *  is not unlocked (401), so settings loaded earlier must be dropped too. */
+function loadAmbient(): Promise<{ cfg: AmbientConfig | null; locked: boolean }> {
   return fetch("/api/ambient")
-    .then(async (r) => ambientConfigFrom(r.ok, await r.json().catch(() => null)))
-    .catch(() => null);
+    .then(async (r) => ({ cfg: ambientConfigFrom(r.ok, await r.json().catch(() => null)), locked: r.status === 401 }))
+    .catch(() => ({ cfg: null, locked: false }));
+}
+
+/** Use fresh settings. On a 401 also drop the old ones and leave the
+ *  screensaver, so a screen that lost its unlock (cookie expired, PIN changed)
+ *  shows no household content. A network error keeps what it had. */
+export function applyAmbient(
+  { cfg, locked }: { cfg: AmbientConfig | null; locked: boolean },
+  setCfg: (c: AmbientConfig | null) => void,
+  setSaver: (on: boolean) => void
+): void {
+  if (cfg) setCfg(cfg);
+  else if (locked) {
+    setCfg(null);
+    setSaver(false);
+  }
 }
 
 export default function Ambient({ children }: { children: React.ReactNode }) {
@@ -120,13 +137,13 @@ export default function Ambient({ children }: { children: React.ReactNode }) {
     lastActivity.current = now;
     lastRefetch.current = now;
     bootedAt.current = now;
-    loadAmbient().then((c) => c && setCfg(c));
+    loadAmbient().then((load) => applyAmbient(load, setCfg, setSaver));
   }, []);
 
   // Manual screensaver (the moon button) + fresh weather on entry.
   useEffect(() => {
     const onSleep = () => {
-      loadAmbient().then((c) => c && setCfg(c));
+      loadAmbient().then((load) => applyAmbient(load, setCfg, setSaver));
       setSaver(true);
     };
     window.addEventListener("sproutwall:sleep", onSleep);

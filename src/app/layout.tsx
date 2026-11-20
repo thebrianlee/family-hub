@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import localFont from "next/font/local";
 import "./globals.css";
 import TabNav from "@/components/TabNav";
@@ -12,6 +13,7 @@ import { getSetting } from "@/lib/queries";
 import { getMembers } from "@/lib/household";
 import { enabledModules, enabledTabs, modulesRev } from "@/lib/modules";
 import { memberThemeCss } from "@/lib/member-theme";
+import { screenUnlocked } from "@/lib/session";
 
 // Bundled in the repo (SIL Open Font License, see fonts/OFL.txt) so builds work
 // offline and on a Pi, and no request goes to Google at build time.
@@ -29,7 +31,7 @@ export const metadata: Metadata = {
   description: "A wall display for one household",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
   let ready: boolean;
   try {
     ready = getSetting("setup_complete", "0") === "1";
@@ -42,6 +44,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </body>
       </html>
     );
+  }
+  if (ready) {
+    const jar = await cookies();
+    if (!screenUnlocked((name) => jar.get(name)?.value)) {
+      // A locked screen only ever reaches /unlock: the proxy redirects every
+      // other page there. Render it bare. Household members, the module list,
+      // the screensaver and the tab bar (which would prefetch locked pages)
+      // must not reach a browser that hasn't entered the PIN.
+      return (
+        <html lang="en" className={jakarta.variable}>
+          <body>
+            <main className="h-screen w-screen">{children}</main>
+          </body>
+        </html>
+      );
+    }
   }
   const members = ready ? getMembers() : [];
   const modules = ready ? enabledModules() : [];

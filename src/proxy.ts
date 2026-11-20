@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { isDbBlocked } from "@/lib/db";
 import { isEnabled } from "@/lib/modules";
-import { DEVICE_COOKIE, PARENT_COOKIE, readsLocked, setupComplete, verifyCookie } from "@/lib/session";
+import { PARENT_COOKIE, screenUnlocked, setupComplete, verifyCookie } from "@/lib/session";
 import { moduleForPath } from "@/modules/registry";
 
 // Access policy for every request. Routes repeat the parent checks themselves
@@ -92,7 +92,7 @@ export function proxy(req: NextRequest): NextResponse {
   if (!ready) return NextResponse.next();
 
   const parent = verifyCookie(req.cookies.get(PARENT_COOKIE)?.value, "parent");
-  const device = parent || !readsLocked() || verifyCookie(req.cookies.get(DEVICE_COOKIE)?.value, "device");
+  const device = screenUnlocked((name) => req.cookies.get(name)?.value);
 
   if (!device && !PUBLIC_PAGES.has(pathname)) {
     if (isApi) return refuse(401, "Unlock this screen with the parent PIN");

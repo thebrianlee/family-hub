@@ -43,20 +43,26 @@ function UnlockForm() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-cream">
-      <h1 className="text-4xl font-extrabold">Unlock this screen</h1>
-      <p className="max-w-xl text-center text-2xl opacity-80">
-        This hub asks for the parent PIN once on each screen. The screen then stays unlocked for 30 days.
-      </p>
-      <Keypad value={pin} onChange={setPin} maxLength={PIN_MAX_LENGTH} masked />
-      {error && <div className="max-w-xl text-center text-2xl font-bold text-ember-deep">{error}</div>}
-      <button
-        onClick={submit}
-        disabled={pending || pin.length < PIN_MIN_LENGTH}
-        className="btn-primary px-12 py-5 text-3xl disabled:opacity-40"
-      >
-        Unlock
-      </button>
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-cream">
+      <div className="unlock-grid">
+        <div className="flex max-w-xl flex-col items-center gap-4 text-center [grid-area:title]">
+          <h1 className="text-4xl font-extrabold">Unlock this screen</h1>
+          <p className="text-2xl opacity-80">
+            This hub asks for the parent PIN once on each screen. The screen then stays unlocked for 30 days.
+          </p>
+        </div>
+        <div className="[grid-area:keypad]">
+          <Keypad value={pin} onChange={setPin} maxLength={PIN_MAX_LENGTH} masked />
+        </div>
+        {error && <div className="max-w-xl text-center text-2xl font-bold text-ember-deep [grid-area:error]">{error}</div>}
+        <button
+          onClick={submit}
+          disabled={pending || pin.length < PIN_MIN_LENGTH}
+          className="btn-primary px-12 py-5 text-3xl disabled:opacity-40 [grid-area:button]"
+        >
+          Unlock
+        </button>
+      </div>
     </div>
   );
 }

@@ -41,6 +41,22 @@ body {
   .btn-soft {
     @apply touch-target rounded-card bg-cream-sunken text-ink-soft font-bold active:bg-cream-line transition-colors;
   }
+  /* The unlock screen. One column on tall screens. On short ones (an 800x480
+     panel, a 1024x600 landscape screen) the keypad moves beside the text, so
+     the Unlock button is never below the edge; anything still too tall
+     scrolls. */
+  .unlock-grid {
+    @apply grid min-h-full content-center justify-items-center gap-6 px-6 py-6;
+    grid-template-areas: "title" "keypad" "error" "button";
+  }
+  @media (max-height: 700px) {
+    .unlock-grid {
+      @apply gap-x-12 gap-y-4 py-3;
+      /* Empty rows above and below keep the text and the button together. */
+      grid-template-areas: ". keypad" "title keypad" "error keypad" "button keypad" ". keypad";
+      grid-template-rows: 1fr auto auto auto 1fr;
+    }
+  }
 }
 
 /* Member colors. The root layout injects one rule per member,
