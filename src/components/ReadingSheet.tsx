@@ -210,7 +210,7 @@ export default function ReadingSheet({
             <button onClick={runSearch} disabled={busy || query.trim().length < 2} className="btn-primary px-7 py-4 text-2xl disabled:opacity-40">🔍</button>
           </div>
           {results === null && <SoftKeyboard value={query} onChange={setQuery} onDone={runSearch} doneLabel="Search" />}
-          <div className="min-h-0 overflow-y-auto flex flex-col gap-2.5 pr-1 max-h-[46vh]">
+          <div className="min-h-0 overflow-y-auto flex flex-col gap-2.5 pr-1 max-h-[calc(46vh/var(--fit,1))]">
             {results?.map((r, i) => (
               <button key={i} disabled={busy} onClick={() => startBook(r)} className="tile px-5 py-3 flex items-center gap-4 text-left active:bg-cream-sunken disabled:opacity-50">
                 {r.thumbnail ? (

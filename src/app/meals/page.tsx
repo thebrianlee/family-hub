@@ -99,7 +99,7 @@ export default function MealsPage() {
   return (
     <div className="h-full flex flex-col gap-4 min-h-0">
       {banner && <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 card bg-cream-raised px-10 py-5 text-3xl font-extrabold animate-pop-in">{banner}</div>}
-      <header className="flex items-center justify-between shrink-0">
+      <header className="flex items-center justify-between shrink-0 max-sm:flex-wrap max-sm:gap-2">
         <div>
           <div className="eyebrow mb-1">Meals</div>
           <h1 className="text-4xl font-extrabold tracking-tight">{title}</h1>

@@ -135,7 +135,7 @@ export default function LevelUpPage() {
       <KidPicker selected={kid} onSelect={setKid} />
 
       {/* Streak + badges strip */}
-      <div className="card px-8 py-5 shrink-0 flex items-center gap-8">
+      <div className="card px-8 py-5 shrink-0 flex items-center gap-8 max-sm:flex-wrap max-sm:gap-4 max-sm:px-4">
         <div className="text-center shrink-0">
           <div className={`text-6xl font-extrabold tabular-nums ${theme?.text ?? ""}`}>🔥 {summary?.streak ?? 0}</div>
           <div className="text-xl font-bold text-ink-soft">day streak</div>
@@ -159,7 +159,7 @@ export default function LevelUpPage() {
           </div>
         </div>
         {nextBadge && (
-          <div className="shrink-0 w-[290px]">
+          <div className="shrink-0 w-[290px] max-sm:w-full">
             <div className="eyebrow mb-2">Next Up: {nextBadge.label}</div>
             <div className="h-4 rounded-full bg-cream-sunken overflow-hidden">
               <div
@@ -179,8 +179,8 @@ export default function LevelUpPage() {
           const bestIndex = a.best !== null ? values.lastIndexOf(a.best) : undefined;
           const latestIsBest = a.latest !== null && a.latest === a.best && a.sessions > 1;
           return (
-            <div key={a.activity} className="card flex-1 min-h-[170px] flex items-center gap-7 px-8 shrink-0">
-              <div className="w-[240px] shrink-0">
+            <div key={a.activity} className="card flex-1 min-h-[170px] flex items-center gap-7 px-8 shrink-0 max-sm:flex-wrap max-sm:gap-4 max-sm:px-4 max-sm:py-4">
+              <div className="w-[240px] shrink-0 max-sm:w-auto max-sm:flex-1">
                 <div className="text-3xl font-extrabold flex items-center gap-2">
                   <span>
                     {a.emoji} {a.label}
@@ -198,7 +198,7 @@ export default function LevelUpPage() {
                   {a.totalMinutes > 0 ? ` · ${Math.round(a.totalMinutes)} min total` : ""}
                 </div>
               </div>
-              <div className="w-[260px] shrink-0">
+              <div className="w-[260px] shrink-0 max-sm:w-auto">
                 <div className={`text-5xl font-extrabold tabular-nums ${theme?.text ?? ""}`}>
                   {a.best ?? "—"}
                   <span className="text-2xl text-ink-soft font-bold"> {a.unit}</span>
@@ -218,7 +218,7 @@ export default function LevelUpPage() {
                   </div>
                 )}
               </div>
-              <div className="flex-1 flex justify-center min-w-0">
+              <div className="flex-1 flex justify-center min-w-0 max-sm:order-last max-sm:basis-full">
                 <Sparkline points={values} color={theme?.fill ?? "#5E7B86"} bestIndex={bestIndex} width={330} height={130} />
               </div>
               <button

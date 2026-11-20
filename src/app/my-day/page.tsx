@@ -333,7 +333,7 @@ export default function MyDayPage() {
       )}
 
       {/* Header */}
-      <header className="flex items-center justify-between shrink-0">
+      <header className="flex items-center justify-between shrink-0 max-sm:flex-wrap max-sm:gap-2">
         <div>
           <div className="eyebrow mb-1">Routines</div>
           <h1 className="text-4xl font-extrabold tracking-tight">{myView === "week" ? "This Week" : "Today"}</h1>

@@ -29,7 +29,7 @@ const TEXT: Record<DbBlockedCode, { title: string; body: string[] }> = {
 export default function BlockedScreen({ code }: { code: DbBlockedCode }) {
   const t = TEXT[code];
   return (
-    <div className="h-screen w-screen flex items-center justify-center p-12">
+    <div className="screen-fit flex items-center justify-center p-12">
       <div className="card max-w-3xl p-12 text-center">
         <h1 className="text-5xl font-extrabold tracking-tight">{t.title}</h1>
         {t.body.map((line) => (

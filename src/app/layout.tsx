@@ -13,6 +13,8 @@ import { getSetting } from "@/lib/queries";
 import { getMembers } from "@/lib/household";
 import { enabledModules, enabledTabs, modulesRev } from "@/lib/modules";
 import { memberThemeCss } from "@/lib/member-theme";
+
+import { FIT_SCRIPT } from "./fit-script";
 import { screenUnlocked } from "@/lib/session";
 
 // Bundled in the repo (SIL Open Font License, see fonts/OFL.txt) so builds work
@@ -39,6 +41,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     if (!isDbBlocked(e)) throw e;
     return (
       <html lang="en" className={jakarta.variable}>
+          <head>
+            <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
+          </head>
         <body>
           <BlockedScreen code={e.code} />
         </body>
@@ -54,8 +59,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       // must not reach a browser that hasn't entered the PIN.
       return (
         <html lang="en" className={jakarta.variable}>
+          <head>
+            <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
+          </head>
           <body>
-            <main className="h-screen w-screen">{children}</main>
+            <main className="screen-fit">{children}</main>
           </body>
         </html>
       );
@@ -66,6 +74,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const rev = ready ? modulesRev() : 0;
   return (
     <html lang="en" className={jakarta.variable}>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: FIT_SCRIPT }} />
+      </head>
       <body>
         {ready ? (
           <MembersProvider members={members}>
@@ -73,8 +84,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               {/* One rule per member: .m-<id>{--member:…}. Ids are validated slugs. */}
               <style id="member-colors" dangerouslySetInnerHTML={{ __html: memberThemeCss(members) }} />
               <Ambient>
-                <div className="h-screen w-screen flex flex-col">
-                  <main className="flex-1 min-h-0 px-8 pt-6">{children}</main>
+                <div className="screen-fit flex flex-col">
+                  <main className="app-main flex-1 min-h-0 px-8 pt-6">{children}</main>
                   <TabNav />
                 </div>
               </Ambient>
