@@ -16,6 +16,7 @@ On your laptop, write the card with [Raspberry Pi Imager](https://www.raspberryp
 2. **Customisation:**
    - **Hostname:** `hub`, the Pi's name on your home network.
    - **User:** a username and a password. Keep the password to yourself: you type it only into the Pi's own password prompts.
+   - **Localisation:** your time zone, keyboard layout and Wi-Fi country. The hub takes its time zone from the Pi.
    - **Wi-Fi:** your home network, not a guest network. A network cable works too.
    - **Remote access:** turn **SSH** on, with password authentication, if you will install from your laptop. Leave it off if you will type on the Pi with a keyboard.
 3. **Write.** Then put the card in the Pi, connect the screen and switch it on.
@@ -28,7 +29,7 @@ If Imager says "Error reading from storage", see [If Imager can't read the card]
 
 | Option | Who it's for | You need |
 |---|---|---|
-| [1. Have your AI do it](#1-have-your-ai-do-it) | You use an AI agent that can run commands, such as Claude Code or Codex CLI | That agent, and SSH on in Imager |
+| [1. Have your AI do it](#1-have-your-ai-do-it) | You use an AI agent that can run commands, such as Claude Code or Codex CLI | That agent; on a laptop, SSH on in Imager |
 | [2. One command, by yourself](#2-one-command-by-yourself) | You're fine typing one command | SSH from your laptop, or a keyboard on the Pi |
 | [3. Free AI chat, no app](#3-free-ai-chat-no-app) | You've never done this, and have no paid AI and no app | A free chat AI in your web browser, and SSH from your laptop |
 
@@ -36,7 +37,7 @@ All three run the same [one command](#with-one-command). It shows its plan and a
 
 ### 1. Have your AI do it
 
-Give an AI agent that can run commands, such as Claude Code or Codex CLI, the first of [the prompts](#the-prompts) below. On your laptop it reaches the Pi over SSH (tier B in the [install guide](INSTALL-WITH-AI.md)). It can also run on the Pi itself, if you have a keyboard there (tier A; give it the second prompt, and the guide removes it at the end). It follows the guide: it asks the safety questions first, checks the Pi, and walks you through the one command. You run that command yourself and answer its questions. The agent never runs `sudo` and never sees your passwords or the parent PIN.
+Give an AI agent that can run commands, such as Claude Code or Codex CLI, the first of [the prompts](#the-prompts) below. On your laptop it works over SSH (tier B in the [install guide](INSTALL-WITH-AI.md)): with a temporary key from the guide's [step 1](INSTALL-WITH-AI.md#step-1-put-the-system-on-the-card), the agent can log in to the Pi itself; with only the Pi's password, you log in and run the commands it gives you. It can also run on the Pi itself, if you have a keyboard there (tier A; give it the second prompt, and the guide removes it at the end). It follows the guide: it asks the safety questions first, checks the Pi, and walks you through the one command. You run that command yourself and answer its questions. The agent never runs `sudo` and never sees your passwords or the parent PIN.
 
 ### 2. One command, by yourself
 
