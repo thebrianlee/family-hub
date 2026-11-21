@@ -52,7 +52,7 @@ The `check` status shows up in the search box only after CI has run at least onc
 
 ### Approvals
 
-The ruleset requires no approval. GitHub never lets the author of a pull request approve it, and the project has one maintainer, so a required approval would block every pull request he opens. Instead, @hjunk reviews pull requests from contributors and Dependabot before he merges them ([GOVERNANCE.md](../../GOVERNANCE.md)). That is a project rule; GitHub enforces only the `check` status, squash merging, linear history, resolved conversations, and no force push or deletion.
+The ruleset requires no approval. GitHub never lets the author of a pull request approve it, and the project has one maintainer, so a required approval would block every pull request he opens. Instead, @hjunk reviews pull requests from contributors and Dependabot before he merges them ([GOVERNANCE.md](../../GOVERNANCE.md)). That is a project rule; GitHub enforces only a pull request for every change to `main`, the `check` status, squash merging, linear history, resolved conversations, and no force push or deletion.
 
 When a second maintainer joins, consider Required approvals **1** with **Require review from Code Owners**, and add them to `.github/CODEOWNERS`.
 
