@@ -1510,6 +1510,10 @@ finish() {
         # device's other home address, when it has one.
         if phone=$(phone_ipv4 "$LAPTOP_IPV4"); then
           url="http://$phone:3847"
+        else
+          say "- This device's only address is on the cable your laptop shares its internet over. A phone on"
+          say "  your Wi-Fi may not reach it: if the phone check below can't open the page, connect this device"
+          say "  to your home Wi-Fi or router and use its address there (ip -o -4 addr show scope global)."
         fi
         ;;
     esac

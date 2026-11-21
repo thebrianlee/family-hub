@@ -202,6 +202,7 @@ class PhoneCheckOnACableTests(base.InstallShTestCase):
         )
         self.assertEqual(run.code, 0, run.out + run.err)
         self.assertIn("on a phone on the same Wi-Fi, open http://10.42.0.23:3847", run.out)
+        self.assertIn("only address is on the cable your laptop shares its internet over", run.out)
 
 
 class LinkLocalWithoutSshTests(base.InstallShTestCase):
