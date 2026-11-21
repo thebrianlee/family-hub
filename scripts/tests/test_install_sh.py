@@ -1365,7 +1365,7 @@ class OverSshTests(InstallShTestCase):
         self.assertIn("never in this Terminal", run.out)
         self.assertIn("On the device's own screen, tap the four corners", run.out)
         self.assertIn("SSH is off.", run.out)
-        self.assertIn("doctor --phase final --tier C", run.out)
+        self.assertIn("doctor --phase final --tier B", run.out)
         self.assert_never_destructive(run)
 
     def test_questions_come_in_the_documented_order(self):
@@ -1653,7 +1653,8 @@ class OverSshTests(InstallShTestCase):
         run = self.run_install(SSH_ANSWERS, **SSH_ENV)
         self.assertEqual(run.code, 1, run.out + run.err)
         self.assertEqual(run.err.count("Stopped:"), 1)
-        self.assertIn("leave SSH as it is", run.err)
+        self.assertIn("not what stopped it", run.err)
+        self.assertNotIn("leave SSH as it is", run.err)
         self.assertNotIn("public address, or it allows root login", run.err)
 
     def test_internet_ipv6_is_always_in_the_notice_the_person_accepts(self):

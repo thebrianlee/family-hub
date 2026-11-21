@@ -1257,7 +1257,7 @@ stop_doctor() {
   if [ "$OVER_SSH" = 1 ] && findings_include "$SSH_ON_FOR_INSTALL" && [ "$SSH_CHECKED" = 1 ] && home_network_ok; then
     # Here ssh_policy is the password-SSH result this install expects over
     # SSH (check_ssh_settings passed); the stop is about another check.
-    stop "doctor found something that is not a clean result (see its report above). Its ssh_policy line is the password-SSH result this install expects over SSH: leave SSH as it is. Look up each OTHER check and action in $GUIDE#if-something-goes-wrong"
+    stop "doctor found something that is not a clean result (see its report above). Its ssh_policy line is the password-SSH result expected over SSH during the install, not what stopped it. Look up each OTHER check and action in $GUIDE#if-something-goes-wrong"
   fi
   if [ "$OVER_SSH" = 1 ] && findings_include "$SSH_ON_FOR_INSTALL"; then
     stop "doctor found SSH in a state this install can't accept, even over SSH: it listens on a public address, or it allows root login or empty passwords (ssh_policy). Fix that, or run the command in the device's own Terminal with SSH off: $GUIDE#if-something-goes-wrong"
@@ -1502,7 +1502,11 @@ finish() {
   say "Now restart the device:  sudo reboot"
   say "After the restart, check it once more (guide step 8, the final check):"
   say "  cd ~/sproutwall"
-  say "  ./scripts/sproutwall doctor --phase final --tier C --kiosk $kiosk_flag"
+  if [ "$OVER_SSH" = 1 ]; then
+    say "  ./scripts/sproutwall doctor --phase final --tier B --kiosk $kiosk_flag"
+  else
+    say "  ./scripts/sproutwall doctor --phase final --tier C --kiosk $kiosk_flag"
+  fi
   say "It passes with \"Result: pass\", or with \"Result: unknown\" when the only unknown is app_bind / confirm_trusted_lan."
   if [ "$OVER_SSH" = 1 ]; then
     say "Over SSH, the final check depends on your answer to the SSH question below (guide step 8):"
@@ -1581,7 +1585,8 @@ offer_ssh_off() {
       return 0
     elif ssh_confirmed_off; then
       say "SSH is off: $SSH_STATE_COMMAND prints inactive for both."
-      say "This session stays open until you close it: restart now with sudo reboot."
+      say "This session stays open until you close it. If you used a temporary key, remove it first (guide step 8),"
+      say "then restart now with sudo reboot."
       say "After the restart, run the final check in the device's own Terminal if it has a keyboard. Without one,"
       say "this \"SSH is off\" line and the phone check after the restart stand in for it (guide step 8)."
       say "To use SSH again later, turn it on in the device's own Terminal: $(ssh_on_command)"
