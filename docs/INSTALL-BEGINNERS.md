@@ -41,14 +41,14 @@ Raspberry Pi OS is the Pi's operating system, like Windows or macOS on a laptop.
 
 ### If Imager can't read the card
 
-If Imager says "Error reading from storage. SD card may be broken", the card is often fine. Try these in order:
+If Imager says "Error reading from storage. SD card may be broken", or that verifying the write failed, the card is often fine. Try these in order:
 
 1. Quit Imager.
 2. If the microSD card sits in a full-size SD adapter, find the small lock switch on the adapter's side and slide it to the unlocked position.
 3. **On a Mac:** open System Settings, then Privacy & Security, then Files and Folders. Find Raspberry Pi Imager and allow it to use removable volumes. The names can differ a little between macOS versions.
 4. Take the card out and put it back in. Don't open it in Finder or File Explorer; go straight to Imager.
 5. Try another card reader, or another USB port. Plug the reader into the computer itself, not through a hub or dock.
-6. If the write finishes and only the verifying step fails, write again: it often passes the second time. You can also select **Skip verification** while Imager is verifying (Raspberry Pi's own [Imager guide](https://www.raspberrypi.com/documentation/computers/getting-started.html#install) describes it). Then a bad write goes unnoticed: if the Pi doesn't start, or `hub.local` doesn't answer after five minutes, write the card again.
+6. If the write finishes and only the verifying step fails, write again: it often passes the second time. You can also select **Skip verification** while Imager is verifying (Raspberry Pi's own [Imager guide](https://www.raspberrypi.com/documentation/computers/getting-started.html#install) describes it). Then a bad write goes unnoticed: if the Pi doesn't start or its desktop doesn't appear after five minutes, write the card again.
 7. If it still fails, use another card.
 
 ## 3. Start the Pi
