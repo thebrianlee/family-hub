@@ -6,7 +6,7 @@ Sproutwall (formerly Family Hub) is a family dashboard for a screen in your kitc
 
 **Sproutwall runs on the Raspberry Pi itself, not on your laptop.** You need a Raspberry Pi 4 or 5 running Raspberry Pi OS (64-bit), with its screen attached. A 64-bit computer with Debian or Ubuntu works too. Your laptop writes the SD card and, if you like, logs in to the Pi over SSH, so the Pi needs no keyboard.
 
-New to Raspberry Pi? [The step-by-step guide](docs/INSTALL-BEGINNERS.md) goes from a blank SD card to the hub on your kitchen screen, with a keyboard on the Pi.
+New to Raspberry Pi? Two step-by-step guides go from a blank SD card to the hub on your kitchen screen: [from your laptop over SSH](docs/INSTALL-OVER-SSH.md), with no keyboard on the Pi, or [with a keyboard on the Pi](docs/INSTALL-BEGINNERS.md).
 
 ### Before you start: put the system on the card
 
