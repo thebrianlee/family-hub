@@ -1,8 +1,8 @@
 # Install Sproutwall: a step-by-step guide for beginners
 
-This guide is for you if you have never used a Raspberry Pi, a Terminal or GitHub. If you can use a laptop and a web browser, you can do this. A chat AI (an AI assistant you talk to on a web page) is optional.
+This guide is for you if you have never used a Raspberry Pi, a Terminal or GitHub, and you have a keyboard for the Pi. No keyboard? [Install from your laptop over SSH](INSTALL-OVER-SSH.md) instead. If you can use a laptop and a web browser, you can do this. A chat AI (an AI assistant you talk to on a web page) is optional.
 
-It takes you from "I have a Pi, a screen and an SD card" to Sproutwall on your kitchen screen. In this guide, "the hub" means Sproutwall running on your Pi. You prepare the card and start the Pi yourself. Then you install the hub in one of two ways: with [one command](#5-install-with-one-command-no-ai-needed) that asks a few questions, or with [a chat AI](#6-install-with-your-ai-assistant) that walks you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) one command at a time. That page stays the full reference. This one gets you to the point where the install takes over, tells you what you will see on the way, and lists what never to share.
+It takes you from "I have a Pi, a screen and an SD card" to Sproutwall on your kitchen screen. In this guide, "the hub" means Sproutwall running on your Pi. You prepare the card and start the Pi yourself. Then you install the hub in one of two ways: with [one command](#5-install-with-one-command-no-ai-needed) that asks a few questions, or with [a chat AI](#6-install-with-your-ai-assistant) that walks you through [INSTALL-WITH-AI.md](../INSTALL-WITH-AI.md) one command at a time. That page stays the full reference. This one gets you to the point where the install takes over, tells you what you will see on the way, and lists what never to share. This guide uses a keyboard on the Pi. To install from your laptop over SSH instead, with no keyboard on the Pi, see the README's [three install options](../README.md#choose-how-to-install).
 
 > **Early preview.** The guided install is new. It has been tested several times in a Debian 13 virtual machine (a computer simulated inside another computer), with an AI agent following the guide and the household set up on the screen. It has not yet been tested end to end on a real Raspberry Pi. The one-command install is new too, and has not been tried on a Raspberry Pi yet. If you try either, please tell us how it went with an [install report](https://github.com/thebrianlee/sproutwall/issues/new?template=install_report.yml), whether it worked or not.
 
@@ -41,14 +41,15 @@ Raspberry Pi OS is the Pi's operating system, like Windows or macOS on a laptop.
 
 ### If Imager can't read the card
 
-If Imager says "Error reading from storage. SD card may be broken", the card is often fine. Try these in order:
+If Imager says "Error reading from storage. SD card may be broken", or that verifying the write failed, the card is often fine. Try these in order:
 
 1. Quit Imager.
 2. If the microSD card sits in a full-size SD adapter, find the small lock switch on the adapter's side and slide it to the unlocked position.
 3. **On a Mac:** open System Settings, then Privacy & Security, then Files and Folders. Find Raspberry Pi Imager and allow it to use removable volumes. The names can differ a little between macOS versions.
 4. Take the card out and put it back in. Don't open it in Finder or File Explorer; go straight to Imager.
-5. Try another card reader, or another USB port.
-6. If it still fails, use another card.
+5. Try another card reader, or another USB port. Plug the reader into the computer itself, not through a hub or dock.
+6. If the write finishes and only the verifying step fails, write again: it often passes the second time. You can also select **Skip verification** while Imager is verifying (Raspberry Pi's own [Imager guide](https://www.raspberrypi.com/documentation/computers/getting-started.html#install) describes it). Then a bad write goes unnoticed: if the Pi doesn't start or its desktop doesn't appear after five minutes, write the card again.
+7. If it still fails, use another card.
 
 ## 3. Start the Pi
 
