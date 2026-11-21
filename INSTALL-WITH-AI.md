@@ -68,7 +68,7 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
 
 This guide puts Sproutwall on a Raspberry Pi, or on another 64-bit computer running Debian or Ubuntu, and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
 
-> **AI assistants, read this first.** Whether the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A) or logged in from a laptop over SSH (tier B), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1), and open the Terminal and run the 64-bit check (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only when the person asks to go step by step, or when the one command can't be used.
+> **AI assistants, read this first.** Whether the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A) or logged in from a laptop over SSH (tier B), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1), and open the Terminal and run the 64-bit check (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only when the person asks to go step by step, or when the one command can't be used. The README's three [install options](README.md#choose-how-to-install) map to the tiers: an AI agent doing it is tier A (on the device) or B (on the laptop, over SSH); the one command by yourself is tier B over SSH, or [Without AI](#without-ai) at the device; a free chat AI is tier B next to an SSH window, or tier C at the device.
 
 The hub needs no cloud account and no subscription. The hub never signs in to anything, and the only GitHub tool used, `gh`, runs without an account. If the AI assistant runs on the device itself (tier A below), that assistant signs in to its own service, and step 8 removes it.
 
@@ -107,7 +107,7 @@ The AI may not decide this itself. It asks the owner, and an empty result from t
 
 New to Raspberry Pi, the Terminal or GitHub? Start with [the step-by-step guide for beginners](docs/INSTALL-BEGINNERS.md): it gets the Pi ready and then brings you back here.
 
-Give your assistant this prompt:
+Over SSH from a laptop (tier B), give your assistant the README's SSH prompt ([The prompts](README.md#the-prompts)). At the device's own Terminal, give it this prompt:
 
 ```text
 Help me install Sproutwall on my Raspberry Pi, set up for our family. I'm at the Pi's own Terminal and will run this one command myself:
@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install
 The guide is https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md. Explain each question the command asks me, and help me if it stops. Ask me whatever you need.
 ```
 
-A chat-only AI cannot open your Pi, so open it in the Pi's own web browser: you then copy each command straight into the Pi's Terminal. The prompt gives it the one command and this guide's address; it names the command itself because a chat assistant may not read the whole guide. If it cannot open web pages, paste this guide into the chat instead.
+A chat-only AI cannot open your Pi, so open it in the Pi's own web browser: you then copy each command straight into the Pi's Terminal. Over SSH, open it on your laptop next to your SSH window instead, and copy each command into that window. The prompt gives it the one command and this guide's address; it names the command itself because a chat assistant may not read the whole guide. If it cannot open web pages, paste this guide into the chat instead.
 
 The assistant then explains each question [the one command](README.md#with-one-command) asks. If you'd rather go step by step, say so, for example: *Read https://github.com/thebrianlee/sproutwall/blob/main/INSTALL-WITH-AI.md and walk me through it step by step.*
 
