@@ -572,7 +572,7 @@ After an install over SSH (tier B), in this preview:
 
 Any other unknown, and any other fail, is still a stop.
 
-Finally, restart with `sudo reboot` (skip this only if you already restarted after the one command finished; going step by step over SSH, run it now in the still-open SSH session, also when SSH is off and there is no keyboard), then check once more, with no assistant:
+Finally, restart with `sudo reboot` (skip this only if you already restarted after the one command finished; going step by step over SSH, run it now: in the still-open SSH session, also when SSH is off and there is no keyboard, or in the device's own Terminal if you have a keyboard and already closed that session), then check once more, with no assistant:
 
 - **With the kiosk:** the hub comes back on the screen by itself.
 - **Without the kiosk** (no kiosk, or a screen set up by hand): in the device's own Terminal, or over SSH if you kept SSH on, run the two checks below. With no keyboard and SSH off you can't run them: then the phone check below is the check. `ps` must show `healthy`, and the health check must print `"ok":true`. Right after the restart, `ps` can show `health: starting` for up to a minute: wait 30 seconds and run both checks again before you treat it as a problem. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.

@@ -1483,8 +1483,9 @@ finish() {
         else
           url="http://<its home-network address>:3847"
           say "- This device has no home Wi-Fi or router address, only the cable to your laptop, so no phone can"
-          say "  reach it yet. Connect it to your home network for the phone check below. Its address is then the"
-          say "  first one hostname -I shows that does not start with 169.254. or 172.17."
+          say "  reach it yet. Connect it to your home network for the phone check below. Then run"
+          say "  ip -o -4 addr show scope global and use the address on the Wi-Fi or cable line (often wlan0 or eth0),"
+          say "  never one on a docker0, br- or veth line."
         fi
         ;;
     esac
@@ -1600,6 +1601,7 @@ offer_ssh_off() {
   say "Keeping SSH on is your own responsibility. The final check then reports ssh_policy and temporary_access"
   say "(the SSH session) as expected for that choice; every other check must pass (guide step 8)."
   say "Turn it off later with: $(ssh_off_command)"
+  say "If you used a temporary key: guide step 8 says when to remove it (keep it if it is your only login)."
 }
 
 # --- main ---------------------------------------------------------------------------------

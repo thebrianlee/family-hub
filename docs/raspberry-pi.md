@@ -224,7 +224,7 @@ Use your own new PIN instead of `4827`. Every screen then asks for the new PIN.
 
 - Is the phone on the same Wi-Fi as the Pi? Guest networks often keep devices apart. So can a VPN app on the phone.
 - Did you type `http://` (not `https://`) and `:3847` at the end?
-- Did the Pi's address change? Run `hostname -I` again, and set a DHCP reservation in your router.
+- Did the Pi's address change? Run `ip -o -4 addr show scope global` again and use the Wi-Fi or cable line ([step 5](#step-5-find-the-hubs-address)), and set a DHCP reservation in your router.
 - Is the hub running? `docker compose ps` should say `healthy`. If not, `docker compose logs` shows why.
 - Does the Pi's own screen work with `http://localhost:3847`? If yes, the hub is fine and the problem is the network between the phone and the Pi.
 
