@@ -300,7 +300,7 @@ The first line must be `aarch64` or `x86_64`, and the second `64bit`.
 
 ## Step 3: Install the tools and get the code
 
-**Skip steps 3 to 7 when the one command finished (every tier).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. If the person declined the install plan or the home-network rule, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). A "no" to a later question (turning on desktop autologin, or trying the screen setup again) leaves the hub installed and running: the run goes on to its summary, which says what is left to do. If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for a person who asked to go step by step, and for when the one command can't be used. Over SSH with password SSH, don't go step by step: in this preview the doctor in step 5 reports password SSH as `ssh_policy` fail, because only the one command runs its own SSH checks. Use the one command instead, before anything from step 3 is on the device.
+**Skip steps 3 to 7 when the one command finished (every tier).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. Over SSH, if a temporary key from step 1 was used, remove it first, in the still-open session, before the restart (step 8, the temporary key, its steps 1 to 3); then restart. If the person declined the install plan or the home-network rule, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). A "no" to a later question (turning on desktop autologin, or trying the screen setup again) leaves the hub installed and running: the run goes on to its summary, which says what is left to do. If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for a person who asked to go step by step, and for when the one command can't be used. Over SSH with password SSH, don't go step by step: in this preview the doctor in step 5 reports password SSH as `ssh_policy` fail, because only the one command runs its own SSH checks. Use the one command instead, before anything from step 3 is on the device.
 
 ### Install the tools
 
@@ -438,7 +438,7 @@ curl -fsS --max-time 3 http://127.0.0.1:3847/api/health
 - The health check must print one line with `"ok":true`. It also shows `version` and `schema`, and `"setup":false` until step 6.
 - If `curl` reports error `503` instead, the database is blocked. Stop. Don't start over with a new volume. The hub's own message is in `docker compose -f docker-compose.preview.yml logs`: read it yourself, don't paste it into a chat.
 
-Then run the first check. Put your tier letter after `--tier` (A, B or C; C also when you work without AI):
+Then run the first check. Put your tier letter after `--tier` (A, B or C). Without an AI, use C on the device's own Terminal, and B when you work over SSH from a laptop:
 
 ```bash
 ./scripts/sproutwall doctor --json --phase running --tier A
@@ -519,7 +519,7 @@ The final check below looks for these tools, their folders and any autostart ent
 
 **Tier B.** Turning SSH off is the safe choice. The one command's last question turns it off; if it printed `SSH is off`, it is off. If you went step by step, turn it off now, in your SSH session (it stays open) or in the Pi's own Terminal: `sudo raspi-config nonint do_ssh 1` (Debian or Ubuntu: `sudo systemctl disable --now ssh.socket ssh.service`), then run `systemctl is-active ssh.service ssh.socket` in the same place: it is off only when that prints `inactive` for both. If you answered no because you want to keep SSH on, leave it on: that is your choice and your own responsibility, and the final check below says what it reports then. To turn it off later, use the same command. Close the AI session on the laptop.
 
-Only if you used a temporary key from step 1, also remove it while an SSH session is still open: with the one command, after its last question and before you restart (its session stays open even with SSH off); going step by step, before you turn SSH off; with SSH kept on, any time. If SSH is already off and the session is closed, do step 2 below in the Pi's own Terminal; without a keyboard, step 4 on the laptop still deletes the only copy of the key:
+Only if you used a temporary key from step 1, also remove it while an SSH session is still open: with the one command, after its last question and before you restart (its session stays open even with SSH off); going step by step, before you turn SSH off; with SSH kept on, any time, but only if you can still log in another way: a password login (from the laptop, `ssh -o PubkeyAuthentication=no <user>@hub.local true` asks for the password and returns without an error) or another key in the list from `ssh-keygen -lf ~/.ssh/authorized_keys`. If the temporary key is your only way in and you keep SSH on, keep it: it is now your login key, not a temporary one, so keep the laptop's copy safe and skip the steps below. If SSH is already off and the session is closed, do step 2 below in the Pi's own Terminal; without a keyboard, step 4 on the laptop still deletes the only copy of the key:
 
 1. On the laptop, show the temporary key's fingerprint, and keep it on screen:
 
@@ -572,7 +572,7 @@ After an install over SSH (tier B), in this preview:
 
 Any other unknown, and any other fail, is still a stop.
 
-Finally, restart with `sudo reboot`, then check once more, with no assistant:
+Finally, restart with `sudo reboot` (skip this if you already restarted after the one command finished, or SSH is off and there is no keyboard: the restart after the one command counts), then check once more, with no assistant:
 
 - **With the kiosk:** the hub comes back on the screen by itself.
 - **Without the kiosk** (no kiosk, or a screen set up by hand): in the device's own Terminal, or over SSH if you kept SSH on, run the two checks below. With no keyboard and SSH off you can't run them: then the phone check below is the check. `ps` must show `healthy`, and the health check must print `"ok":true`. Right after the restart, `ps` can show `health: starting` for up to a minute: wait 30 seconds and run both checks again before you treat it as a problem. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
@@ -641,6 +641,6 @@ If `--undo` refuses because a file was changed after setup (for example in Contr
 
 The easiest way without AI is the one-command install in the README, [With one command](README.md#with-one-command): on the device, it shows the install plan, asks you, and then runs steps 3 to 5 and 7 for you.
 
-Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
+Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. Over SSH from a laptop, use the one command instead; going step by step over SSH needs key-only SSH in this preview, follows the tier B parts, and uses `--tier B`. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
 
 For a hub that builds on the device instead of using the prebuilt image, see the [Raspberry Pi guide](docs/raspberry-pi.md).

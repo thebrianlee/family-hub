@@ -1254,7 +1254,12 @@ stop_doctor() {
   say ""
   say "doctor's own report:"
   as_docker_group ./scripts/sproutwall doctor --phase "$phase" --tier "$DOCTOR_TIER" || true
-  if [ "$OVER_SSH" = 1 ] && findings_include "ssh_policy fail review_ssh"; then
+  if [ "$OVER_SSH" = 1 ] && findings_include "$SSH_ON_FOR_INSTALL" && [ "$SSH_CHECKED" = 1 ] && home_network_ok; then
+    # Here ssh_policy is the password-SSH result this install expects over
+    # SSH (check_ssh_settings passed); the stop is about another check.
+    stop "doctor found something that is not a clean result (see its report above). Its ssh_policy line is the password-SSH result this install expects over SSH: leave SSH as it is. Look up each OTHER check and action in $GUIDE#if-something-goes-wrong"
+  fi
+  if [ "$OVER_SSH" = 1 ] && findings_include "$SSH_ON_FOR_INSTALL"; then
     stop "doctor found SSH in a state this install can't accept, even over SSH: it listens on a public address, or it allows root login or empty passwords (ssh_policy). Fix that, or run the command in the device's own Terminal with SSH off: $GUIDE#if-something-goes-wrong"
   fi
   stop "doctor found something that is not a clean result (see its report above). Don't work around it: look up each check and action in $GUIDE#if-something-goes-wrong"
@@ -1478,8 +1483,10 @@ finish() {
         if phone=$(phone_ipv4); then
           url="http://$phone:3847"
         else
+          url="http://<its home-network address>:3847"
           say "- This device has no home Wi-Fi or router address, only the cable to your laptop, so no phone can"
-          say "  reach it yet. Connect it to your home network for the phone check below."
+          say "  reach it yet. Connect it to your home network for the phone check below. Its address is then the"
+          say "  first one hostname -I shows that does not start with 169.254. or 172.17."
         fi
         ;;
     esac

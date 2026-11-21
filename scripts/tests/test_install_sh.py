@@ -1647,6 +1647,15 @@ class OverSshTests(InstallShTestCase):
         self.assertEqual(run.code, 1, run.out + run.err)
         self.assertNotIn("sshd -T", "\n".join(run.log))
 
+    def test_another_fail_next_to_the_expected_ssh_result_does_not_blame_ssh(self):
+        # Password SSH gives the expected ssh_policy fail; a separate check fails too.
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), bridge_bind=("fail", "restrict_ports"), **TRUSTED_LAN)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("leave SSH as it is", run.err)
+        self.assertNotIn("public address, or it allows root login", run.err)
+
     def test_internet_ipv6_is_always_in_the_notice_the_person_accepts(self):
         # Always stated, so the consent covers an internet IPv6 address that appears only later.
         for hostnames in ("192.168.1.50 2001:db8::50 fe90::50", "192.168.1.50 fd12:3456::50 fe90::50"):
