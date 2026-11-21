@@ -94,7 +94,7 @@ The hub uses port 3847.
 
 To find the computer's LAN address (`<lan-ip>`):
 
-- Linux or Raspberry Pi: run `hostname -I`. Use the first number.
+- Linux or Raspberry Pi: run `ip -o -4 addr show scope global` and use the address on the line for your Wi-Fi or network cable (often `wlan0` or `eth0`), for example `192.168.1.50` from `inet 192.168.1.50/24`. Never use an address on a `docker0`, `br-` or `veth` line (Docker's own network, for example `172.17.0.1`): no phone can reach it. Never use one that starts with `169.254.` either (a cable straight to a laptop).
 - Mac: System Settings, then Wi-Fi, then Details next to your network.
 - Windows: run `ipconfig` and look for "IPv4 Address".
 

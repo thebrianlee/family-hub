@@ -466,7 +466,7 @@ cd ~/sproutwall
 
 Same rule as before: exit 0, or exit 2 with only `app_bind` / `confirm_trusted_lan`.
 
-**Phone check.** Run `hostname -I` and take the first address that does not start with `169.254.` (that one reaches only a laptop on a direct cable), for example `192.168.1.50`. On a phone on the same Wi-Fi, open `http://192.168.1.50:3847` (with your address). It must show **Unlock this screen** and ask for the PIN. It must not show the family. If it shows the family without asking, stop. If the phone cannot reach it, see [A phone or tablet can't reach the hub](docs/raspberry-pi.md#a-phone-or-tablet-cant-reach-the-hub). Never forward a port, publish the bridge or turn the lock off to make the phone work.
+**Phone check.** On the device, run `ip -o -4 addr show scope global` and use the address on the line for your Wi-Fi or network cable (often `wlan0` or `eth0`), for example `192.168.1.50` from `inet 192.168.1.50/24`. Never use an address on a `docker0`, `br-` or `veth` line (Docker's own network, for example `172.17.0.1`): no phone can reach it. Never use one that starts with `169.254.` either (a cable straight to a laptop). On a phone on the same Wi-Fi, open `http://192.168.1.50:3847` (with your address). It must show **Unlock this screen** and ask for the PIN. It must not show the family. If it shows the family without asking, stop. If the phone cannot reach it, see [A phone or tablet can't reach the hub](docs/raspberry-pi.md#a-phone-or-tablet-cant-reach-the-hub). Never forward a port, publish the bridge or turn the lock off to make the phone work.
 
 ## Step 7: Set up the screen
 

@@ -180,17 +180,15 @@ home_network_ok() {
   return 0
 }
 
-# Guide step 6, phone check: "Run hostname -I and take the first address".
+# Guide step 6, phone check: the address on the Wi-Fi or cable line of
+# ip -o -4 addr show, never Docker's own network or a 169.254 cable address
+# (phone_ipv4).
 first_lan_address() {
   local address
-  for address in $(hostname -I 2>/dev/null || true); do
-    case "$address" in
-      *.*)
-        printf '%s\n' "$address"
-        return 0
-        ;;
-    esac
-  done
+  if address=$(phone_ipv4); then
+    printf '%s\n' "$address"
+    return 0
+  fi
   printf '<lan-ip>\n'
 }
 

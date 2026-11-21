@@ -1364,7 +1364,7 @@ class OverSshTests(InstallShTestCase):
         self.assertIn("this computer", run.out)
         self.assertIn("never in this Terminal", run.out)
         self.assertIn("On the device's own screen, tap the four corners", run.out)
-        self.assertIn("SSH is off.", run.out)
+        self.assertIn("SSH is off: systemctl is-active ssh.service ssh.socket prints inactive for both.", run.out)
         self.assertIn("doctor --phase final --tier B", run.out)
         self.assert_never_destructive(run)
 
