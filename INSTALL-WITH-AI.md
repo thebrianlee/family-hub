@@ -68,7 +68,7 @@ MAINTAINER NOTE. Not part of the install. Assistants reading this file: skip thi
 
 This guide puts Sproutwall on a Raspberry Pi, or on another 64-bit computer running Debian or Ubuntu, and ends with the hub on your kitchen screen. An AI assistant can walk you through it, or you can follow the same steps by hand.
 
-> **AI assistants, read this first.** When the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1), and open the Terminal and run the 64-bit check (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only in tier B, when the person asks to go step by step, or when the one command can't be used.
+> **AI assistants, read this first.** Whether the person is at the device's own Terminal (you are a chat-only AI, tier C, or you run on the device, tier A) or logged in from a laptop over SSH (tier B), the install is **one command**, not steps 3 to 7. Ask the [First](#first-is-sproutwall-already-on-this-device) safety question, get the system on the card (step 1), and open the Terminal and run the 64-bit check (step 2). Then have the person run the one command and explain its questions, as [For the AI reading this](#for-the-ai-reading-this) says. Walk through steps 3 to 7 one block at a time only when the person asks to go step by step, or when the one command can't be used.
 
 The hub needs no cloud account and no subscription. The hub never signs in to anything, and the only GitHub tool used, `gh`, runs without an account. If the AI assistant runs on the device itself (tier A below), that assistant signs in to its own service, and step 8 removes it.
 
@@ -125,35 +125,38 @@ The assistant then explains each question [the one command](README.md#with-one-c
 
 You are helping a parent install a home appliance. Follow these rules for the whole install.
 
-**Default path in tiers A and C: the one command.** Every install command runs on the device, never on the person's laptop: the laptop only writes the card (and, in tier B, holds the SSH session). In tiers A and C the person is at the device's own Terminal. Once the [First](#first-is-sproutwall-already-on-this-device) question is answered and the system is on the card (step 1), have the person run the one command from the README's [With one command](README.md#with-one-command) in the device's own Terminal, as themselves and not with `sudo`:
+**Default path in every tier: the one command.** Every install command runs on the device, never on the person's laptop: the laptop only writes the card (and, in tier B, holds the person's SSH session). In tiers A and C the person is at the device's own Terminal; in tier B they are logged in from the laptop over SSH (step 2). Once the [First](#first-is-sproutwall-already-on-this-device) question is answered and the system is on the card (step 1), have the person run the one command from the README's [With one command](README.md#with-one-command), in the device's own Terminal or, in tier B, in their own SSH session, as themselves and not with `sudo`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thebrianlee/sproutwall/main/install.sh | bash
 ```
 
-The person runs it, never you, because it runs `sudo` (rule 2); in tier A, in a second Terminal window. It checks the device first (64-bit, supported, not root, no hub already there) and changes nothing if something is wrong. It never touches an existing hub or its data: if it finds one before installing anything, nothing is changed; if it only finds one after installing the tools, it stops there and says so. Then it runs steps 3 to 5 and 7 for the person, waits during step 6, and runs doctor itself. Explain its questions, in the order it asks them:
+The person runs it, never you, because it runs `sudo` (rule 2); in tier A, in a second Terminal window; in tier B, in their own SSH session, typing the `sudo` password there. It checks the device first (64-bit, supported, not root, no hub already there) and changes nothing if something is wrong. It never touches an existing hub or its data: if it finds one before installing anything, nothing is changed; if it only finds one after installing the tools, it stops there and says so. Then it runs steps 3 to 5 and 7 for the person, waits during step 6, and runs doctor itself. Explain its questions, in the order it asks them:
 
 1. **How the screen hangs** (decision 2), on Raspberry Pi OS only; Debian and Ubuntu skip it. Enter means portrait. Choosing no kiosk skips the screen setup (step 7).
 2. **The install plan** (decision 3). The script prints every command it runs with `sudo`, including the exact Docker and GitHub CLI commands, with why and how to undo each. That is the plan of rule 2: the person reads it and types `y` to approve it.
-3. **Possibly the device's password, right after the approval.** Only when Docker is already installed but the person's account cannot reach it, or Docker's data folder from an earlier install is left: a read-only `sudo` look for an existing hub, before anything changes.
+3. **Possibly the device's password, right after the approval** (over SSH: only after the SSH risk below is accepted). Only when Docker is already installed but the person's account cannot reach it, or Docker's data folder from an earlier install is left: a read-only `sudo` look for an existing hub, before anything changes.
 4. **The home-network rule.** The person types `y` only if it is true.
-5. **The device's password when the installs start**, and again later if `sudo` asks.
+5. **Over SSH only (tier B): the SSH risk.** The script says that while SSH is on, and especially if it accepts passwords, anyone on the home network who knows or guesses the device's password can log in, and that keeping the device, its password and the network safe is the person's own responsibility. The person answers this themselves: you must not answer it or urge them to accept it. As for the plan and the home-network rule, the script accepts exactly `y`, `yes`, `Y`, `Yes` and `YES` (spaces and tabs around the answer are ignored). Anything else, or Enter alone, cancels: it ends with a plain message that nothing was changed, and prints no `Stopped:` line. The notice also always says that if the network gives the device an internet (IPv6) address and the router allows incoming connections, SSH could be reachable from the internet.
+6. **Over SSH only: the device's password for a read-only look at the SSH settings** (`sudo sshd -T -C …` for this session as root and as the person's account, and one `sudo sh -c 'cat …'` that reads `sshd_config` and every `sshd_config.d/*.conf` as root; any read error stops the script). The script stops, with nothing changed, if SSH allows root login with a password or empty passwords, or has a `Match` rule or an `Include` outside `/etc/ssh/sshd_config.d` (written either as `Keyword value` or `Keyword=value`).
+7. **The device's password when the installs start**, and again later if `sudo` asks.
+8. **Over SSH only, at the very end: turn SSH off?** Turning it off is the safe choice; the person decides. A no leaves SSH on, as their own responsibility; the final check then reports `ssh_policy` and `temporary_access` as expected for that choice ([step 8](#step-8-remove-the-assistant-and-check-once-more)). If a temporary key was used, have the person remove it ([step 8](#step-8-remove-the-assistant-and-check-once-more)) in the open session before restarting.
 
-The password always goes only into `sudo`'s own prompt. For the plan and the home-network rule, the script accepts exactly `y`, `yes`, `Y`, `Yes` and `YES`, after ignoring spaces and tabs before or after the answer (so ` yes ` also approves). Anything else, or Enter alone, cancels: the script ends successfully with a plain message that nothing was changed, and prints no `Stopped:` line. That is not an error to fix: end the session, or ask the person whether they want to continue.
+The password always goes only into `sudo`'s own prompt. For the plan, the home-network rule and the SSH risk, the script accepts exactly `y`, `yes`, `Y`, `Yes` and `YES`, after ignoring spaces and tabs before or after the answer (so ` yes ` also approves). Anything else, or Enter alone, cancels: the script ends successfully with a plain message that nothing was changed, and prints no `Stopped:` line. That is not an error to fix: end the session, or ask the person whether they want to continue.
 
-**Tier B does not use the one command.** The script runs its checks with `--tier C`, and that check fails while SSH is on, which tier B needs until step 8. So a tier B install would stop after the hub started. In tier B, follow steps 3 to 7 below, with `--tier B`.
+**Tier B uses the same command.** The person logs in from the laptop (step 2) and runs it in that SSH session. The script notices the SSH session and refuses one that does not come from the home network (a private, link-local or unique-local address, or a global IPv6 address in the device's own on-link prefix). It also stops, with nothing changed, if the device has no IPv4 home-network address that the laptop reaches (the address the SSH session came in on, or otherwise an IPv4 address on the network interface the SSH session uses, never a Docker or bridge address), because the laptop's browser reaches the hub over IPv4 only. It checks as tier B: SSH may stay on until the final check, password logins included, but never on a public address or with root login or empty passwords. Before any change it checks SSH itself, read-only with `sudo`: no root login with a password, no empty passwords, no `Match` rule and no `Include` outside `/etc/ssh/sshd_config.d`. It does this because the doctor in the pinned build may be older and still report password SSH as `ssh_policy` fail. The device's IPv4 addresses must be home-network only, checked again each time a doctor `ssh_policy` result is passed, so SSH can't listen on a public IPv4 address; the notice the person accepts always covers an internet IPv6 address. Only after these checks does it continue past `ssh_policy` fail or unknown during the install. The household is set up in the laptop's browser, at the address the script prints. At the end it offers to turn SSH off. You never run the command or `sudo` for the person, even though your own shell reaches the device.
 
-When it says "Set up your household now", pause as rule 3 says; the person sets up the household on the device's own screen and then presses Enter in the Terminal. At the end it prints a summary with the phone check, and tells the person to restart and run the final check (step 8). If it stops, it prints one line that starts with `Stopped:` and says why and what to do. Ask for that line and `doctor --json` output only (rule 6), look both up in [If something goes wrong](#if-something-goes-wrong), and continue by hand from the step the line names. Steps 3 to 7 below stay the fallback when the person prefers to go step by step, in tier B, or when the one command can't be used. The rules below apply on both paths.
+When it says "Set up your household now", pause as rule 3 says; the person sets up the household on the device's own screen (tier B: in the laptop's browser) and then presses Enter in the Terminal. At the end it prints a summary with the phone check, and tells the person to restart and run the final check (step 8). If it stops, it prints one line that starts with `Stopped:` and says why and what to do. Ask for that line and `doctor --json` output only (rule 6), look both up in [If something goes wrong](#if-something-goes-wrong), and continue by hand from the step the line names. Steps 3 to 7 below stay the fallback when the person prefers to go step by step, or when the one command can't be used. Over SSH (tier B), going step by step needs key-only SSH in this preview ([step 1](#step-1-put-the-system-on-the-card)): only the one command runs its own SSH checks, so with password SSH the step-by-step doctor reports `ssh_policy` fail. With password SSH, use the one command. The rules below apply on both paths.
 
-1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is a stated exception to the five-decision limit: ask it even if the five are used up. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
-2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command into the device's own Terminal. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
+1. **Questions.** Before step 1, follow [First](#first-is-sproutwall-already-on-this-device). Erasing the card needs the owner's own confirmation that it is new or blank, or that the household is backed up off the device. Your own check can only find a hub; it can never clear one. This safety question is a stated exception to the five-decision limit: ask it even if the five are used up. The one command's own questions, including its SSH-risk question over SSH, belong to the person: never answer them for the person or urge them to say yes. Then ask at most the [five decisions](#the-five-decisions), each once. Don't ask for model numbers, addresses or anything you can find out yourself. Work out the tier (decision 1) yourself when it is obvious: you run in a terminal on the device (A), you run on another computer with a shell (B), or you can only chat (C).
+2. **Privileged commands.** Before the first `sudo`, show the [install plan](#the-install-plan-decision-3): every privileged command, why it is needed, what it changes and how to undo it. One approval covers that plan only. The person types every `sudo` command themselves, in the device's own Terminal or, in tier B, in their own SSH session. You never run `sudo`, even where it would work without a password. If anything needs a privileged change that is not in the plan, stop, explain it and note it. Don't fold it into the earlier approval. Never edit sudoers, and never add any account other than the person's own to the `docker` group. In tiers A and B you run as that account, so you can control Docker while you are installed: say so when you show the plan ([Known gap](#known-gap-the-ai-and-the-docker-group)).
 3. **Secrets.** Never ask for, read, log or repeat a PIN, password, calendar link, token, API key or Wi-Fi password. The person types these only into the hub's own screen, into `sudo`'s prompt or into a tool's own sign-in page. While the person sets up the household and the PIN (step 6), pause: run nothing, read nothing and take no screenshots until they say they are done.
 4. **Home network only.** Never expose the hub beyond the home network: no port forwarding, no tunnel, no public server. Never set `REQUIRE_AUTH_FOR_READS` to `0`. Never publish the Ask bridge port `8787`. Don't change the port binding.
 5. **The image.** Start only the image that `verify-image` verified, and only after it exits 0. Never skip verification. Never pull or run the `:preview` tag. Never sign in to `gh` and never set a GitHub token. In this install, always run `docker compose` with `-f docker-compose.preview.yml`. The only change to the checkout is the one image line in step 4.
 6. **What you see.** Ask for, and share, only `doctor --json` output (safe by design) and, as the one stated exception, the short status each step names, such as an exit code, `healthy` or `Result: ok`, or the one command's single `Stopped:` line. Never paste raw logs, config files, `docker inspect` output or screenshots of the hub.
-7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
+7. **When to stop.** Stop on any doctor `fail`. Stop on any doctor `unknown`, with one exception: you may continue on exit 2 when the only unknown is `app_bind` with action `confirm_trusted_lan`, and the person confirmed the home-network rule in decision 3. Write that down as a known gap; it is not a clean pass. In this preview there are more, at the final check after an install over SSH only ([step 8](#step-8-remove-the-assistant-and-check-once-more)). With SSH off, `ssh_policy` unknown (`review_ssh`) and `temporary_access` unknown (`retry_local`) may appear when an SSH settings file that only root can read is on the device (Raspberry Pi Imager can write one), even though SSH is off: continue on those two only if `systemctl is-active ssh.service ssh.socket` prints `inactive` for both; otherwise stop. If the person chose to keep SSH on, `ssh_policy` (fail or unknown) and `temporary_access` (fail `remove_agent` because of the SSH session, or unknown `retry_local`) are expected for that choice. No other `ssh_policy` or `temporary_access` result is an exception. Also stop when `verify-image` exits non-zero or the health check is not `"ok":true`. Never work around a stop: no new volume, no other port, no disabled check.
 8. **Data.** Never run `docker compose down -v` or `docker volume rm`, and never delete the `sproutwall` folder. The household lives in the Docker volume.
-9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: the temporary key is removed at both ends, and SSH is closed and turned off. Tier C: nothing to remove. Show the person how, and say when it is done.
+9. **Leave, also on an early stop.** At the end, and also whenever you stop on a doctor `fail` or an unexpected `unknown`, or the person ends the session early, the cleanup from [step 8](#step-8-remove-the-assistant-and-check-once-more) applies for your tier. Tier A: the AI tool and its sign-in are removed. Tier B: SSH is turned off unless the owner chose to keep it on ([question 8](#for-the-ai-reading-this)), and, if one was made, the temporary key is removed at both ends. Tier C: nothing to remove. Show the person how, and say when it is done.
 
 When a chat-only AI (tier C) goes step by step, which is only when the person asks for it or the one command can't be used, give one block at a time and wait for its short result before the next.
 
@@ -186,7 +189,7 @@ These are the only questions the install asks.
 
 1. **Who runs the commands?**
    - **A:** an AI tool runs in the device's own Terminal. SSH stays off.
-   - **B:** an AI tool on your laptop connects to the device over SSH, with a temporary key, on your home network. The commands still run on the device. This guide sets tier B up for Raspberry Pi OS only (step 1 enables key-only SSH in Raspberry Pi Imager); on a Debian or Ubuntu mini PC or laptop, use tier A or C.
+   - **B:** you log in to the device from your laptop over SSH, on your home network, with the device's password (or a temporary key); an AI tool on the laptop may help. The commands still run on the device. Step 1 turns SSH on in Raspberry Pi Imager; on a Debian or Ubuntu mini PC, tier B works only if SSH is already on.
    - **C:** a chat-only AI. You paste one block at a time into the device's Terminal and tell it only the short result. Nothing is installed for the AI, and no AI runs as your account on the device.
 2. **How does the screen hang?** Raspberry Pi OS only: on Debian or Ubuntu, skip this decision (the one command doesn't ask it, and step 7 doesn't apply; set the screen up [by hand](docs/raspberry-pi.md#kiosk-on-other-devices)). Portrait is the default and the usual choice for a kitchen wall. You can also pick portrait turned the other way (`portrait-flipped`), `landscape`, `landscape-flipped`, or no kiosk (the hub then serves phones and tablets only). You don't need the screen's model number: the setup tool finds the one connected screen.
 3. **Do you approve the install plan?** The AI shows the [whole plan](#the-install-plan-decision-3) once before anything needs your password. It also asks you to confirm the home-network rule below. Your yes covers that plan only.
@@ -211,8 +214,8 @@ Three rows below are bundles taken from a vendor's own page: Docker's install, t
 | `sudo reboot` | 3, 7, 8 | After step 3, so the `docker` group takes effect; later, to check that everything starts by itself. | Nothing to undo. |
 | `sudo raspi-config nonint do_boot_behaviour B4` | 7, only if `setup kiosk` prints it | The desktop logs in by itself, so the screen comes back after a power cut. | `sudo raspi-config nonint do_boot_behaviour B3` (`setup kiosk --undo` prints it). |
 | `sudo raspi-config` menus for screen blanking and desktop autologin | 7, only if you set the screen up [by hand](docs/raspberry-pi.md#set-it-up-by-hand) | Keeps the screen lit and logs in by itself. | The same menus. |
-| `sudo raspi-config nonint do_ssh 1` | Raspberry Pi OS: tier B at step 8 or on an early stop; tiers A and C only if doctor reports SSH on (`ssh_policy`) | Turns SSH off. | `sudo raspi-config nonint do_ssh 0` |
-| `sudo systemctl disable --now ssh.socket ssh.service` | Debian or Ubuntu, only if doctor reports SSH on (`ssh_policy`) | Turns SSH off; tiers A and C expect it off. | `sudo systemctl enable --now ssh.service` (or `ssh.socket` on a system that used it) |
+| `sudo raspi-config nonint do_ssh 1` | Raspberry Pi OS: tier B at the end of the one command (it asks first), at step 8 or on an early stop; tiers A and C only if doctor reports SSH on (`ssh_policy`) | Turns SSH off. | `sudo raspi-config nonint do_ssh 0` |
+| `sudo systemctl disable --now ssh.socket ssh.service` | Debian or Ubuntu: tier B at the end of the one command (it asks first), or only if doctor reports SSH on (`ssh_policy`) | Turns SSH off; tiers A and C expect it off. | `sudo systemctl enable --now ssh.service` (or `ssh.socket` on a system that used it) |
 | The AI tool's own uninstall command, only if its maker's instructions use `sudo` | Tier A: 8, or on an early stop | Removes the install-only AI tool. | Nothing to undo. |
 
 Installing the AI tool itself (tier A, step 2) comes before this plan, because the AI has to exist before it can show one. The person installs it from its maker's official instructions and reads them first. If they use `sudo`, the person types those commands, and step 8 removes the tool (the last row above).
@@ -221,7 +224,7 @@ Other changes, without `sudo`:
 
 - The `sproutwall` folder in your home folder, and the household's Docker volume. Keep both.
 - The screen setup (step 7) writes a few files in your home folder. `./scripts/sproutwall setup kiosk --undo` puts them back ([Undo the kiosk](#undo-the-kiosk)).
-- Temporary access, removed in step 8 or on an early stop: tier A, the AI tool and its settings folders; tier B, the temporary SSH key at both ends and SSH itself; tier C, nothing on the device.
+- Temporary access, removed in step 8 or on an early stop: tier A, the AI tool and its settings folders; tier B, SSH itself and, if you made one, the temporary SSH key at both ends; tier C, nothing on the device.
 
 #### Known gap: the AI and the docker group
 
@@ -232,7 +235,7 @@ This is a known exception to the install spec, pending a decision by the maintai
 Do this only once the owner has confirmed the card is new or blank, or that the household is backed up off the device ([First](#first-is-sproutwall-already-on-this-device)).
 
 1. On another computer, install [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
-2. **Tier B only, first:** on your laptop, make a temporary key. It asks for a passphrase; you may leave it empty, because the key is deleted at the end.
+2. **Tier B, optional:** with the one command, you can log in with the Pi's password (the simplest choice) and skip this. Going step by step over SSH (steps 3 to 7) needs this key and key-only SSH in this preview, because only the one command runs its own SSH checks: the step-by-step doctor reports password SSH as `ssh_policy` fail. For a temporary key, make it on your laptop. It asks for a passphrase; you may leave it empty, because the key is deleted at the end.
 
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/sproutwall-install -C sproutwall-install
@@ -245,29 +248,23 @@ Do this only once the owner has confirmed the card is new or blank, or that the 
    - **Username and password.** Keep the password to yourself.
    - **Time zone** and **keyboard layout**
    - **Wi-Fi** country, name and password, unless you use a network cable
-   - **SSH:** off for tiers A and C. Tier B: on, with public-key authentication only, and paste the one line that `cat` printed above.
+   - **SSH:** off for tiers A and C. Tier B: on, with password authentication (the simplest, for the one command), or with public-key authentication only and the one line that `cat` printed above (needed to go step by step over SSH).
 5. Let Imager write and verify the card, then eject it.
 6. With the Pi switched off, connect the screen and its touch connection following the screen's own instructions. Insert the card and switch on. The first start takes a few minutes.
 
-**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, only on a disk the owner has confirmed is new, blank or backed up ([First](#first-is-sproutwall-already-on-this-device)), with SSH off. On this path use tier A or C: this guide does not set up tier B's key-only SSH for Debian or Ubuntu.
+**An amd64 mini PC or laptop:** install 64-bit Debian or Ubuntu with its own installer, only on a disk the owner has confirmed is new, blank or backed up ([First](#first-is-sproutwall-already-on-this-device)), with SSH off. On this path use tier A or C, or tier B only if the system's own installer already turned SSH on.
 
 ## Step 2: Open the session
 
 **Tier A.** On the Pi's desktop, open **Terminal**. Install the AI tool with its maker's official instructions and sign in on its own sign-in page. This tool is for the install only; step 8 removes it. Then give it the prompt from [Start here](#start-here-what-to-tell-your-ai).
 
-**Tier B.** First, on the Pi's own desktop Terminal, show the Pi's fingerprint:
+**Tier B.** On your laptop, open a terminal and connect. Use your username in place of `<user>`:
 
 ```bash
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+ssh <user>@hub.local
 ```
 
-Then, on your laptop, connect. Use your username in place of `<user>`:
-
-```bash
-ssh -i ~/.ssh/sproutwall-install -o IdentitiesOnly=yes -o ForwardAgent=no <user>@hub.local
-```
-
-Answer `yes` only if the `ED25519 key fingerprint` it shows is exactly the one the Pi printed. The AI on your laptop uses the same `ssh` options for every command, with no agent forwarding.
+With a temporary key from step 1, use `ssh -i ~/.ssh/sproutwall-install -o IdentitiesOnly=yes -o ForwardAgent=no <user>@hub.local` instead. The first time, `ssh` shows the Pi's `ED25519 key fingerprint` and asks whether to continue. On your own home network, typing `yes` is fine. To be thorough, first compare it with what the Pi's own desktop Terminal prints for `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` (optional; it needs the Pi's keyboard). Then run the one command in this session. An AI on your laptop uses the same `ssh` options for every command, with no agent forwarding.
 
 **Tier C.** On the Pi's desktop, open **Terminal**. Open your chat AI in the Pi's web browser, so you can copy each block into the Terminal. In tiers A and C, after the 64-bit check below, the next thing to run is the one command ([For the AI reading this](#for-the-ai-reading-this)). It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6).
 
@@ -303,7 +300,7 @@ The first line must be `aarch64` or `x86_64`, and the second `64bit`.
 
 ## Step 3: Install the tools and get the code
 
-**Skip steps 3 to 7 when the one command finished (tiers A and C).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. If the person declined the install plan or the home-network rule, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). A "no" to a later question (turning on desktop autologin, or trying the screen setup again) leaves the hub installed and running: the run goes on to its summary, which says what is left to do. If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for tier B, for a person who asked to go step by step, and for when the one command can't be used.
+**Skip steps 3 to 7 when the one command finished (every tier).** It runs steps 3 to 5 and 7 itself, and waits while the person sets up the household (step 6). Go on to [step 8](#step-8-remove-the-assistant-and-check-once-more) only after it prints its `== Sproutwall is installed ==` summary and the person has restarted the device. Over SSH, if a temporary key from step 1 was used, remove it first, in the still-open session, before the restart (step 8, the temporary key, its steps 1 to 3); then restart. If the person declined the install plan or the home-network rule, nothing was changed (see [For the AI reading this](#for-the-ai-reading-this)). A "no" to a later question (turning on desktop autologin, or trying the screen setup again) leaves the hub installed and running: the run goes on to its summary, which says what is left to do. If it printed a `Stopped:` line, follow that line and [If something goes wrong](#if-something-goes-wrong). Steps 3 to 7 are for a person who asked to go step by step, and for when the one command can't be used. Over SSH with password SSH, don't go step by step: in this preview the doctor in step 5 reports password SSH as `ssh_policy` fail, because only the one command runs its own SSH checks. Use the one command instead, before anything from step 3 is on the device.
 
 ### Install the tools
 
@@ -426,7 +423,7 @@ First, check the home-network rule once more on the device:
 hostname -I
 ```
 
-Every address with dots must start with `192.168.`, `10.`, or `172.16.` to `172.31.`. If any other address shows, stop: the device may be reachable from outside your home.
+Every address with dots must start with `192.168.`, `10.`, `172.16.` to `172.31.`, or `169.254.` (link-local, for example a network cable straight to a laptop). If any other address shows, stop: the device may be reachable from outside your home.
 
 Start the verified image and check it:
 
@@ -441,13 +438,13 @@ curl -fsS --max-time 3 http://127.0.0.1:3847/api/health
 - The health check must print one line with `"ok":true`. It also shows `version` and `schema`, and `"setup":false` until step 6.
 - If `curl` reports error `503` instead, the database is blocked. Stop. Don't start over with a new volume. The hub's own message is in `docker compose -f docker-compose.preview.yml logs`: read it yourself, don't paste it into a chat.
 
-Then run the first check. Put your tier letter after `--tier` (A, B or C; C also when you work without AI):
+Then run the first check. Put your tier letter after `--tier` (A, B or C). Without an AI, use C on the device's own Terminal, and B when you work over SSH from a laptop:
 
 ```bash
 ./scripts/sproutwall doctor --json --phase running --tier A
 ```
 
-On a home network the expected result is `"result":"unknown"` (exit 2) with one unknown check, `app_bind` with the action `confirm_trusted_lan`: the device cannot see your router, so it asks you to confirm the home-network rule. Continue only if that is the only unknown and you confirmed the rule in decision 3. Anything else: see [If something goes wrong](#if-something-goes-wrong).
+On a home network the expected result is `"result":"unknown"` (exit 2) with one unknown check, `app_bind` with the action `confirm_trusted_lan`: the device cannot see your router, so it asks you to confirm the home-network rule. Continue only if that is the only unknown and you confirmed the rule in decision 3. Anything else: see [If something goes wrong](#if-something-goes-wrong). Tier B by hand with password SSH: `ssh_policy` fail here is a stop in this preview (rule 7), because this path can't check SSH the way the one command does. Don't continue by hand, and don't run the one command over this install (it stops when it finds the hub's folder): get help, as [If something goes wrong](#if-something-goes-wrong) says.
 
 ## Step 6: Set up the household, then check
 
@@ -469,7 +466,7 @@ cd ~/sproutwall
 
 Same rule as before: exit 0, or exit 2 with only `app_bind` / `confirm_trusted_lan`.
 
-**Phone check.** Run `hostname -I` and take the first address, for example `192.168.1.50`. On a phone on the same Wi-Fi, open `http://192.168.1.50:3847` (with your address). It must show **Unlock this screen** and ask for the PIN. It must not show the family. If it shows the family without asking, stop. If the phone cannot reach it, see [A phone or tablet can't reach the hub](docs/raspberry-pi.md#a-phone-or-tablet-cant-reach-the-hub). Never forward a port, publish the bridge or turn the lock off to make the phone work.
+**Phone check.** On the device, run `ip -o -4 addr show scope global` and use the address on the line for your Wi-Fi or network cable (often `wlan0` or `eth0`), for example `192.168.1.50` from `inet 192.168.1.50/24`. Never use an address on a `docker0`, `br-` or `veth` line (Docker's own network, for example `172.17.0.1`): no phone can reach it. Never use one that starts with `169.254.` either (a cable straight to a laptop). On a phone on the same Wi-Fi, open `http://192.168.1.50:3847` (with your address). It must show **Unlock this screen** and ask for the PIN. It must not show the family. If it shows the family without asking, stop. If the phone cannot reach it, see [A phone or tablet can't reach the hub](docs/raspberry-pi.md#a-phone-or-tablet-cant-reach-the-hub). Never forward a port, publish the bridge or turn the lock off to make the phone work.
 
 ## Step 7: Set up the screen
 
@@ -520,23 +517,24 @@ The AI's last job is to show you this step for your tier. Then it ends its sessi
 
 The final check below looks for these tools, their folders and any autostart entry for them, and fails if one is left.
 
-**Tier B.**
+**Tier B.** Turning SSH off is the safe choice. The one command's last question turns it off; if it printed `SSH is off`, it is off. If you went step by step, turn it off now, in your SSH session (it stays open) or in the Pi's own Terminal: `sudo raspi-config nonint do_ssh 1` (Debian or Ubuntu: `sudo systemctl disable --now ssh.socket ssh.service`), then run `systemctl is-active ssh.service ssh.socket` in the same place: it is off only when that prints `inactive` for both. If you answered no because you want to keep SSH on, leave it on: that is your choice and your own responsibility, and the final check below says what it reports then. To turn it off later, use the same command. Close the AI session on the laptop.
 
-1. On the laptop, close the AI session and every SSH session to the Pi. Then show the temporary key's fingerprint, and keep it on screen:
+Only if you used a temporary key from step 1, also remove it while an SSH session is still open: with the one command, after its last question and before you restart (its session stays open even with SSH off); going step by step, before you turn SSH off; with SSH kept on, any time, but only if you can still log in another way: a password login (from the laptop, `ssh -o PubkeyAuthentication=no <user>@hub.local true` asks for the password and returns without an error) or another key in the list from `ssh-keygen -lf ~/.ssh/authorized_keys`. If the temporary key is your only way in and you keep SSH on, keep it: it is now your login key, not a temporary one, so keep the laptop's copy safe and skip the steps below. If SSH is already off and the session is closed, do step 2 below in the Pi's own Terminal; without a keyboard, step 4 on the laptop still deletes the only copy of the key:
+
+1. On the laptop, show the temporary key's fingerprint, and keep it on screen:
 
    ```bash
    ssh-keygen -lf ~/.ssh/sproutwall-install.pub
    ```
 
-2. On the Pi's own desktop Terminal, remove the temporary key, list the keys still allowed, and turn SSH off:
+2. On the Pi, remove the temporary key and list the keys still allowed:
 
    ```bash
    sed -i '/ sproutwall-install$/d' ~/.ssh/authorized_keys
    ssh-keygen -lf ~/.ssh/authorized_keys
-   sudo raspi-config nonint do_ssh 1
    ```
 
-   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay.
+   The laptop's fingerprint must not be in the list. If no keys are left, `ssh-keygen` says the file is not a public key file; that is fine. If the fingerprint is still listed, open the file with `nano ~/.ssh/authorized_keys` and delete that key's line. Other keys stay. This does not turn SSH off: that is the separate choice above.
 3. On the laptop, confirm the old key no longer gets in. This must fail:
 
    ```bash
@@ -560,10 +558,24 @@ cd ~/sproutwall
 
 It passes with `"result":"pass"` (exit 0), or with `"result":"unknown"` (exit 2) when the only unknown is `app_bind` / `confirm_trusted_lan`. Without `--json` it prints the same result as readable text, ending with `Result:`.
 
-Finally, restart with `sudo reboot`, then check once more, with no assistant:
+After an install over SSH (tier B), in this preview:
+
+- **SSH off:** run the final check in the device's own Terminal: it fails while any SSH session into the device is open, so it can't run over SSH. It may also show `ssh_policy` unknown (`review_ssh`) and `temporary_access` unknown (`retry_local`) when an SSH settings file that only root can read is on the device (Raspberry Pi Imager writes one for password SSH), even though SSH is off. Those two unknowns are acceptable only if this prints `inactive` for both:
+
+  ```bash
+  systemctl is-active ssh.service ssh.socket
+  ```
+
+  If it prints anything else, SSH is not off: turn it off as tier B above says and run the final check again, or follow *SSH kept on* below.
+- **No keyboard for the device:** you can't type the final check there. What stands in for it: the confirmation that SSH is off, meaning `systemctl is-active ssh.service ssh.socket` printed `inactive` for both (the one command prints it in its line `SSH is off: ...`; going step by step, you ran it in your SSH session right after turning SSH off, tier B above), plus the checks after the restart below that need no Terminal (the phone check, and with the kiosk the hub back on the screen). If SSH was not confirmed off that way, SSH is still on: follow *SSH kept on*.
+- **SSH kept on (your choice):** you may run the final check over SSH. Then `ssh_policy` (fail or unknown) and `temporary_access` (fail `remove_agent`, because of your SSH session, or unknown `retry_local`) are expected for that choice. Every other check must pass, or be the `app_bind` / `confirm_trusted_lan` unknown.
+
+Any other unknown, and any other fail, is still a stop.
+
+Finally, restart with `sudo reboot` (skip this only if you already restarted after the one command finished; going step by step over SSH, run it now: in the still-open SSH session, also when SSH is off and there is no keyboard, or in the device's own Terminal if you have a keyboard and already closed that session), then check once more, with no assistant:
 
 - **With the kiosk:** the hub comes back on the screen by itself.
-- **Without the kiosk** (no kiosk, or a screen set up by hand): in the Terminal, run the two checks below. `ps` must show `healthy`, and the health check must print `"ok":true`. Right after the restart, `ps` can show `health: starting` for up to a minute: wait 30 seconds and run both checks again before you treat it as a problem. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
+- **Without the kiosk** (no kiosk, or a screen set up by hand): in the device's own Terminal, or over SSH if you kept SSH on, run the two checks below. With no keyboard and SSH off you can't run them: then the phone check below is the check. `ps` must show `healthy`, and the health check must print `"ok":true`. Right after the restart, `ps` can show `health: starting` for up to a minute: wait 30 seconds and run both checks again before you treat it as a problem. A phone on the home Wi-Fi must still show **Unlock this screen** at `http://<lan-ip>:3847`. A screen you set up by hand must open the hub by itself.
 
   ```bash
   cd ~/sproutwall
@@ -589,13 +601,13 @@ Each doctor check that is not `pass` names one action. The same action can come 
 | `app_bind` | `restrict_ports` | Port 3847 is reachable beyond the home network. | Stop the hub now with `docker compose -f docker-compose.preview.yml stop`. Check the router for port forwards and tunnels. Get help. Don't change the port or turn the check off. |
 | `app_bind` | `confirm_trusted_lan` | The hub is on your home network, and the device cannot prove the router forwards nothing. | Expected. Continue only if it is the only unknown and you confirmed the home-network rule in decision 3. |
 | `bridge_bind` | `restrict_ports` | The Ask bridge port 8787 is published or listens beyond the container. | Stop the hub now. `git status --short` and `git diff --numstat` must still match step 4: only the one image line changed. Get help. |
-| `ssh_policy` | `review_ssh` | SSH is on, allows passwords, or its settings could not be read. | Stop. Tiers A and C expect SSH off; tier B (Raspberry Pi OS only) expects key-only until step 8, then off. If it is simply on, turn it off with the install plan's line for your system: `sudo raspi-config nonint do_ssh 1` on Raspberry Pi OS, `sudo systemctl disable --now ssh.socket ssh.service` on Debian or Ubuntu. If it allows passwords during tier B, or could not be read, get help. |
+| `ssh_policy` | `review_ssh` | SSH is on where it must be off (tiers A and C, and every final check), it listens on a public address, it allows root login or empty passwords, or its settings could not be read. | Tiers A and C and every final check expect SSH off: turn it off with the install plan's line for your system, `sudo raspi-config nonint do_ssh 1` on Raspberry Pi OS, `sudo systemctl disable --now ssh.socket ssh.service` on Debian or Ubuntu. Tier B allows SSH until the final check, password logins included, but never on a public address or with root login or empty passwords: stop, fix that or get help. Settings that could not be read, or password SSH reported as fail by the pinned build's older doctor: over SSH, the one command checks SSH itself (read-only, with `sudo`) and continues during the install; otherwise stop and get help. At the final check after an install over SSH, in this preview: with SSH off, an unknown because a settings file only root can read is on the device is acceptable only if `systemctl is-active ssh.service ssh.socket` prints `inactive` for both; with SSH kept on by the owner's choice, a fail or unknown here is expected ([step 8](#step-8-remove-the-assistant-and-check-once-more)). Anything else is a stop. |
 | `setup` | `open_hub` | First-run setup is not finished. | Open the hub on the device and finish setup (step 6). |
 | `read_guard` | `open_hub` | Setup is not finished, so the hub still answers without a PIN. | Finish setup now (step 6). |
 | `read_guard` | `verify_release` | Setup is finished, but the hub answers without a PIN: the screen lock is off. | Stop the hub. `git status --short` and `git diff --numstat` must still match step 4: only the one image line changed. Repeat step 4. Never set `REQUIRE_AUTH_FOR_READS` to `0`. |
 | `kiosk` | `repair_kiosk` | The screen launcher is not in the state you chose. | `./scripts/sproutwall setup kiosk --check`, then `setup kiosk` (on) or `setup kiosk --off`. Check that `--kiosk` matches your choice. |
-| `temporary_access` | `remove_agent` | The AI tool, its folders or autostart entry, or an SSH session is still there. | Repeat step 8 for your tier, and close every SSH session. |
-| any check | `retry_local` | The check could not finish. | Wait a minute and run it again in the device's own Terminal, as your user. If it repeats, stop and get help. Don't work around it. |
+| `temporary_access` | `remove_agent` | The AI tool, its folders or autostart entry, or an SSH session is still there. | Repeat step 8 for your tier, and close every SSH session. If you kept SSH on by choice and ran the final check over SSH, this result is expected ([step 8](#step-8-remove-the-assistant-and-check-once-more)). |
+| any check | `retry_local` | The check could not finish. | Wait a minute and run it again in the device's own Terminal, as your user. If it repeats, stop and get help. Don't work around it. One exception in this preview: `temporary_access` at the final check after an install over SSH, when an SSH settings file only root can read is on the device and `systemctl is-active ssh.service ssh.socket` prints `inactive` for both, or when you kept SSH on by choice ([step 8](#step-8-remove-the-assistant-and-check-once-more)). |
 
 When the install stops here, the AI still removes itself as step 8 shows.
 
@@ -629,6 +641,6 @@ If `--undo` refuses because a file was changed after setup (for example in Contr
 
 The easiest way without AI is the one-command install in the README, [With one command](README.md#with-one-command): on the device, it shows the install plan, asks you, and then runs steps 3 to 5 and 7 for you.
 
-Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
+Everything above works by hand. Make the five decisions yourself, skip the tier A and B parts, and run each block in order in the device's own Terminal. Use `--tier C` in the doctor commands. Over SSH from a laptop, use the one command instead; going step by step over SSH needs key-only SSH in this preview, follows the tier B parts, and uses `--tier B`. The rules in [For the AI reading this](#for-the-ai-reading-this) are good rules for you too: stop where they say stop.
 
 For a hub that builds on the device instead of using the prebuilt image, see the [Raspberry Pi guide](docs/raspberry-pi.md).

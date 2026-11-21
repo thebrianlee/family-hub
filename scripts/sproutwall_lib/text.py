@@ -42,8 +42,8 @@ REMEDIES = {
         "Confirm the trusted-network prerequisite yourself."
     ),
     "review_ssh": (
-        "Review SSH. Keep it off, unless this is temporary key-only access on the home network; "
-        "turn it off from the Pi's own desktop when the install is done."
+        "Review SSH. Keep it off, unless this is temporary install access from your home network (tier B); "
+        "turn it off when the install is done."
     ),
     "open_hub": "Open the hub on the Pi and finish first-run setup with the parent PIN.",
     "repair_kiosk": (

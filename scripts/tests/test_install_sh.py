@@ -82,6 +82,25 @@ if [ -n "${FAKE_APT_LOCKED:-}" ] && [ "$*" = "$FAKE_APT_LOCKED" ]; then
   echo "E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?" >&2
   exit 100
 fi
+if [ "$1 $2" = "sshd -T" ]; then
+  # The read-only look at the SSH settings (over SSH only).
+  [ -z "${FAKE_SSHD_FAIL:-}" ] || exit 1
+  printf '%b\n' "${FAKE_SSHD_T:-port 22\npermitrootlogin without-password\npasswordauthentication yes\npermitemptypasswords no}"
+  exit 0
+fi
+if [ "$1" = cat ]; then
+  # The read-only look at the SSH config files (over SSH only), under the test's fake root.
+  shift
+  exec cat "$@"
+fi
+if [ "$1" = sh ]; then
+  # The read-only read of the whole SSH config as root (over SSH only), under the test's fake root.
+  # FAKE_ROOT_BIN puts the test's own commands (a failing ls) first for root.
+  [ -z "${FAKE_SUDO_SH_FAIL:-}" ] || exit 1
+  shift
+  [ -z "${FAKE_ROOT_BIN:-}" ] || PATH="$FAKE_ROOT_BIN:$PATH"
+  exec /bin/sh "$@"
+fi
 if [ "$1" = ls ]; then
   # The read-only look into Docker's data folder; the path is under the test's fake root.
   shift
@@ -144,6 +163,46 @@ if [ "$count" -gt 1 ] && [ -n "${FAKE_HOSTNAME_LATER:-}" ]; then
 else
   echo "${FAKE_HOSTNAME:-192.168.1.50 172.17.0.1 fd12:3456::50}"
 fi
+""",
+    "ip": r"""#!/bin/bash
+case "$*" in
+  "-6 -o addr show scope global")
+    # This device's global IPv6 addresses with prefix lengths.
+    [ -z "${FAKE_IP6:-}" ] || printf '%b\n' "$FAKE_IP6"
+    ;;
+  "-o -6 addr show")
+    # Every IPv6 address of this device, with its interface (over SSH, the
+    # interface that holds the address the session connected to).
+    printf '%b\n' "${FAKE_IP6_ALL-2: wlan0    inet6 fd12:3456::50/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec\n2: wlan0    inet6 fe80::50/64 scope link \\       valid_lft forever preferred_lft forever}"
+    ;;
+  "-o -4 addr show" | "-o -4 addr show dev "*)
+    # The IPv4 addresses of one interface, or of every interface.
+    [ -z "${FAKE_IP4_FAIL:-}" ] || { echo "Device does not exist." >&2; exit 1; }
+    want=${!#}
+    listing="${FAKE_IP4-2: wlan0    inet 192.168.1.50/24 brd 192.168.1.255 scope global dynamic wlan0\\       valid_lft 86000sec preferred_lft 86000sec\n3: eth0    inet 192.168.1.51/24 brd 192.168.1.255 scope global eth0\\       valid_lft forever preferred_lft forever\n4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever}"
+    printf '%b\n' "$listing" | while IFS= read -r line; do
+      read -r _ dev _ <<<"$line"
+      { [ "$want" = show ] || [ "$dev" = "$want" ]; } && printf '%s\n' "$line"
+    done
+    exit 0
+    ;;
+  "route get "*)
+    # This device's route to the laptop's address: its interface.
+    if [ -n "${FAKE_ROUTE_FAIL:-}" ]; then echo "RTNETLINK answers: Network is unreachable" >&2; exit 2; fi
+    printf '%b\n' "${FAKE_ROUTE:-${!#} via 192.168.1.1 dev wlan0 src 192.168.1.50 uid 1000 \n    cache }"
+    ;;
+  *) exit 99 ;;
+esac
+""",
+    "systemctl": r"""#!/bin/bash
+# Only the unprivileged check that SSH is off after the last question (over SSH).
+printf 'systemctl %s\n' "$*" >>"$FAKE_LOG"
+[ "$*" = "is-active ssh.service ssh.socket" ] || exit 99
+case "${FAKE_SSH_STATES:-off}" in
+  off) printf 'inactive\ninactive\n'; exit 3 ;;
+  socket-on) printf 'inactive\nactive\n'; exit 0 ;;
+  *) echo "System has not been booted with systemd as init system (PID 1). Can't operate." >&2; exit 1 ;;
+esac
 """,
     "sg": r"""#!/bin/bash
 printf 'sg %s\n' "$*" >>"$FAKE_LOG"
@@ -1253,3 +1312,512 @@ class FirstStartTests(InstallShTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SSH_ENV = {"SSH_CONNECTION": "192.168.1.20 52344 192.168.1.50 22"}
+# portrait, plan, home network, SSH risk, setup done, taps, autologin, SSH off
+SSH_ANSWERS = ["", "y", "y", "y", "", "", "y", "y"]
+
+
+STOCK_SSHD_CONFIG = (
+    "Include /etc/ssh/sshd_config.d/*.conf\n"
+    "KbdInteractiveAuthentication no\n"
+    "UsePAM yes\n"
+    "#Match User anoncvs\n"
+    "#\tX11Forwarding no\n"
+)
+
+
+class OverSshTests(InstallShTestCase):
+    """The one command run from a laptop over SSH (HJ, 2026-11-20): tier B
+    checks, a responsibility notice before any change, and SSH off at the end."""
+
+    def setUp(self):
+        super().setUp()
+        self.ssh_config()
+
+    def ssh_config(self, main=STOCK_SSHD_CONFIG, dropins=None):
+        self.write(os.path.join(self.sysroot, "etc/ssh/sshd_config"), main)
+        for name, text in (dropins if dropins is not None else {"50-cloud-init.conf": "PasswordAuthentication yes\n"}).items():
+            self.write(os.path.join(self.sysroot, "etc/ssh/sshd_config.d", name), text)
+
+    def sudo_lines(self, run):
+        return [line for line in run.log if line.startswith("sudo")]
+
+    def test_over_ssh_checks_as_tier_b_and_turns_ssh_off(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertEqual(run.prompts, len(SSH_ANSWERS))
+        self.assertIn("sproutwall doctor --json --phase running --tier B", run.log)
+        self.assertIn("sproutwall doctor --json --phase configured --tier B", run.log)
+        self.assertNotIn("sproutwall doctor --json --phase running --tier C", run.log)
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("7. sudo raspi-config nonint do_ssh 1", plan)
+        self.assertIn("Undo: sudo raspi-config nonint do_ssh 0", plan)
+        # Every sudo command that ran was in the plan; turning SSH off is the very last one.
+        unquoted = plan.replace("'", "")
+        for line in run.log:
+            if line.startswith("sudo"):
+                self.assertIn(line, unquoted)
+        self.assertEqual([line for line in run.log if line.startswith("sudo")][-1], "sudo raspi-config nonint do_ssh 1")
+        self.assertIn("http://192.168.1.50:3847", run.out[run.out.index("Set up your household now") :])
+        self.assertIn("this computer", run.out)
+        self.assertIn("never in this Terminal", run.out)
+        self.assertIn("On the device's own screen, tap the four corners", run.out)
+        self.assertIn("SSH is off: systemctl is-active ssh.service ssh.socket prints inactive for both.", run.out)
+        self.assertIn("doctor --phase final --tier B", run.out)
+        self.assert_never_destructive(run)
+
+    def test_questions_come_in_the_documented_order(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        order = [
+            "How does the screen hang?",
+            "Do you approve this plan?",
+            "Is all of this true for the network this device is on?",
+            "Do you understand and accept this?",
+            "Checking the SSH settings",
+            "Set up your household now",
+            "On the device's own screen, tap the four corners",
+            "Run it now? sudo asks for your password.",
+            "== Sproutwall is installed ==",
+            "Turn SSH off now?",
+        ]
+        positions = [run.out.index(text) for text in order]
+        self.assertEqual(positions, sorted(positions))
+        # The responsibility notice comes before the first change.
+        notice = run.out.index("SSH: YOUR RESPONSIBILITY")
+        self.assertIn("is your responsibility", run.out[notice : notice + 600])
+        self.assertLess(notice, run.out.index("== Installing the tools"))
+
+    def test_declining_the_ssh_risk_changes_nothing(self):
+        for answer in ("n", "", "ok", "sure"):
+            with self.subTest(answer=answer):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "y", "y", answer], **SSH_ENV)
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertNotIn("Stopped:", run.err)
+                self.assertIn("nothing was changed", run.out)
+                self.assertFalse([line for line in run.log if line.startswith("sudo")])
+                self.assertFalse(os.path.exists(os.path.join(run.home, "sproutwall")))
+
+    def test_declining_ssh_off_keeps_it_on_and_says_whose_responsibility(self):
+        run = self.run_install(SSH_ANSWERS[:-1] + ["n"], **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("sudo raspi-config nonint do_ssh 1", run.log)
+        tail = run.out[run.out.index("Turn SSH off now?") :]
+        self.assertIn("SSH stays on.", tail)
+        self.assertIn("Keeping SSH on is your own responsibility", tail)
+        self.assertIn("sudo raspi-config nonint do_ssh 1", tail)
+
+    def test_ssh_off_is_confirmed_with_systemctl(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        off = run.index("sudo raspi-config nonint do_ssh 1")
+        self.assertEqual(run.log[off + 1 :], ["systemctl is-active ssh.service ssh.socket"])
+        self.assertIn("SSH is off: systemctl is-active ssh.service ssh.socket prints inactive for both.", run.out)
+        for states in ("socket-on", "no-systemd"):
+            with self.subTest(states=states):
+                os.remove(self.log_path)
+                shutil.rmtree(self.home)
+                os.mkdir(self.home)
+                for name in os.listdir(self.state):
+                    if name.endswith(".count"):
+                        os.remove(os.path.join(self.state, name))
+                run = self.run_install(SSH_ANSWERS, FAKE_SSH_STATES=states, **SSH_ENV)
+                self.assertEqual(run.code, 0, run.out + run.err)
+                tail = run.out[run.out.index("Turn SSH off now?") :]
+                self.assertNotIn("SSH is off", tail)
+                self.assertIn("SSH is not confirmed off", tail)
+                self.assertIn("treat SSH as still on", tail)
+                self.assertIn("Try again:  sudo raspi-config nonint do_ssh 1", tail)
+                self.assertIn("Until it does, SSH is on", tail)
+                self.assertNotIn("expected for that choice", tail)
+
+    def test_finish_names_the_one_acceptable_ssh_unknown(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        finish = run.out[run.out.index("== Sproutwall is installed ==") : run.out.index("== SSH (last question) ==")]
+        self.assertIn("ssh_policy unknown (review_ssh)", finish)
+        self.assertIn("only root can", finish)
+        self.assertIn("inactive for both:  systemctl is-active ssh.service ssh.socket", finish)
+        self.assertIn("Any other unknown, and any other fail, is still a stop.", finish)
+
+    def test_ssh_off_that_fails_says_ssh_is_still_on(self):
+        run = self.run_install(SSH_ANSWERS, FAKE_SUDO_FAIL="raspi-config nonint do_ssh 1", **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("Turning SSH off did not work, so SSH is still on.", run.out)
+        self.assertIn("Try again:  sudo raspi-config nonint do_ssh 1", run.out)
+        self.assertNotIn("Keeping SSH on is your own responsibility", run.out)
+
+    def test_unreadable_ssh_settings_are_accepted_over_ssh_only(self):
+        unknown_ssh = {"ssh_policy": ("unknown", "review_ssh")}
+        self.doctor("running", **unknown_ssh, **TRUSTED_LAN)
+        self.doctor("configured", **unknown_ssh, **TRUSTED_LAN)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("This script checked it itself", run.out)
+        self.assertNotIn("doctor: pass.", run.out)
+        os.remove(self.log_path)
+        shutil.rmtree(self.home)
+        os.mkdir(self.home)
+        for name in os.listdir(self.state):
+            if name.endswith(".count"):
+                os.remove(os.path.join(self.state, name))
+        run = self.run_install(HAPPY_ANSWERS)  # not over SSH: the same unknown stops
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("doctor found something that is not a clean result", run.err)
+
+    def test_old_doctor_ssh_fail_is_accepted_after_the_sshd_check(self):
+        # The pinned checkout's doctor predates password SSH for tier B and reports it as a fail.
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
+        self.doctor("configured", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("This script checked it itself", run.out)
+        first_check = next(i for i, line in enumerate(run.log) if line.startswith("sudo sshd -T -C user=root,"))
+        self.assertLess(first_check, run.index("sudo apt update"))
+        self.assertIn("sudo sshd -T -C user=parent,host=192.168.1.20,addr=192.168.1.20,laddr=192.168.1.50,lport=22", run.log)
+
+    def test_root_login_or_empty_passwords_stop_before_any_change(self):
+        for settings in ("permitrootlogin yes\npasswordauthentication yes", "permitemptypasswords yes"):
+            with self.subTest(settings=settings):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(SSH_ANSWERS, FAKE_SSHD_T=settings, **SSH_ENV)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertEqual(run.err.count("Stopped:"), 1)
+                self.assertIn("Nothing was changed", run.err)
+                self.assertEqual(
+                    self.sudo_lines(run),
+                    ["sudo sshd -T -C user=root,host=192.168.1.20,addr=192.168.1.20,laddr=192.168.1.50,lport=22"],
+                )
+
+    def test_unreadable_sshd_settings_stop_before_any_change(self):
+        run = self.run_install(SSH_ANSWERS, FAKE_SSHD_FAIL="1", **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("could not be read (sudo sshd -T -C)", run.err)
+        self.assertEqual(len(self.sudo_lines(run)), 1)
+
+    def test_match_rule_or_foreign_include_stops_before_any_change(self):
+        cases = {
+            "match in main": (STOCK_SSHD_CONFIG + "Match Address 10.0.0.0/8\n  PermitRootLogin yes\n", None),
+            "match in drop-in": (STOCK_SSHD_CONFIG, {"60-x.conf": "  match user guest\n PermitEmptyPasswords yes\n"}),
+            "match=value": (STOCK_SSHD_CONFIG, {"60-x.conf": "Match=User guest\n PermitEmptyPasswords yes\n"}),
+            "match = value": (STOCK_SSHD_CONFIG + "\tMATCH = Address 10.0.0.0/8\n PermitRootLogin yes\n", None),
+            "other include": ("Include /etc/ssh/extra/*.conf\n" + STOCK_SSHD_CONFIG, None),
+            "include=value": ("Include=/etc/ssh/extra/*.conf\n" + STOCK_SSHD_CONFIG, None),
+        }
+        for label, (main, dropins) in cases.items():
+            with self.subTest(label=label):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+                self.ssh_config(main, dropins)
+                run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertEqual(run.err.count("Stopped:"), 1)
+                self.assertIn("Nothing was changed", run.err)
+                self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
+                self.assertTrue(self.sudo_lines(run)[-1].startswith("sudo sh -c "))
+
+    def test_commented_match_in_the_stock_config_is_fine(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("no Match rules. OK.", run.out)
+
+    def test_stock_include_written_with_equals_or_quotes_is_fine(self):
+        for line in ('Include="/etc/ssh/sshd_config.d/*.conf"\n', "include = /etc/ssh/sshd_config.d/*.conf\n"):
+            with self.subTest(line=line):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                shutil.rmtree(self.home)
+                os.mkdir(self.home)
+                for name in os.listdir(self.state):
+                    if name.endswith(".count"):
+                        os.remove(os.path.join(self.state, name))
+                shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+                self.ssh_config(line + "UsePAM yes\n")
+                run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertIn("no Match rules. OK.", run.out)
+
+    def test_a_file_without_a_last_line_break_never_hides_the_next_files_match(self):
+        # GATE-sw73: each file is read as its own lines.
+        cases = {
+            "drop-in ends in a comment": (
+                STOCK_SSHD_CONFIG,
+                {"10-a.conf": "PasswordAuthentication yes\n# no line break here", "20-b.conf": "Match User guest\n  PermitEmptyPasswords yes\n"},
+            ),
+            "main config ends in a comment": (
+                STOCK_SSHD_CONFIG + "# no line break here",
+                {"20-b.conf": "Match User guest\n  PermitEmptyPasswords yes\n"},
+            ),
+        }
+        for label, (main, dropins) in cases.items():
+            with self.subTest(label=label):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+                self.ssh_config(main, dropins)
+                run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+                self.assertEqual(run.code, 1, run.out + run.err)
+                self.assertEqual(run.err.count("Stopped:"), 1)
+                self.assertIn("have a Match rule", run.err)
+                self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
+
+    def test_a_failed_drop_in_listing_is_never_an_empty_folder(self):
+        # GATE-sw73: ls reports an I/O error for sshd_config.d; the read fails closed.
+        root_bin = os.path.join(self.tmp, "rootbin")
+        self.write(
+            os.path.join(root_bin, "ls"),
+            "#!/bin/sh\nfor last; do :; done\n"
+            'case "$last" in */sshd_config.d) echo "ls: reading directory \'$last\': Input/output error" >&2; exit 2 ;; esac\n'
+            'exec "%s" "$@"\n' % shutil.which("ls"),
+            0o755,
+        )
+        run = self.run_install(SSH_ANSWERS, FAKE_ROOT_BIN=root_bin, **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("The SSH settings files could not be read", run.err)
+        self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
+
+    def test_drop_in_folder_that_is_not_a_folder_fails_closed(self):
+        shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+        self.ssh_config(STOCK_SSHD_CONFIG, {})  # no drop-in folder
+        self.write(os.path.join(self.sysroot, "etc/ssh/sshd_config.d"), "Match User guest\n")
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertIn("The SSH settings files could not be read", run.err)
+
+    def test_drop_in_names_follow_sshds_glob(self):
+        # No sshd_config.d at all is fine; dotfiles and other names are not read, as sshd's
+        # *.conf glob skips them; a name ls has to escape stops the read.
+        shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+        self.write(os.path.join(self.sysroot, "etc/ssh/sshd_config"), STOCK_SSHD_CONFIG)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("no Match rules. OK.", run.out)
+        for name, code in ((".90-hidden.conf", 0), ("notes.txt", 0), ("a b.conf", 1)):
+            with self.subTest(name=name):
+                os.remove(self.log_path)
+                shutil.rmtree(self.home)
+                os.mkdir(self.home)
+                for state in os.listdir(self.state):
+                    if state.endswith(".count"):
+                        os.remove(os.path.join(self.state, state))
+                shutil.rmtree(os.path.join(self.sysroot, "etc/ssh"), ignore_errors=True)
+                self.ssh_config(STOCK_SSHD_CONFIG, {"10-ok.conf": "PasswordAuthentication yes\n", name: "Match User guest\n"})
+                run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+                self.assertEqual(run.code, code, run.out + run.err)
+                if code:
+                    self.assertIn("The SSH settings files could not be read", run.err)
+
+    def test_config_read_as_root_fails_closed(self):
+        run = self.run_install(SSH_ANSWERS, FAKE_SUDO_SH_FAIL="1", **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("could not be read", run.err)
+        self.assertIn("Nothing was changed", run.err)
+        self.assertFalse([line for line in self.sudo_lines(run) if "apt" in line])
+        self.assertTrue(self.sudo_lines(run)[-1].startswith("sudo sh -c "))
+
+    def test_docker_checks_over_ssh_wait_for_the_ssh_notice(self):
+        root = os.path.join(self.sysroot, "var", "lib", "docker")
+        os.makedirs(os.path.join(root, "volumes", "4f2a9c"))
+        self.docker_installed_by_the_plan()
+        run = self.run_install(["", "y", "y", "n"], **SSH_ENV)  # decline the SSH notice
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertIn("nothing was changed", run.out)
+        self.assertFalse(self.sudo_lines(run))
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("0. Read-only, after the SSH question below", plan)
+        os.remove(self.log_path)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        sudo = self.sudo_lines(run)
+        self.assertEqual(sudo[0], "sudo ls -1 %s/var/lib/docker/volumes" % self.sysroot)
+        self.assertLess(run.out.index("Do you understand and accept this?"), run.out.index("Looking for an existing hub"))
+
+    def test_old_doctor_ssh_fail_still_stops_without_ssh(self):
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertNotIn("sshd -T", "\n".join(run.log))
+
+    def test_another_fail_next_to_the_expected_ssh_result_does_not_blame_ssh(self):
+        # Password SSH gives the expected ssh_policy fail; a separate check fails too.
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), bridge_bind=("fail", "restrict_ports"), **TRUSTED_LAN)
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+        self.assertIn("not what stopped it", run.err)
+        self.assertNotIn("leave SSH as it is", run.err)
+        self.assertNotIn("public address, or it allows root login", run.err)
+
+    def test_internet_ipv6_is_always_in_the_notice_the_person_accepts(self):
+        # Always stated, so the consent covers an internet IPv6 address that appears only later.
+        for hostnames in ("192.168.1.50 2001:db8::50 fe90::50", "192.168.1.50 fd12:3456::50 fe90::50"):
+            with self.subTest(hostnames=hostnames):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "y", "y", "n"], FAKE_HOSTNAME=hostnames, **SSH_ENV)
+                notice = run.out[run.out.index("SSH: YOUR RESPONSIBILITY") : run.out.index("Do you understand and accept this?")]
+                self.assertIn("internet (IPv6) address", notice)
+                self.assertIn("SSH could be reachable from the internet", notice)
+
+    def test_ipv4_address_rechecked_before_the_doctor_ssh_result_is_accepted(self):
+        self.doctor("running", ssh_policy=("fail", "review_ssh"), **TRUSTED_LAN)
+        # A public IPv4 address appears after the first preflight check.
+        run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME_LATER="203.0.113.50 192.168.1.50", **SSH_ENV)
+        self.assertEqual(run.code, 1, run.out + run.err)
+        self.assertEqual(run.err.count("Stopped:"), 1)
+
+    def test_ipv6_only_lan_stops_in_preflight_over_ssh(self):
+        # The session came over IPv6 and its interface has no IPv4 address.
+        run = self.run_install(
+            SSH_ANSWERS, FAKE_HOSTNAME="fd12:3456::50", FAKE_IP4="",
+            SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
+        )
+        self.assert_stopped_before_changes(run)
+        self.assertIn("no IPv4 home-network address", run.err)
+        self.assertNotIn("<lan-ip>", run.out + run.err)
+
+    def test_laptop_url_never_uses_a_docker_address_listed_first(self):
+        # GATE-sw73: hostname -I can list docker0 (172.17.0.1) first; the laptop cannot reach it.
+        cases = (
+            ("over IPv4", {"SSH_CONNECTION": "192.168.1.20 52344 192.168.1.50 22"}),
+            ("over IPv6", {"SSH_CONNECTION": "fd12:3456::7 52344 fd12:3456::50 22"}),
+            ("SSH_CLIENT only", {"SSH_CLIENT": "192.168.1.20 52344 22"}),
+        )
+        for label, env in cases:
+            with self.subTest(label=label):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                shutil.rmtree(self.home)
+                os.mkdir(self.home)
+                for name in os.listdir(self.state):
+                    if name.endswith(".count"):
+                        os.remove(os.path.join(self.state, name))
+                run = self.run_install(SSH_ANSWERS, FAKE_HOSTNAME="172.17.0.1 192.168.1.50 fd12:3456::50", **env)
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertNotIn("172.17.0.1", run.out)
+                household = run.out[run.out.index("Set up your household now") : run.out.index("You see")]
+                self.assertIn("http://192.168.1.50:3847", household)
+                finish = run.out[run.out.index("== Sproutwall is installed ==") :]
+                self.assertIn("open http://192.168.1.50:3847", finish)
+
+    def test_laptop_url_is_the_address_the_session_reached(self):
+        run = self.run_install(
+            SSH_ANSWERS, FAKE_HOSTNAME="172.17.0.1 10.0.0.9 192.168.1.50",
+            SSH_CONNECTION="10.0.0.7 52344 10.0.0.9 22",
+        )
+        self.assertEqual(run.code, 0, run.out + run.err)
+        household = run.out[run.out.index("Set up your household now") : run.out.index("You see")]
+        self.assertIn("http://10.0.0.9:3847", household)
+
+    def test_no_reachable_ipv4_stops_in_preflight(self):
+        cases = {
+            "session on docker0": dict(
+                SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
+                FAKE_IP6_ALL="4: docker0    inet6 fd12:3456::50/64 scope global \\       valid_lft forever preferred_lft forever",
+            ),
+            "session on a bridge": dict(SSH_CONNECTION="fe80::1c2b%br-3f2a 52344 fe80::50%br-3f2a 22"),
+            "session interface with only a public IPv4": dict(
+                SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22",
+                FAKE_IP6_ALL="3: eth0    inet6 fd12:3456::50/64 scope global \\       valid_lft forever preferred_lft forever",
+                FAKE_IP4="3: eth0    inet 203.0.113.50/24 brd 203.0.113.255 scope global eth0",
+            ),
+            "no IPv4 on the session's interface": dict(SSH_CONNECTION="fd12:3456::7 52344 fd12:3456::50 22", FAKE_IP4=""),
+            "session to this device itself": dict(SSH_CONNECTION="127.0.0.1 52344 127.0.0.1 22"),
+        }
+        for label, env in cases.items():
+            with self.subTest(label=label):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(SSH_ANSWERS, **env)
+                self.assert_stopped_before_changes(run)
+                self.assertIn("no IPv4 home-network address that your laptop reaches", run.err)
+
+    def test_household_url_is_the_ipv4_address_only(self):
+        run = self.run_install(SSH_ANSWERS, **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        household = run.out[run.out.index("Set up your household now") : run.out.index("You see")]
+        self.assertIn("http://192.168.1.50:3847", household)
+        self.assertNotIn(".local:3847", household)
+
+    def test_session_from_outside_the_home_network_stops_in_preflight(self):
+        for address in ("203.0.113.9", "100.101.102.103", "2001:db8::9", "fe9::1", "fec0::1"):
+            with self.subTest(address=address):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(SSH_ANSWERS, SSH_CONNECTION="%s 52344 192.168.1.50 22" % address)
+                self.assert_stopped_before_changes(run)
+                self.assertIn("does not come from your home network", run.err)
+
+    def test_global_ipv6_client_in_this_devices_prefix_is_accepted(self):
+        ip6 = "2: wlan0    inet6 2001:db8:1:2::50/64 scope global dynamic mngtmpaddr \\       valid_lft 86000sec preferred_lft 14000sec"
+        run = self.run_install(["", "n"], SSH_CONNECTION="2001:db8:1:2:aa::7 52344 2001:db8:1:2::50 22", FAKE_IP6=ip6)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertNotIn("does not come from your home network", run.err)
+        self.assertIn("You did not approve the plan", run.out)
+        for address in ("2001:db8:9::7", "2001:db8:1:3::7"):
+            with self.subTest(address=address):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "n"], SSH_CONNECTION="%s 52344 2001:db8:1:2::50 22" % address, FAKE_IP6=ip6)
+                self.assert_stopped_before_changes(run)
+                self.assertIn("does not come from your home network", run.err)
+
+    def test_home_network_session_addresses_are_accepted(self):
+        for env in (
+            {"SSH_CLIENT": "10.0.0.7 52344 22"},
+            {"SSH_CONNECTION": "172.20.1.4 52344 192.168.1.50 22"},
+            {"SSH_CONNECTION": "fe80::1c2b%wlan0 52344 fe80::50%wlan0 22"},
+            {"SSH_CONNECTION": "fd12:3456::7 52344 fd12:3456::50 22"},
+            {"SSH_CONNECTION": "169.254.1.2 52344 169.254.1.50 22"},
+            {"SSH_CONNECTION": "fe90::2 52344 fe90::50 22"},
+            {"SSH_CONNECTION": "febf::2%eth0 52344 febf::50%eth0 22"},
+        ):
+            with self.subTest(env=env):
+                if os.path.exists(self.log_path):
+                    os.remove(self.log_path)
+                run = self.run_install(["", "n"], **env)  # stop at the plan: nothing changes
+                self.assertEqual(run.code, 0, run.out + run.err)
+                self.assertNotIn("does not come from your home network", run.err)
+                self.assertIn("You did not approve the plan", run.out)
+
+    def test_ubuntu_over_ssh_uses_systemctl(self):
+        self.ubuntu_pc()
+        self.ssh_config()
+        run = self.run_install(["y", "y", "y", "", "y"], **SSH_ENV)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertEqual(run.prompts, 5)
+        plan = run.out[run.out.index("THE INSTALL PLAN") : run.out.index("Do you approve this plan?")]
+        self.assertIn("6. sudo systemctl disable --now ssh.socket ssh.service", plan)
+        self.assertEqual(
+            [line for line in run.log if line.startswith("sudo")][-1], "sudo systemctl disable --now ssh.socket ssh.service"
+        )
+
+    def test_no_terminal_over_ssh_says_how_to_log_in(self):
+        env = dict(self.env)
+        env.update(SSH_ENV, SPROUTWALL_INSTALL_TEST_TTY=os.path.join(self.tmp, "no-such-tty"))
+        proc = subprocess.run([BASH], input=read(INSTALL_SH).encode(), env=env, cwd=self.tmp,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("this SSH session has no terminal", proc.stderr.decode())
+
+
+class NotOverSshTests(InstallShTestCase):
+    def test_without_ssh_nothing_about_ssh_is_asked_or_run(self):
+        run = self.run_install(HAPPY_ANSWERS)
+        self.assertEqual(run.code, 0, run.out + run.err)
+        self.assertEqual(run.prompts, len(HAPPY_ANSWERS))
+        self.assertNotIn("SSH: YOUR RESPONSIBILITY", run.out)
+        self.assertNotIn("Turn SSH off now?", run.out)
+        self.assertFalse([line for line in run.log if "do_ssh" in line or "systemctl" in line])
+        self.assertFalse([line for line in run.log if "--tier B" in line])
+        self.assertIn("http://localhost:3847", run.out)
+        self.assertIn("If a check finds a problem (for example SSH turned on)", run.out)

@@ -104,7 +104,7 @@ One command runs the install guide's steps for you and asks a few questions on t
    cd ~/sproutwall && ./scripts/sproutwall doctor --phase final --tier C --kiosk on
    ```
 
-   Use `--kiosk off` instead if the screen was not set up. It passes with `Result: pass`, or with `Result: unknown` when the only unknown is `app_bind` / `confirm_trusted_lan` (see [section 6](#6-install-with-your-ai-assistant)). Then see [section 8](#8-when-its-done).
+   Use `--kiosk off` instead if the screen was not set up. It passes with `Result: pass`, or with `Result: unknown` when the only unknown is `app_bind` / `confirm_trusted_lan` (see [section 6](#6-install-with-your-ai-assistant)). In this preview, after an install over SSH, `ssh_policy` unknown and `temporary_access` unknown (`retry_local`) are also acceptable here, but only when SSH is off and `systemctl is-active ssh.service ssh.socket` prints `inactive` for both (the guide's [step 8](../INSTALL-WITH-AI.md#step-8-remove-the-assistant-and-check-once-more)). If you chose to keep SSH on, `ssh_policy` and `temporary_access` results caused by SSH being on are expected instead, and every other check must pass (same step 8). Then see [section 8](#8-when-its-done).
 
 **If it stops,** it prints one line that starts with `Stopped:` and says why and what to do. It never deletes your files or the hub's data and never works around a problem, and the line usually says whether anything was changed and whether it is safe to run the command again. Share only that line and the status check's output, as [section 9](#9-if-you-get-stuck) says. Declining a question is not a stop: see point 3.
 

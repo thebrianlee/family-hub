@@ -268,6 +268,10 @@ class Context:
     def ssh_ports(self):
         return sshd.ports(self.ssh_config()[1])
 
+    def ssh_ports_complete(self):
+        """False when a Port or ListenAddress in the config cannot be read."""
+        return sshd.port_list(self.ssh_config()[1])[1]
+
     def exec_in(self, container, argv):
         """Run argv inside the container as the app's own user."""
         return self.system.run(["docker", "exec", "--user", APP_USER, container.cid] + list(argv))
@@ -489,21 +493,28 @@ def check_bridge_bind(ctx):
 
 def check_ssh_policy(ctx):
     config_state, directives = ctx.ssh_config()
-    if config_state == "unreadable":
-        return unknown("review_ssh")  # a Port or password rule could be hidden in it
     ports = ctx.ssh_ports()
     sockets, sockets_complete = ctx.host_sockets()
+    ports_complete = ctx.ssh_ports_complete()
+    # The service state comes first: SSH that is off passes even when the
+    # config cannot be read (Raspberry Pi Imager can leave a root-only file in
+    # /etc/ssh/sshd_config.d). "off" needs every SSH unit off and no listener
+    # on port 22 or on any port the readable config names.
     state = sshd.service_state(ctx.system, sockets, sockets_complete, ports)
     if state == "off":
-        return PASS
+        # A Port or ListenAddress value that cannot be read could hide a listener.
+        return PASS if ports_complete else unknown("review_ssh")
     if state == "unknown":
         return unknown("review_ssh")
     # SSH is on. Only tier B allows it, and only until the final phase.
     if ctx.tier != "B" or ctx.phase == "final":
         return fail("review_ssh")
-    if config_state != "ok":
-        return unknown("review_ssh")
-    if sshd.allows_password(directives):
+    if config_state != "ok" or not ports_complete:
+        return unknown("review_ssh")  # a Port or password rule could be hidden in it
+    # Tier B allows password logins until the final check (HJ, 2026-11-20: a
+    # person installing from a laptop over SSH should not need an SSH key),
+    # but never root login with a password or empty passwords.
+    if sshd.allows_root_or_empty_password(directives):
         return fail("review_ssh")
     interfaces = ctx.interfaces()
     binds = [addr for addr, port, st in sockets if st == net.LISTEN and port in ports]
@@ -604,8 +615,16 @@ def check_temporary_access(ctx):
     ports = ctx.ssh_ports()
     if any(st == net.ESTABLISHED and port in ports for _, port, st in sockets):
         return fail("remove_agent")  # an SSH session into the Pi is still open
-    if incomplete or not sockets_complete or ctx.ssh_config()[0] == "unreadable":
+    if incomplete or not sockets_complete or not ctx.ssh_ports_complete():
         return INCOMPLETE
+    # An unreadable SSH config could name another port a session uses. That
+    # matters only while SSH is on: with every SSH unit off and no listener
+    # (sshd.service_state "off", as in check_ssh_policy), it does not make this
+    # unknown. Raspberry Pi Imager can leave a root-only file in
+    # /etc/ssh/sshd_config.d, and the person turned SSH off before this check.
+    if ctx.ssh_config()[0] == "unreadable":
+        if sshd.service_state(ctx.system, sockets, sockets_complete, ports) != "off":
+            return INCOMPLETE
     return PASS
 
 

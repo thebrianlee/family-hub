@@ -96,10 +96,10 @@ After a short wait the status says `healthy`. To watch the hub's messages, run `
 On the Pi, run:
 
 ```bash
-hostname -I
+ip -o -4 addr show scope global
 ```
 
-The first number is the Pi's address, for example `192.168.1.50`. On a phone or tablet on the same Wi-Fi, open `http://192.168.1.50:3847` (with your number). Many devices can also open `http://hub.local:3847`, but not all.
+The Pi's address is the one on the line for your Wi-Fi or network cable (often `wlan0` or `eth0`), for example `192.168.1.50` from `inet 192.168.1.50/24`. Never use an address on a `docker0`, `br-` or `veth` line (Docker's own network, for example `172.17.0.1`), or one that starts with `169.254.`: no phone can reach it. On a phone or tablet on the same Wi-Fi, open `http://192.168.1.50:3847` (with your number). Many devices can also open `http://hub.local:3847`, but not all.
 
 Ask your router to always give the Pi this address (often called a "DHCP reservation"), so bookmarks keep working.
 
@@ -224,7 +224,7 @@ Use your own new PIN instead of `4827`. Every screen then asks for the new PIN.
 
 - Is the phone on the same Wi-Fi as the Pi? Guest networks often keep devices apart. So can a VPN app on the phone.
 - Did you type `http://` (not `https://`) and `:3847` at the end?
-- Did the Pi's address change? Run `hostname -I` again, and set a DHCP reservation in your router.
+- Did the Pi's address change? Run `ip -o -4 addr show scope global` again and use the Wi-Fi or cable line ([step 5](#step-5-find-the-hubs-address)), and set a DHCP reservation in your router.
 - Is the hub running? `docker compose ps` should say `healthy`. If not, `docker compose logs` shows why.
 - Does the Pi's own screen work with `http://localhost:3847`? If yes, the hub is fine and the problem is the network between the phone and the Pi.
 
